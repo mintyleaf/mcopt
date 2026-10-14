@@ -168,7 +168,7 @@ Own *mco_new(Ctx *ctx, const char *source, int compact, int fat, int cpuClip, ch
 			*slots[i] = fn ? [ctx->device newComputePipelineStateWithFunction:fn error:&e] : nil;
 			if (!*slots[i]) {
 				ownErr(e, kernels[i], err, errCap);
-				return NULL;
+				goto fail;
 			}
 		}
 		MTLFunctionConstantValues *vcv = [[MTLFunctionConstantValues new] autorelease];
@@ -204,7 +204,7 @@ Own *mco_new(Ctx *ctx, const char *source, int compact, int fat, int cpuClip, ch
 			id<MTLFunction> fs = [lib newFunctionWithName:@"own_fs" constantValues:cv error:&e];
 			if (!fs) {
 				ownErr(e, "own_fs", err, errCap);
-				return NULL;
+				goto fail;
 			}
 			if (c == 4) w->fsCutoutLevel = fs;
 			else if (c == 3) w->fsSolidLevel = fs;
@@ -216,7 +216,7 @@ Own *mco_new(Ctx *ctx, const char *source, int compact, int fat, int cpuClip, ch
 		w->fsFlat = [lib newFunctionWithName:@"own_fs_flat" constantValues:[[MTLFunctionConstantValues new] autorelease] error:&e];
 		if (!w->vs || !w->vsTranslucent || !w->vsQuads) {
 			snprintf(err, errCap, "own terrain.metal: no own_vs");
-			return NULL;
+			goto fail;
 		}
 		MTLDepthStencilDescriptor *dd = [[MTLDepthStencilDescriptor new] autorelease];
 		dd.depthCompareFunction = MTLCompareFunctionGreaterEqual;  // the game's reversed Z (DepthStencilState.DEFAULT)
@@ -236,7 +236,7 @@ Own *mco_new(Ctx *ctx, const char *source, int compact, int fat, int cpuClip, ch
 			w->fsAlpha = [lib newFunctionWithName:@"own_fs_alpha" constantValues:acv error:&e];
 			if (!w->fsAlpha) {
 				ownErr(e, "own_fs_alpha", err, errCap);
-				return NULL;
+				goto fail;
 			}
 		}
 		uint16_t idx[64 * 6];
@@ -254,6 +254,16 @@ Own *mco_new(Ctx *ctx, const char *source, int compact, int fat, int cpuClip, ch
 		}
 		w->quadIdxG = [ctx->device newBufferWithBytes:idxG length:sizeof idxG options:MTLResourceStorageModeShared];
 		return w;
+fail:
+		for (int i = 0; i < (int) (sizeof slots / sizeof slots[0]); i++) [*slots[i] release];
+		[w->vsTranslucent release]; [w->vsQuads release];
+		for (int i = 0; i < 3; i++) [w->vsModes[i] release];  // (w->vs aliases vsModes[0])
+		[w->fsSolid release]; [w->fsCutout release]; [w->fsTranslucent release];
+		[w->fsSolidLevel release]; [w->fsCutoutLevel release]; [w->fsFlat release]; [w->fsAlpha release];
+		[w->depth release]; [w->depthGreater release]; [w->depthEqual release];
+		[w->functions release]; [w->library release];
+		free(w);
+		return NULL;
 	}
 }
 
