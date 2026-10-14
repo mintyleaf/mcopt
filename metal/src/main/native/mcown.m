@@ -1885,8 +1885,11 @@ int mco_quads_b(Own *w, Enc *enc, const void *frame, int frameLength, id<MTLBuff
 	if (frameLength >= 152) memcpy(&units, qf + 148, 4);  // QuadFrame.units
 	memcpy(&listCap, qf + 128, 4);                        // QuadFrame.listCap
 	if (units && (!w->qUnits || w->qUnits.length < (NSUInteger) listCap * 4)) {
-		// (the old one is left alive, not released: a frame still in flight may read it; growth is rare and doubles)
+		id<MTLBuffer> old = w->qUnits;
 		w->qUnits = [w->ctx->device newBufferWithLength:MAX((NSUInteger) listCap * 8, 4) options:MTLResourceStorageModePrivate];
+		// a frame still in flight may read the old buffer: release it once this frame's command buffer (committed
+		// after all of them) completes
+		if (old) [mc_frame_cmd(enc) addCompletedHandler:^(id<MTLCommandBuffer> _) { [old release]; }];
 	}
 	uint32_t flat = 0;
 	if (frameLength >= 168) memcpy(&flat, qf + 164, 4);  // QuadFrame.flat
