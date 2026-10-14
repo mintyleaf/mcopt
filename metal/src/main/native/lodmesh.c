@@ -233,6 +233,7 @@ typedef struct {
 // that much between this level's samples). LM_DEEP when the cell across is unknown.
 static int skirtFloor(const Col *cols, int cx, int cz, int dx, int dz) {
 	const Col *a = &cols[(cz + 1) * REGION + (cx + 1)];
+	if (a->n <= 0) return LM_DEEP;  // (invalid cell: hi[0] and wet were never written)
 	int lo = a->hi[0], hi = a->hi[0];
 	// Water meeting water at the same surface across the seam: no gap to hide, so no skirt. Under the surface it showed through
 	// the real terrain's water as pale columns hanging from the seam (noahdunnagan/mcopt#14).
