@@ -217,6 +217,8 @@ final class OwnFrag {
 	static final int CAP_FAULT = Math.max(0, Integer.getInteger("mcopt.own.frag.capFault", 0));
 	/** (fault injection, -Dmcopt.own.frag.tCapFault=N) the unit test's list holds at most N entries: the T loss counter must see it. */
 	static final int T_CAP_FAULT = Math.max(0, Integer.getInteger("mcopt.own.frag.tCapFault", 0));
+	/** -Dmcopt.own.fat (OwnTerrain.FAT; no probe key): whole-instance cull records — the exact draws can't read them. */
+	private static final boolean FAT = Boolean.getBoolean("mcopt.own.fat");
 	/** tieClose frames by OwnTerrain.tieCloseFallback reason (0 = closure drawn), since the last log. */
 	private static final long[] TIE_FRAMES = new long[6];
 	/**
@@ -768,7 +770,7 @@ final class OwnFrag {
 			MemoryUtil.memCopy(g, this.fragFrame, FRAG_FRAME_BYTES);  // (the unit test reads it at draw time)
 			// a1Exact: the cull writes A1's exact-count draws (mode 1); with only -Dmcopt.own.stats the same kernel counts A1's real quads (mode 2)
 			// (not with tight / the oracle: their vertex paths read the list as records; not with cutfirst's reversed solid order)
-			boolean able = c.uocc && !c.mesh && !c.mesh4 && !c.nonidx && !c.posonly && !c.tight && !ORACLE && c.order != CUTFIRST && !Boolean.getBoolean("mcopt.own.fat");
+			boolean able = c.uocc && !c.mesh && !c.mesh4 && !c.nonidx && !c.posonly && !c.tight && !ORACLE && c.order != CUTFIRST && !FAT;
 			this.a1Req = OwnProbe.bool("frag.a1Exact", A1_EXACT);
 			this.a2Req = OwnProbe.bool("frag.a2Exact", A2_EXACT);
 			this.a1Exact = able && !EXACT_GATED && this.a1Req;

@@ -149,6 +149,13 @@ public final class OwnTerrain {
 	private static final boolean QUADS_BOX = COMPACT && Boolean.getBoolean("mcopt.own.quads.box");
 	/** The per-quad path's phase A and flat test read the cull's TUnit entries (record fields + section origin) in place of index -> record -> section. */
 	private static final boolean QUADS_FATT = !FAT && Boolean.getBoolean("mcopt.own.quads.fatT");
+	/* QuadFrame fields written every frame: like QUADS_FATT these are read once at startup (no probe key switches them). */
+	private static final int QUADS_DEBUG = Integer.getInteger("mcopt.own.quads.debug", 0);
+	private static final boolean QUADS_FLAT = Boolean.getBoolean("mcopt.own.quads.flat");
+	private static final boolean QUADS_CENTRE = Boolean.getBoolean("mcopt.own.quads.centre");
+	private static final boolean QUADS_GATE = Boolean.getBoolean("mcopt.own.quads.gate");
+	private static final boolean QUADS_ALU = Boolean.getBoolean("mcopt.own.quads.alu");
+	private static final boolean QUADS_LAZY = Boolean.getBoolean("mcopt.own.quads.lazy");
 	private static final int QUAD_FRAME_BYTES = 192;
 	/** Solid-section occlusion: the parameters' size (terrain.metal SolidOcc), the occluder depth's width (texels; height by aspect). */
 	private static final int SOLID_BYTES = 144, SOLID_WIDTH = Integer.getInteger("mcopt.own.solidOcc.width", 320);
@@ -2980,13 +2987,13 @@ public final class OwnTerrain {
 				this.qDrawnB += (MemoryUtil.memGetInt(a + 40) + MemoryUtil.memGetInt(a + 60)) / 6;
 				this.qDrawnFrames++;
 			}
-			MemoryUtil.memPutInt(q + 160, Integer.getInteger("mcopt.own.quads.debug", 0));
-			MemoryUtil.memPutInt(q + 164, Boolean.getBoolean("mcopt.own.quads.flat") ? 1 : 0);
-			MemoryUtil.memPutInt(q + 168, Boolean.getBoolean("mcopt.own.quads.centre") ? 1 : 0);
-			MemoryUtil.memPutInt(q + 176, Boolean.getBoolean("mcopt.own.quads.gate") ? 1 : 0);
-			MemoryUtil.memPutInt(q + 180, Boolean.getBoolean("mcopt.own.quads.alu") ? 1 : 0);
+			MemoryUtil.memPutInt(q + 160, QUADS_DEBUG);
+			MemoryUtil.memPutInt(q + 164, QUADS_FLAT ? 1 : 0);
+			MemoryUtil.memPutInt(q + 168, QUADS_CENTRE ? 1 : 0);
+			MemoryUtil.memPutInt(q + 176, QUADS_GATE ? 1 : 0);
+			MemoryUtil.memPutInt(q + 180, QUADS_ALU ? 1 : 0);
 			MemoryUtil.memPutInt(q + 184, QUADS_FATT ? 1 : 0);
-			MemoryUtil.memPutInt(q + 188, Boolean.getBoolean("mcopt.own.quads.lazy") ? 1 : 0);
+			MemoryUtil.memPutInt(q + 188, QUADS_LAZY ? 1 : 0);
 			MemoryUtil.memPutInt(q + 172, this.quadsMesh ? 1 : 0);  // (OwnFrag.QMESH)
 			OwnNative.quadsA(this.own, this.enc, q, QUAD_FRAME_BYTES, this.recBuffer, this.args, this.tested, this.qPrev, this.qCur, this.qWords, this.qIdx,
 				this.qArgs, this.fat);
