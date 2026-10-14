@@ -1481,7 +1481,7 @@ static void ownPyramid(Own *w, Enc *enc, id<MTLComputeCommandEncoder> c, id<MTLT
 int mco_frag_occ(Own *w, Enc *enc) {
 	w->fragOcc[4] = 0;
 	if (!enc->render || !enc->depth) return 0;
-	uint8_t qf[128];
+	uint8_t qf[256];  // (ownPyramid writes the QuadFrame layout's pyramid fields, up to byte 140)
 	memset(qf, 0, sizeof qf);
 	id<MTLTexture> depth = enc->depth;
 	id<MTLComputeCommandEncoder> c = mc_render_suspend(enc);
