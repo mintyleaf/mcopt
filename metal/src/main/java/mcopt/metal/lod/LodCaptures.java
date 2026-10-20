@@ -47,6 +47,15 @@ final class LodCaptures implements AutoCloseable {
 		}
 		long key() { return LodForest.chunkKey(this.x, this.z); }
 	}
+	/** Worker-prepared data shared by persistence and live clipmap installation. */
+	record Prepared(LodChunks.Summary summary, Capture capture) { }
+
+	static Prepared prepare(LodChunks.Summary summary, int levels) {
+		Capture capture = pack(summary);
+		for (int level = 1; level < Math.min(levels, 5); level++) capture.atLevel(level);
+		return new Prepared(summary, capture);
+	}
+
 	private record Computed(Capture capture, Runnable complete) { }
 	private record Request(Supplier<Computed> compute, boolean raw) { }
 	@FunctionalInterface interface CaptureWriter { void write(Capture capture) throws IOException; }
@@ -100,14 +109,23 @@ final class LodCaptures implements AutoCloseable {
 
 	/** Coalesces light/edit bursts before summarizing. The writer drains accepted snapshots when the world closes. */
 	void capture(LodChunks.Snapshot snapshot, Consumer<LodChunks.Summary> complete) {
+		this.capturePrepared(snapshot, prepared -> complete.accept(prepared.summary));
+	}
+
+	void capturePrepared(LodChunks.Snapshot snapshot, Consumer<Prepared> complete) {
 		this.submit(LodForest.chunkKey(snapshot.chunkX(), snapshot.chunkZ()), -1, stamp -> () -> {
 			LodChunks.Summary summary = LodChunks.summarize(snapshot);
-			return new Computed(pack(summary), () -> complete.accept(summary));
+			Prepared prepared = prepare(summary, this.levels);
+			return new Computed(prepared.capture, () -> complete.accept(prepared));
 		});
 	}
 
 	/** At most 64 detached raw chunks queued; an already queued coordinate replaces its older copy. */
-	synchronized boolean captureDeferred(long key, Supplier<LodChunks.Snapshot> snapshot, BiConsumer<LodChunks.Summary, Boolean> complete) {
+	boolean captureDeferred(long key, Supplier<LodChunks.Snapshot> snapshot, BiConsumer<LodChunks.Summary, Boolean> complete) {
+		return this.captureDeferredPrepared(key, snapshot, (prepared, valid) -> complete.accept(prepared.summary, valid));
+	}
+
+	synchronized boolean captureDeferredPrepared(long key, Supplier<LodChunks.Snapshot> snapshot, BiConsumer<Prepared, Boolean> complete) {
 		Request previous = this.pending.get(key);
 		if (this.rawPending >= RAW_LIMIT && (previous == null || !previous.raw)) return false;
 		this.submit(key, -1, stamp -> () -> {
@@ -116,7 +134,8 @@ final class LodCaptures implements AutoCloseable {
 			if (LodConfig.LIGHTING) { valid = true; for (boolean v : s.lightValid()) valid &= v; }
 			boolean ready = valid;
 			LodChunks.Summary summary = LodChunks.summarize(s);
-			return new Computed(pack(summary), () -> complete.accept(summary, ready));
+			Prepared prepared = prepare(summary, this.levels);
+			return new Computed(prepared.capture, () -> complete.accept(prepared, ready));
 		}, true);
 		return true;
 	}
@@ -126,9 +145,14 @@ final class LodCaptures implements AutoCloseable {
 
 	/** A saved snapshot must not overwrite a live edit received while the disk read was in flight. */
 	long captureIfUnchanged(LodChunks.Snapshot snapshot, long expected, BiConsumer<LodChunks.Summary, Long> complete) {
+		return this.captureIfUnchangedPrepared(snapshot, expected, (prepared, stamp) -> complete.accept(prepared.summary, stamp));
+	}
+
+	long captureIfUnchangedPrepared(LodChunks.Snapshot snapshot, long expected, BiConsumer<Prepared, Long> complete) {
 		return this.submit(LodForest.chunkKey(snapshot.chunkX(), snapshot.chunkZ()), expected, stamp -> () -> {
 			LodChunks.Summary summary = LodChunks.summarize(snapshot);
-			return new Computed(pack(summary), () -> complete.accept(summary, stamp));
+			Prepared prepared = prepare(summary, this.levels);
+			return new Computed(prepared.capture, () -> complete.accept(prepared, stamp));
 		});
 	}
 

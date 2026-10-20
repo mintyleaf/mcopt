@@ -652,7 +652,7 @@ final class LodField {
 	/** Server producer; saved reads may only publish if a newer client edit has not superseded them. */
 	private void refined(LodChunks.Snapshot snapshot, Long expected) {
 		long key = LodForest.chunkKey(snapshot.chunkX(), snapshot.chunkZ());
-		this.captures.captureIfUnchanged(snapshot, expected, (summary, stamp) -> {
+		this.captures.captureIfUnchangedPrepared(snapshot, expected, (summary, stamp) -> {
 			this.chunksSummarized.incrementAndGet();
 			this.results.add(() -> {
 				if (!this.closed && this.captures.stamp(key) == stamp) this.applyChunk(summary);
@@ -671,7 +671,7 @@ final class LodField {
 			this.snapshots++;
 			long request = this.seq.incrementAndGet(), key = LodForest.chunkKey(chunk.getPos().x(), chunk.getPos().z());
 			this.chunkRequests.put(key, request);
-			java.util.function.BiConsumer<LodChunks.Summary, Boolean> complete = (sum, valid) -> {
+			java.util.function.BiConsumer<LodCaptures.Prepared, Boolean> complete = (sum, valid) -> {
 				this.chunksSummarized.incrementAndGet();
 				this.results.add(() -> {
 					if (this.closed || !this.chunkRequests.remove(key, request)) return;
@@ -679,7 +679,7 @@ final class LodField {
 					if (!valid) retryLight.run(); else capturedReady.run();
 				});
 			};
-			if (!this.captures.captureDeferred(key, frozen::snapshot, complete)) {
+			if (!this.captures.captureDeferredPrepared(key, frozen::snapshot, complete)) {
 				// Exceptional backpressure: keep the last visited edit rather than retaining unbounded raw section copies.
 				this.captureFallbacks++;
 				if (event != null) event.fallback = true;
@@ -687,7 +687,7 @@ final class LodField {
 				LodChunks.Snapshot snap = frozen.snapshot();
 				this.snapNanos += System.nanoTime() - fallbackStart;
 				boolean ready = !LodConfig.LIGHTING || java.util.stream.IntStream.range(0, 256).allMatch(i -> snap.lightValid()[i]);
-				this.captures.capture(snap, sum -> complete.accept(sum, ready));
+				this.captures.capturePrepared(snap, sum -> complete.accept(sum, ready));
 			}
 		} finally { if (event != null) { event.end(); event.commit(); } }
 	}
@@ -696,23 +696,24 @@ final class LodField {
 	long reusedEdits;
 
 	/** Writes a chunk's columns into every resident tile that covers it: level 0 every column, coarser at sample points. */
-	private void applyChunk(LodChunks.Summary s) {
+	private void applyChunk(LodCaptures.Prepared prepared) {
+		LodChunks.Summary s = prepared.summary();
 		// -Dmcopt.lod.chunkHold: a chunk in view and not handed off yet keeps its coarser levels as they are for now (a rewrite
 		// there would show); they're written once it's handed off or out of view (releaseHeld)
 		java.util.function.LongPredicate hold = this.hold;
 		long ck = LodForest.chunkKey(s.chunkX(), s.chunkZ());
 		if (hold != null && this.clip.levels > 1 && hold.test(ck)) {
-			this.applyChunk(s, 0, 1);
-			this.held.put(ck, s);
+			this.applyChunk(prepared, 0, 1);
+			this.held.put(ck, prepared);
 			return;
 		}
 		this.held.remove(ck);
-		this.applyChunk(s, 0, this.clip.levels);
+		this.applyChunk(prepared, 0, this.clip.levels);
 	}
 
 	/** -Dmcopt.lod.chunkHold: Lod's test (chunk in view, not handed off); null: off. Render thread. */
 	java.util.function.@org.jspecify.annotations.Nullable LongPredicate hold;
-	private final java.util.HashMap<Long, LodChunks.Summary> held = new java.util.HashMap<>();
+	private final java.util.HashMap<Long, LodCaptures.Prepared> held = new java.util.HashMap<>();
 	long heldReleased;
 
 	/** Render thread, once a frame after the mask: the held chunks whose coarser levels can be written now. */
@@ -732,9 +733,10 @@ final class LodField {
 		return this.held.size();
 	}
 
-	private void applyChunk(LodChunks.Summary s, int fromLevel, int toLevel) {
+	private void applyChunk(LodCaptures.Prepared prepared, int fromLevel, int toLevel) {
+		LodChunks.Summary s = prepared.summary();
 		int bx = s.chunkX() * 16, bz = s.chunkZ() * 16;
-		LodCaptures.Capture coarse = toLevel > 1 ? LodCaptures.pack(s) : null;
+		LodCaptures.Capture coarse = prepared.capture();
 		int[][] bounded = s.islandBottom() == null && s.segmented()==null ? null : new int[][]{new int[1],new int[1],new int[1],new int[2],new int[1],new int[2]};
 		for (int level = fromLevel; level < toLevel; level++) {
 			int span = this.clip.span(level);

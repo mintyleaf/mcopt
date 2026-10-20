@@ -290,10 +290,11 @@ public final class LodCaptureChecks {
 		try {
 			clip.recenter(0,0);set(field,"clip",clip);set(field,"dirtyTiles",new HashSet<>());
 			for(int level=0;level<clip.levels;level++) clip.put(level,0,0,new int[LodTile.CELLS],new int[LodTile.CELLS],new int[LodTile.CELLS],null,new int[LodTile.CELLS],null);
-			Method apply=LodField.class.getDeclaredMethod("applyChunk",LodChunks.Summary.class,int.class,int.class);apply.setAccessible(true);
-			apply.invoke(field,s,0,clip.levels);
+			Method apply=LodField.class.getDeclaredMethod("applyChunk",LodCaptures.Prepared.class,int.class,int.class);apply.setAccessible(true);
+			apply.invoke(field,LodCaptures.prepare(s,clip.levels),0,clip.levels);
 			long initial=clip.version;
-			for(int repeat=0;repeat<1000;repeat++) apply.invoke(field,s,0,clip.levels);
+			var prepared = LodCaptures.prepare(s,clip.levels);
+			for(int repeat=0;repeat<1000;repeat++) apply.invoke(field,prepared,0,clip.levels);
 			if(clip.version!=initial) throw new AssertionError("Repeated identical End imports still refresh tiles and trigger mesh work");
 			for(int level=0;level<clip.levels;level++) {
 				int[] g=new int[LodTile.CELLS],c=new int[LodTile.CELLS],cr=new int[LodTile.CELLS],runs=new int[LodTile.CELLS];

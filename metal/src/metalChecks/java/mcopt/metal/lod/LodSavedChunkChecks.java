@@ -206,6 +206,7 @@ public final class LodSavedChunkChecks {
 			System.out.println("PASS: all "+checked+" actual End-city blocks retain geometry on all five levels");
 		}
 		checkClientCopy(detached.chunk(), factory);
+		checkPrepared(snapshot);
 		checkDeferredQueue(snapshot);
 		checkPipeline(snapshot);
 		System.out.println("PASS: saved vines, tall crowns, real builds, checked light and sparse cache repair; no world chunk loading");
@@ -325,6 +326,30 @@ public final class LodSavedChunkChecks {
 		sky.fill(0);block.fill(0);
 		for(var lamp:lamps) if(frozen.lighting().block().applyAsInt(lamp)<14) throw new AssertionError("Boundary emitter lost after source mutation");
 		System.out.println("PASS: four detached boundary strips preserve heterogeneous sky/block light, emitters and out-of-height lookups");
+	}
+
+	private static void checkPrepared(LodChunks.Snapshot snapshot) throws Exception {
+		Thread producer=Thread.currentThread();
+		var completed=new java.util.concurrent.CompletableFuture<LodCaptures.Prepared>();
+		try (var store=new LodCaptures(java.nio.file.Path.of("unused-prepared-check"),5,false)) {
+			store.capturePrepared(snapshot,prepared->{
+				if (Thread.currentThread()==producer) completed.completeExceptionally(new AssertionError("Packing on producer"));
+				else completed.complete(prepared);
+			});
+			var prepared=completed.get(5,java.util.concurrent.TimeUnit.SECONDS);
+			var get=LodCaptures.class.getDeclaredMethod("get",long.class);get.setAccessible(true);
+			if(get.invoke(store,LodForest.chunkKey(snapshot.chunkX(),snapshot.chunkZ()))!=prepared.capture())
+				throw new AssertionError("Persistence and completion do not share packed data");
+			var field=LodCaptures.Capture.class.getDeclaredField("mips");field.setAccessible(true);
+			var mips=(int[][][])field.get(prepared.capture());
+			var reference=LodCaptures.pack(LodChunks.summarize(snapshot));
+			if(!Arrays.deepEquals(prepared.capture().planes(),reference.planes())) throw new AssertionError("Prepared fine data differs");
+			for(int level=1;level<5;level++) {
+				if(mips[level]==null || !Arrays.deepEquals(mips[level],reference.atLevel(level))) throw new AssertionError("Worker omitted/damaged coarse planes");
+				for(int repeat=0;repeat<1000;repeat++) if(prepared.capture().atLevel(level)!=mips[level]) throw new AssertionError("Render consumer recomputed mip");
+			}
+		}
+		System.out.println("PASS: worker prepares all nine planes and four reductions once; persistence and live completion share the same immutable capture");
 	}
 
 	private static void checkDeferredQueue(LodChunks.Snapshot snapshot) throws Exception {
