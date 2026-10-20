@@ -251,9 +251,15 @@ public final class OwnTerrain {
 
 	// ---- the arena: quads, written by the meshing workers ----
 	private final ReentrantReadWriteLock arenaLock = new ReentrantReadWriteLock();
+	/** Only growers wait here; rendering can keep using the old arena during allocation/page preparation. */
+	private final Object arenaGrowthLock = new Object();
 	private volatile long arenaBuffer, arenaAddress;
 	/** Physical units reserved; logical OwnAlloc capacity still grows on its original schedule. Guarded by arenaLock. */
 	private int arenaPhysicalUnits;
+	private final @Nullable OwnArenaHistory arenaHistory;
+	private final int arenaHistoryRenderDistance;
+	private boolean arenaHistoryCompatible = true;
+	private volatile int arenaPeakUnits = OwnArenaSizing.LOGICAL_INITIAL_UNITS;
 	private final OwnAlloc quadAlloc;
 
 	// ---- render thread only ----
@@ -489,14 +495,30 @@ public final class OwnTerrain {
 		int preSizeMaxCores = Integer.getInteger("mcopt.own.arena.preSizeMaxCores", 8);
 		int gpuCores = mcopt.metal.Profile.gpuCores();
 		boolean preSize = OwnArenaSizing.preSizeEnabled(preSizeRequested, gpuCores, preSizeMaxCores);
-		this.arenaPhysicalUnits = OwnArenaSizing.reserveUnits(preSize, rd, COMPACT);
+		boolean remember = Boolean.parseBoolean(System.getProperty("mcopt.own.arena.remember", "true"));
+		this.arenaHistoryRenderDistance = rd;
+		this.arenaHistory = remember ? new OwnArenaHistory(Minecraft.getInstance().gameDirectory.toPath()
+			.resolve("cache/mcopt/terrain-arena.properties"), rd, ARENA_QUAD, TS_BUILD) : null;
+		int learnedUnits = this.arenaHistory == null ? 0 : this.arenaHistory.units();
+		int initialMiB = Integer.getInteger("mcopt.own.arena.initialMiB", 0);
+		int maximumMiB = Integer.getInteger("mcopt.own.arena.reserveMaxMiB", 512);
+		this.arenaPhysicalUnits = OwnArenaSizing.reserveUnits(OwnArenaSizing.reserveUnits(preSize, rd, COMPACT), learnedUnits,
+			initialMiB, maximumMiB, ARENA_QUAD);
 		this.arenaBuffer = OwnNative.buffer(this.ctx, (long) this.arenaPhysicalUnits * ARENA_QUAD, true);
+		if (this.arenaBuffer == 0 && this.arenaPhysicalUnits > quads) {
+			this.arenaPhysicalUnits = quads;
+			this.arenaBuffer = OwnNative.buffer(this.ctx, (long) quads * ARENA_QUAD, true);
+		}
+		if (this.arenaBuffer == 0) throw new IllegalStateException("mcopt-own: initial arena allocation failed");
+		System.out.println("mcopt-own arena reserve: rd=" + rd + " learnedMiB=" + (long) learnedUnits * ARENA_QUAD / (1 << 20)
+			+ " initialMiB=" + initialMiB + " capMiB=" + maximumMiB + " physicalMiB=" + (long) this.arenaPhysicalUnits * ARENA_QUAD / (1 << 20));
 		if (preSizeRequested) System.out.println("mcopt-own arena preSize: " + (preSize ? "on" : "off") + " gpuCores=" + gpuCores + " maxGpuCores=" + preSizeMaxCores
 			+ " rd=" + rd + " effectiveRd=" + Minecraft.getInstance().options.getEffectiveRenderDistance()
 			+ " physicalMiB=" + (long) this.arenaPhysicalUnits * ARENA_QUAD / (1 << 20) + " logicalMiB=" + (long) quads * ARENA_QUAD / (1 << 20));
 		this.arenaAddress = OwnNative.contents(this.arenaBuffer);
 		this.quadAlloc = new OwnAlloc(quads);
 		if (OwnPosTable.ON && this.quadAlloc.alloc(OwnPosTable.UNITS) != 0) throw new IllegalStateException("exactPos: the position table must be the arena's first units");
+		this.quadAlloc.reserveFor(Thread.currentThread(), Math.min(quads / 16, (4 << 20) / ARENA_QUAD));
 		int recs = 1 << 16;
 		this.recBuffer = OwnNative.buffer(this.ctx, (long) recs * REC_BYTES, true);
 		this.recAddress = OwnNative.contents(this.recBuffer);
@@ -849,14 +871,20 @@ public final class OwnTerrain {
 	private int allocLocked(int n) {
 		while (true) {
 			this.arenaLock.readLock().lock();
-			int start;
-			synchronized (this.quadAlloc) {
-				start = this.quadAlloc.alloc(n);
-			}
+			int start = this.quadAlloc.alloc(n);
 			if (start >= 0) return start;
 			this.arenaLock.readLock().unlock();
 			this.growArena(n);
 		}
+	}
+
+	/** Optional refilter: skip to the full order rather than blocking behind allocation or arena growth. */
+	private int tryAllocLocked(int n) {
+		if (this.arenaLock.hasQueuedThreads()) return -1;
+		if (!this.arenaLock.readLock().tryLock()) return -1;
+		int start = this.quadAlloc.tryAlloc(n);
+		if (start < 0) this.arenaLock.readLock().unlock();
+		return start;
 	}
 
 	/** Units of the arena holding a quad order of n quads (u32 each). */
@@ -981,54 +1009,92 @@ public final class OwnTerrain {
 	}
 
 	private void freeUnitsLater(int start, int units) {
-		this.later(() -> {
-			synchronized (this.quadAlloc) {
-				this.quadAlloc.free(start, units);
-			}
-		});
+		this.later(() -> this.quadAlloc.free(start, units));
 	}
 
 	private void growArena(int need) {
+		synchronized (this.arenaGrowthLock) {
+			this.growArenaPrepared(need);
+		}
+	}
+
+	private void growArenaPrepared(int need) {
 		long growthStart = OwnGrowth.begin();
 		int oldUnits = 0, newUnits = 0;
 		String growthKind = "arena-retry";
-		this.arenaLock.writeLock().lock();
+		long prepared = 0;
+		long preparationNs = 0, copyNs = 0, writerHoldNs = 0, writerWaitNs = 0;
 		try {
 			int cap;
-			synchronized (this.quadAlloc) {
-				int s = this.quadAlloc.alloc(need);
-				if (s >= 0) {
-					this.quadAlloc.free(s, need);  // someone grew it already
-					return;
+			long newCap;
+			this.arenaLock.readLock().lock();
+			try {
+				try (var ignored = this.quadAlloc.locked()) {
+					int s = this.quadAlloc.alloc(need);
+					if (s >= 0) {
+						this.quadAlloc.free(s, need);
+						return;
+					}
+					cap = this.quadAlloc.capacity();
+					newCap = Math.max((long) cap * 2, (long) cap + need * 2L);
+					oldUnits = cap;
+					newUnits = (int) newCap;
+					if (newCap * ARENA_QUAD > (3L << 30)) throw new IllegalStateException("mcopt-own: arena over 3 GB");
+					if (newCap <= this.arenaPhysicalUnits) {
+						this.quadAlloc.grow((int) newCap);
+						this.arenaPeakUnits = Math.max(this.arenaPeakUnits, (int) newCap);
+						growthKind = "arena-reserved";
+						return;
+					}
 				}
-				cap = this.quadAlloc.capacity();
+			} finally {
+				this.arenaLock.readLock().unlock();
 			}
-			long newCap = Math.max((long) cap * 2, (long) cap + need * 2L);
-			oldUnits = cap;
-			newUnits = (int) newCap;
-			if (newCap * ARENA_QUAD > (3L << 30)) throw new IllegalStateException("mcopt-own: arena over 3 GB");
-			if (newCap <= this.arenaPhysicalUnits) {
-				// Same logical free-tail extension and indices as ordinary growth, but the backing store already fits.
-				synchronized (this.quadAlloc) {
+			// First-touch faults can take hundreds of ms under pressure. No arena lock is held while preparing these pages.
+			long preparing = System.nanoTime();
+			prepared = OwnNative.buffer(this.ctx, newCap * ARENA_QUAD, true);
+			if (prepared == 0) throw new IllegalStateException("mcopt-own: arena allocation failed");
+			long address = OwnNative.contents(prepared);
+			for (long offset = 0, bytes = newCap * ARENA_QUAD; offset < bytes; offset += 16384)
+				MemoryUtil.memPutByte(address + offset, (byte) 0);
+			preparationNs = System.nanoTime() - preparing;
+			long retired;
+			long waiting = System.nanoTime();
+			this.arenaLock.writeLock().lock();
+			long holding = System.nanoTime();
+			writerWaitNs = holding - waiting;
+			try {
+				try (var ignored = this.quadAlloc.locked()) {
+					// Unloads may have freed enough space while allocation was in progress.
+					int s = this.quadAlloc.alloc(need);
+					if (s >= 0) {
+						this.quadAlloc.free(s, need);
+						return;
+					}
+				}
+				// The writer lock excludes every CPU writer during the final copy; indices and GPU retirement stay unchanged.
+				long copying = System.nanoTime();
+				MemoryUtil.memCopy(this.arenaAddress, address, (long) cap * ARENA_QUAD);
+				copyNs = System.nanoTime() - copying;
+				retired = this.arenaBuffer;
+				this.arenaAddress = address;
+				this.arenaBuffer = prepared;
+				this.arenaPhysicalUnits = (int) newCap;
+				prepared = 0;
+				try (var ignored = this.quadAlloc.locked()) {
 					this.quadAlloc.grow((int) newCap);
+					this.arenaPeakUnits = Math.max(this.arenaPeakUnits, (int) newCap);
 				}
-				growthKind = "arena-reserved";
-				return;
+				growthKind = "arena-copy";
+			} finally {
+				this.arenaLock.writeLock().unlock();
+				writerHoldNs = System.nanoTime() - holding;
 			}
-			growthKind = "arena-copy";
-			long buffer = OwnNative.buffer(this.ctx, newCap * ARENA_QUAD, true);
-			long address = OwnNative.contents(buffer);
-			MemoryUtil.memCopy(this.arenaAddress, address, (long) cap * ARENA_QUAD);
-			this.releaseQueue.add(this.arenaBuffer);
-			this.arenaAddress = address;
-			this.arenaBuffer = buffer;
-			this.arenaPhysicalUnits = (int) newCap;
-			synchronized (this.quadAlloc) {
-				this.quadAlloc.grow((int) newCap);
-			}
+			this.releaseQueue.add(retired);
 			System.out.println("mcopt-own: arena grown to " + newCap * ARENA_QUAD / (1 << 20) + " MB");
 		} finally {
-			this.arenaLock.writeLock().unlock();
+			if (prepared != 0) OwnNative.release(prepared);
+			OwnGrowth.arena(growthKind, (long) oldUnits * ARENA_QUAD, (long) newUnits * ARENA_QUAD, preparationNs, copyNs, writerHoldNs, writerWaitNs);
 			OwnGrowth.end(growthKind, growthStart, (long) oldUnits * ARENA_QUAD, (long) newUnits * ARENA_QUAD, (long) this.arenaPhysicalUnits * ARENA_QUAD);
 		}
 	}
@@ -1057,7 +1123,7 @@ public final class OwnTerrain {
 	 */
 	public void disposeAll() {
 		long usedBefore, capBefore;
-		synchronized (this.quadAlloc) {
+		try (var ignored = this.quadAlloc.locked()) {
 			usedBefore = this.quadAlloc.used();
 			capBefore = this.quadAlloc.capacity();
 		}
@@ -1070,8 +1136,11 @@ public final class OwnTerrain {
 		if (this.listCap > 1 << 15) this.growLists(1 << 15);
 		this.runDeferredNow();
 		boolean renewed = this.renewArena();
+		if (this.arenaHistory != null && this.arenaHistoryCompatible
+			&& Minecraft.getInstance().options.renderDistance().get() == this.arenaHistoryRenderDistance)
+			this.arenaHistory.save(this.arenaPeakUnits);
 		long used, cap, recUsed, recCap;
-		synchronized (this.quadAlloc) {
+		try (var ignored = this.quadAlloc.locked()) {
 			used = this.quadAlloc.used();
 			cap = this.quadAlloc.capacity();
 		}
@@ -1092,7 +1161,7 @@ public final class OwnTerrain {
 	private boolean renewArena() {
 		this.arenaLock.writeLock().lock();
 		try {
-			synchronized (this.quadAlloc) {
+			try (var ignored = this.quadAlloc.locked()) {
 				if (this.quadAlloc.used() > (OwnPosTable.ON ? OwnPosTable.UNITS : 0)) return false;
 			}
 			long buffer = OwnNative.buffer(this.ctx, (long) this.arenaPhysicalUnits * ARENA_QUAD, true);
@@ -1166,7 +1235,13 @@ public final class OwnTerrain {
 		if (mcopt.metal.FrameLog.ON) mcopt.metal.FrameLog.end(mcopt.metal.FrameLog.OWN_BEGIN);
 	}
 
+	private long nextAllocationSample, filterDeferrals;
+
 	private void beginFrame0() {
+		// A live distance change invalidates this session's hint rather than assigning old geometry to new settings.
+		if (this.arenaHistory != null && Minecraft.getInstance().options.renderDistance().get() != this.arenaHistoryRenderDistance)
+			this.arenaHistoryCompatible = false;
+		this.nextAllocationSample = OwnGrowth.allocation(System.nanoTime(), this.nextAllocationSample, this.quadAlloc, this.filterDeferrals);
 		this.frame++;
 		for (Long b; (b = this.releaseQueue.poll()) != null; ) {
 			long handle = b;
@@ -1409,21 +1484,22 @@ public final class OwnTerrain {
 
 	/** count entries of the order at perm, quad indices below layerQuads. */
 	private int sortedCopy(int quadStart, int perm, int count, int layerQuads) {
-		int n = count;
-		int start = this.allocLocked(Math.max(1, n));
-		try {
-			long src = this.arenaAddress + (long) quadStart * ARENA_QUAD, ord = this.arenaAddress + (long) perm * ARENA_QUAD,
-				dst = this.arenaAddress + (long) start * ARENA_QUAD;
-			for (int i = 0; i < n; i++) {
-				int q = MemoryUtil.memGetInt(ord + 4L * i);
-				if (q >= 0 && q < layerQuads) MemoryUtil.memCopy(src + (long) q * ARENA_QUAD, dst + (long) i * ARENA_QUAD, ARENA_QUAD);
-			}
-		} finally {
-			this.arenaLock.readLock().unlock();
-		}
-		TS_SORTED_BYTES.addAndGet((long) n * ARENA_QUAD);
-		TS_COPY_BYTES.addAndGet((long) n * ARENA_QUAD);
+		int start = this.allocLocked(Math.max(1, count));
+		try { this.copySortedInto(quadStart, perm, count, layerQuads, start); }
+		finally { this.arenaLock.readLock().unlock(); }
 		return start;
+	}
+
+	/** Caller owns the arena read lock and the destination range. */
+	private void copySortedInto(int quadStart, int perm, int count, int layerQuads, int start) {
+		long src = this.arenaAddress + (long) quadStart * ARENA_QUAD, ord = this.arenaAddress + (long) perm * ARENA_QUAD,
+			dst = this.arenaAddress + (long) start * ARENA_QUAD;
+		for (int i = 0; i < count; i++) {
+			int q = MemoryUtil.memGetInt(ord + 4L * i);
+			if (q >= 0 && q < layerQuads) MemoryUtil.memCopy(src + (long) q * ARENA_QUAD, dst + (long) i * ARENA_QUAD, ARENA_QUAD);
+		}
+		TS_SORTED_BYTES.addAndGet((long) count * ARENA_QUAD);
+		TS_COPY_BYTES.addAndGet((long) count * ARENA_QUAD);
 	}
 
 	private void setSlot(int slot, @Nullable OwnMesh m, int x, int y, int z, int uploadMs) {
@@ -1494,24 +1570,22 @@ public final class OwnTerrain {
 		if (m == null) return;
 		if (m.slot >= 0 && this.slotMesh[m.slot] == m) this.setSlot(m.slot, null, 0, 0, 0, 0);
 		this.later(() -> {
-			synchronized (this.quadAlloc) {
-				for (Layer l : m.layers) {
-					if (l == null) continue;
-					if (l.qrecUnit >= 0) this.quadAlloc.free(l.qrecUnit, l.qrecUnits);
-					else this.quadAlloc.free(l.quadStart, l.quadCount);
-					if (l.rawUnits > 0) this.quadAlloc.free(l.raw, l.rawUnits);
-					if (l.matStart >= 0) this.quadAlloc.free(l.matStart, Math.max(1, (l.quadCount + ARENA_QUAD - 1) / ARENA_QUAD));
-				}
-				if (m.permStart >= 0) this.quadAlloc.free(m.permStart, m.permUnits);
-				if (m.fPerm >= 0) this.quadAlloc.free(m.fPerm, m.fPermUnits);
-				if (m.sortStart >= 0) {
-					this.quadAlloc.free(m.sortStart, Math.max(1, m.sortUnits));
-					TS_SORTED_BYTES.addAndGet(-(long) m.sortUnits * ARENA_QUAD);
-				}
-				if (m.fSort >= 0) {
-					this.quadAlloc.free(m.fSort, Math.max(1, m.fSortUnits));
-					TS_SORTED_BYTES.addAndGet(-(long) m.fSortUnits * ARENA_QUAD);
-				}
+			for (Layer l : m.layers) {
+				if (l == null) continue;
+				if (l.qrecUnit >= 0) this.quadAlloc.free(l.qrecUnit, l.qrecUnits);
+				else this.quadAlloc.free(l.quadStart, l.quadCount);
+				if (l.rawUnits > 0) this.quadAlloc.free(l.raw, l.rawUnits);
+				if (l.matStart >= 0) this.quadAlloc.free(l.matStart, Math.max(1, (l.quadCount + ARENA_QUAD - 1) / ARENA_QUAD));
+			}
+			if (m.permStart >= 0) this.quadAlloc.free(m.permStart, m.permUnits);
+			if (m.fPerm >= 0) this.quadAlloc.free(m.fPerm, m.fPermUnits);
+			if (m.sortStart >= 0) {
+				this.quadAlloc.free(m.sortStart, Math.max(1, m.sortUnits));
+				TS_SORTED_BYTES.addAndGet(-(long) m.sortUnits * ARENA_QUAD);
+			}
+			if (m.fSort >= 0) {
+				this.quadAlloc.free(m.fSort, Math.max(1, m.fSortUnits));
+				TS_SORTED_BYTES.addAndGet(-(long) m.fSortUnits * ARENA_QUAD);
 			}
 			if (m.recStart >= 0 && m.recCount > 0) this.recAlloc.free(m.recStart, m.recCount);
 			if (m.grpWords > 0 && m.grpStart != OwnTieGroups.UNKNOWN && this.grpAlloc != null) {
@@ -1875,7 +1949,7 @@ public final class OwnTerrain {
 	}
 
 	private int quadIdCapacity() {
-		synchronized (this.quadAlloc) {
+		try (var ignored = this.quadAlloc.locked()) {
 			return quadIds(this.quadAlloc.capacity());
 		}
 	}
@@ -1929,7 +2003,7 @@ public final class OwnTerrain {
 	private void ensureQuadOwner(int units) {
 		if (units <= this.quadOwnerCap) return;
 		int cap;
-		synchronized (this.quadAlloc) {
+		try (var ignored = this.quadAlloc.locked()) {
 			cap = Math.max(units, quadIds(this.quadAlloc.capacity()));
 		}
 		long owner = OwnNative.buffer(this.ctx, (long) cap * 4, true), address = OwnNative.contents(owner);
@@ -1974,7 +2048,7 @@ public final class OwnTerrain {
 	/** The index regions hold every live quad once per phase (6 indices each). */
 	private void ensureQuadIndices() {
 		long used;
-		synchronized (this.quadAlloc) {
+		try (var ignored = this.quadAlloc.locked()) {
 			used = this.quadAlloc.used();
 		}
 		long need = 6 * Math.max(1L << 16, used);
@@ -2538,7 +2612,12 @@ public final class OwnTerrain {
 		TC_DROPPED.addAndGet(n - kept);
 		if (kept == n) return;  // (nothing to leave out: the full order's units, until the camera leaves the box)
 		// the kept quads in the current order, then their units' records (fresh: a frame in flight keeps reading the old ones)
-		int units = permUnits(Math.max(1, kept)), perm = this.allocLocked(units);
+		int units = permUnits(Math.max(1, kept)), perm = this.tryAllocLocked(units + (TS_BUILD ? kept : 0));
+		if (perm < 0) {
+			this.filterDeferrals++;
+			m.fFor = -1; // retry next frame; fRec=-1 selects the complete, current sorted order
+			return;
+		}
 		try {
 			long src = this.arenaAddress + (long) m.permStart * ARENA_QUAD, dst = this.arenaAddress + (long) perm * ARENA_QUAD;
 			int k = 0;
@@ -2546,6 +2625,10 @@ public final class OwnTerrain {
 				int q = MemoryUtil.memGetInt(src + 4L * i);
 				if (q >= 0 && q < n && drop[q]) continue;
 				MemoryUtil.memPutInt(dst + 4L * k++, q);
+			}
+			if (TS_BUILD && kept > 0) {
+				m.fSort = perm + units; m.fSortUnits = kept;
+				this.copySortedInto(t.quadStart, perm, kept, n, m.fSort);
 			}
 		} finally {
 			this.arenaLock.readLock().unlock();
@@ -2563,8 +2646,6 @@ public final class OwnTerrain {
 		int start = this.allocRecs(rc);
 		if (TS_BUILD) {
 			// (tsorted: the kept quads copied in order, their own units)
-			m.fSort = this.sortedCopy(t.quadStart, perm, kept, n);
-			m.fSortUnits = kept;
 			m.fsRec = this.allocRecs(rc);
 			writeSortedRecs(this.recAddress + (long) m.fsRec * REC_BYTES, rc, kept, m.fSort, slot, m.tBox);
 		}
@@ -2933,7 +3014,7 @@ public final class OwnTerrain {
 	/** The prefiltered frame (PREFILTER): the quads that can make a fragment, drawn from region 0's index lists. */
 	private void drawPrefiltered(long f, Matrix4f clip, long d, long arena, int k, long u, GpuTextureView atlas, GpuSampler sampler, GpuTextureView light,
 		GpuSampler lightSampler, boolean draw) {
-		synchronized (this.quadAlloc) {
+		try (var ignored = this.quadAlloc.locked()) {
 			this.ensureQuadOwner(Math.max(1, quadIds(this.quadAlloc.capacity())));
 		}
 		this.ensureQuadIndices();
@@ -2959,7 +3040,7 @@ public final class OwnTerrain {
 	private void drawQuads(long f, Matrix4f clip, CameraRenderState camera, long d, long arena, int k, long u, GpuTextureView atlas, GpuSampler sampler,
 		GpuTextureView light, GpuSampler lightSampler, boolean draw) {
 		this.ensureQuadOwner(1);
-		synchronized (this.quadAlloc) {
+		try (var ignored = this.quadAlloc.locked()) {
 			this.ensureQuadOwner(quadIds(this.quadAlloc.capacity()));
 		}
 		this.ensureQuadIndices();
@@ -3147,7 +3228,7 @@ public final class OwnTerrain {
 		if (now - this.statLast < 5_000_000_000L) return;
 		long quadsUsed;
 		int quadCap;
-		synchronized (this.quadAlloc) {
+		try (var ignored = this.quadAlloc.locked()) {
 			quadsUsed = this.quadAlloc.used();
 			quadCap = this.quadAlloc.capacity();
 		}

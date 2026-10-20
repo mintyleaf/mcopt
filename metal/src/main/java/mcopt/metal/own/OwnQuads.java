@@ -251,6 +251,10 @@ public final class OwnQuads {
 		private long[] keys = new long[64];
 		private long scratch;
 		private int scratchCap;
+		// One worker-local permutation scratch, reused across every bucket and section; bucket capacity can far exceed n.
+		private float[] sortPlane = new float[64];
+		private int[] sortLo = new int[64], sortHi = new int[64], sortMat = new int[64];
+		private byte[] sortCls = new byte[64];
 
 		void reset() {
 			java.util.Arrays.fill(this.count, 0);
@@ -313,15 +317,19 @@ public final class OwnQuads {
 					this.scratchCap = n;
 				}
 				long src = this.addr[b], dst = this.scratch;
-				float[] pl = this.plane[b], npl = new float[pl.length];
-				int[] lo = this.lo[b], hi = this.hi[b], nlo = new int[lo.length], nhi = new int[hi.length], mt = this.mat[b], nmt = new int[mt.length];
-				byte[] cl = this.cls[b], ncl = new byte[cl.length];
-				long qsrc = this.qaddr[b], qdst = 0;
+				if (this.sortPlane.length < n) {
+					int capacity = Math.max(n, this.sortPlane.length * 2);
+					this.sortPlane = new float[capacity];
+					this.sortLo = new int[capacity]; this.sortHi = new int[capacity]; this.sortMat = new int[capacity];
+					this.sortCls = new byte[capacity];
+				}
+				float[] pl = this.plane[b], npl = this.sortPlane;
+				int[] lo = this.lo[b], hi = this.hi[b], nlo = this.sortLo, nhi = this.sortHi, mt = this.mat[b], nmt = this.sortMat;
+				byte[] cl = this.cls[b], ncl = this.sortCls;
+				long qsrc = this.qaddr[b], qdst = dst; // Record permutation finishes before quad permutation reuses the scratch.
 				if (qsrc != 0) {
-					qdst = MemoryUtil.nmemAlloc((long) n * OwnQrec.BYTES);
 					for (int i = 0; i < n; i++) MemoryUtil.memCopy(qsrc + (k[i] & 0xFFFFFF) * OwnQrec.BYTES, qdst + (long) i * OwnQrec.BYTES, OwnQrec.BYTES);
 					MemoryUtil.memCopy(qdst, qsrc, (long) n * OwnQrec.BYTES);
-					MemoryUtil.nmemFree(qdst);
 				}
 				for (int i = 0; i < n; i++) {
 					int q = (int) (k[i] & 0xFFFFFF);
@@ -333,11 +341,11 @@ public final class OwnQuads {
 					ncl[i] = cl[q];
 				}
 				MemoryUtil.memCopy(dst, src, (long) n * QUAD);
-				this.plane[b] = npl;
-				this.lo[b] = nlo;
-				this.hi[b] = nhi;
-				this.mat[b] = nmt;
-				this.cls[b] = ncl;
+				System.arraycopy(npl, 0, pl, 0, n);
+				System.arraycopy(nlo, 0, lo, 0, n);
+				System.arraycopy(nhi, 0, hi, 0, n);
+				System.arraycopy(nmt, 0, mt, 0, n);
+				System.arraycopy(ncl, 0, cl, 0, n);
 			}
 		}
 

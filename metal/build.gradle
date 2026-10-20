@@ -64,3 +64,32 @@ tasks.register('checkMetalPipelines', JavaExec) {
 		'-XX:StartFlightRecording=filename=' + rootProject.file(project.property('pipelineTimingOutput')).absolutePath
 }
 
+tasks.register('checkOwnArenaSizing', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.own.OwnArenaSizingChecks'
+}
+
+tasks.register('checkOwnArenaGrowth', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.own.OwnArenaGrowthChecks'
+	jvmArgs '--enable-native-access=ALL-UNNAMED', '-Dmcopt.own.compact=true'
+	jvmArgs '-Dmcopt.own.mesh.tsorted=' + providers.gradleProperty('arenaSorted').getOrElse('true')
+}
+
+tasks.register('checkOwnAlloc', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.own.OwnAllocChecks'
+	jvmArgs '--enable-native-access=ALL-UNNAMED', '-Dmcopt.own.compact=true'
+	if (project.hasProperty('allocationOutput')) args rootProject.file(project.property('allocationOutput')).absolutePath
+}
+
+tasks.register('checkOwnQuadOrder', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.own.OwnQuadOrderChecks'
+	jvmArgs '--enable-native-access=ALL-UNNAMED', '-Dmcopt.own.compact=true', '-Dmcopt.own.mesh.order=cell', '-Dmcopt.own.mesh.qrec=true'
+}
+
