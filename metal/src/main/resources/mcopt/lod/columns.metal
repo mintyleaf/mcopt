@@ -2171,6 +2171,10 @@ static inline bool meshInFrustum(constant MeshFrame& f, float3 lo, float3 hi) {
 #define MESH_QUAD_TG 64
 #define ARGS_CAND 13
 #define ARGS_SURV 14
+#define ARGS_OPAQUE 28
+#define ARGS_HANDOFF 29
+#define ARGS_PARTITIONED 31
+#define ARGS_HANDOFF_DRAW 112
 #define ARGS_LIST 22         // blocks listed by the block cull (19-21: lod_mesh_emit's indirect dispatch; 23: blocks the horizon hid)
 
 kernel void lod_mesh_reset(device uint* args [[buffer(4)]], uint gid [[thread_position_in_grid]]) {
@@ -2206,13 +2210,24 @@ kernel void lod_mesh_finish(constant MeshFrame& f [[buffer(0)]], device uint* ar
     args[27] = 1u;
 }
 
-// After the quad cull: the draw's instances of MESH_DRAW_Q survivors.
-kernel void lod_mesh_finish2(constant MeshFrame& f [[buffer(0)]], device uint* args [[buffer(4)]], uint gid [[thread_position_in_grid]]) {
-    if (gid != 0u) return;
+// Draw disjoint survivor partitions from opposite ends of one capacity-limited buffer.
+static inline void meshFinishSurvivors(constant MeshFrame& f, device uint* args) {
     uint n = min(args[ARGS_SURV], uint(f.caps.x));
     args[ARGS_SURV] = n;
     args[0] = MESH_DRAW_Q * 6u;
+#ifdef SEAM_HANDOFF
+    args[1] = (args[ARGS_OPAQUE] + MESH_DRAW_Q - 1u) / MESH_DRAW_Q;
+    args[ARGS_HANDOFF_DRAW] = MESH_DRAW_Q * 6u;
+    args[ARGS_HANDOFF_DRAW + 1] = (args[ARGS_HANDOFF] + MESH_DRAW_Q - 1u) / MESH_DRAW_Q;
+    args[ARGS_HANDOFF_DRAW + 2] = args[ARGS_HANDOFF_DRAW + 3] = args[ARGS_HANDOFF_DRAW + 4] = 0u;
+    args[ARGS_PARTITIONED] = 1u;
+#else
     args[1] = (n + MESH_DRAW_Q - 1u) / MESH_DRAW_Q;
+#endif
+}
+
+kernel void lod_mesh_finish2(constant MeshFrame& f [[buffer(0)]], device uint* args [[buffer(4)]], uint gid [[thread_position_in_grid]]) {
+    if (gid == 0u) meshFinishSurvivors(f, args);
 }
 
 // An instance: MESH_Q quads of one group. a: first quad (in the arena), count | level << 8 | clip << 12, the tile; b (clip):
@@ -2731,6 +2746,46 @@ static inline MeshVOut meshHandoffHidden() {
 }
 #endif
 
+// Classify once per accepted quad, including relative/clipped stand-ins and cached sector records.
+static inline bool meshRecordHandoff(constant CompFrame& f, constant MeshFrame& mf, device const uint4* table,
+                                     device const MeshInstance* inst, device const uint* arena, uint4 r) {
+#ifdef SEAM_HANDOFF
+    int L = int((r.w >> 20) & 15u);
+    if ((r.w & (1u << 24)) != 0u) {
+        MeshInstance mi = inst[r.z];
+        if (!meshResolve(mf, table, mi) || r.x >= (mi.a.y & 255u)) return false;
+        return meshHandoffQuad(f, arena[(mi.a.x + r.x) * 2u], int(mi.a.z), int(mi.a.w), int((mi.a.y >> 8) & 15u), true, mi.b);
+    }
+    return meshHandoffQuad(f, r.x, int(r.z), int(r.w << 12) >> 12, L, false, int4(0));
+#else
+    return false;
+#endif
+}
+
+static inline bool meshAppendSurvivor(bool keep, bool handoff, uint4 r, constant MeshFrame& mf, device atomic_uint* args,
+                                     device uint4* out, uint lane) {
+    uint k = keep ? 1u : 0u;
+    uint before = simd_prefix_exclusive_sum(k), total = simd_sum(k), base = 0u;
+    if (lane == 0u && total > 0u) base = atomic_fetch_add_explicit(&args[ARGS_SURV], total, memory_order_relaxed);
+    base = simd_broadcast_first(base);
+    bool accepted = keep && base + before < uint(mf.caps.x);
+#ifdef SEAM_HANDOFF
+    // The global admission test runs before partition reservation: their combined size can never exceed capacity.
+    uint o = accepted && !handoff ? 1u : 0u, h = accepted && handoff ? 1u : 0u;
+    uint op = simd_prefix_exclusive_sum(o), hp = simd_prefix_exclusive_sum(h);
+    uint on = simd_sum(o), hn = simd_sum(h), ob = 0u, hb = 0u;
+    if (lane == 0u) {
+        if (on > 0u) ob = atomic_fetch_add_explicit(&args[ARGS_OPAQUE], on, memory_order_relaxed);
+        if (hn > 0u) hb = atomic_fetch_add_explicit(&args[ARGS_HANDOFF], hn, memory_order_relaxed);
+    }
+    ob = simd_broadcast_first(ob); hb = simd_broadcast_first(hb);
+    if (accepted) out[handoff ? uint(mf.caps.x) - 1u - hb - hp : ob + op] = r;
+#else
+    if (accepted) out[base + before] = r;
+#endif
+    return accepted;
+}
+
 vertex MeshVOut lod_mesh_vs(uint vid [[vertex_id]], uint iid [[instance_id]], constant CompFrame& f [[buffer(22)]],
                             device const MeshInstance* inst [[buffer(23)]], device const uint* arena [[buffer(24)]]) {
     return meshCorner(f, inst[iid], arena, vid);
@@ -2995,25 +3050,19 @@ kernel void lod_mesh_quads(constant CompFrame& f [[buffer(22)]], device const Me
             }
         }
     }
-    uint k = keep ? 1u : 0u;
-    uint before = simd_prefix_exclusive_sum(k), total = simd_sum(k);
-    uint base = 0u;
-    if (lane == 0u && total > 0u) base = atomic_fetch_add_explicit(&args[ARGS_SURV], total, memory_order_relaxed);
-    base = simd_broadcast_first(base);
-    uint cap = uint(mf.caps.x);
-    if (keep && base + before < cap) {
-        // the survivor as a record the vertex stage reads at once: the quad's words, its tile and level (a stand-in: its
-        // instance and quad, for the cut)
-        uint qi = mi.a.x + q;
-        bool clipped = (mi.a.y & (1u << 12)) != 0u;
-        uint L = (mi.a.y >> 8) & 15u;
-        if ((mi.a.y & (1u << 13)) != 0u) marked |= 1u;
+    bool clipped = (mi.a.y & (1u << 12)) != 0u;
+    uint L = (mi.a.y >> 8) & 15u;
+    if ((mi.a.y & (1u << 13)) != 0u) marked |= 1u;
+    uint4 r = clipped ? uint4(q, 0u, iid, 1u << 24 | L << 20)
+        : uint4(w0, w1, mi.a.z, (mi.a.w & 0xFFFFFu) | L << 20 | marked << 25);
+    bool handoff = keep && meshRecordHandoff(f, mf, table, inst, arena, r);
+    bool accepted = meshAppendSurvivor(keep, handoff, r, mf, args, survivors, lane);
 #ifdef MESH_BENCH_STATS
+    if (accepted) {
         atomic_fetch_add_explicit(&args[64 + L], 1u, memory_order_relaxed);
-        atomic_fetch_add_explicit(&args[80 + ((arena[qi * 2u] >> 26) & 7u) + 8u * min(L, 3u)], 1u, memory_order_relaxed);
-#endif
-        survivors[base + before] = clipped ? uint4(q, 0u, iid, 1u << 24 | L << 20) : uint4(w0, w1, mi.a.z, (mi.a.w & 0xFFFFFu) | L << 20 | marked << 25);
+        atomic_fetch_add_explicit(&args[80 + ((w0 >> 26) & 7u) + 8u * min(L, 3u)], 1u, memory_order_relaxed);
     }
+#endif
 }
 
 // The ground (the lowest surface: a crown cell's ground, else its top) of cell (cx, cz) of level k, if its tile is resident.
@@ -3056,18 +3105,26 @@ static inline int meshSkirtFloor(constant MeshFrame& mf, device const uint4* tab
 }
 
 // The survivors' vertex stage: instance iid holds survivors [iid * MESH_DRAW_Q, ...).
-vertex MeshVOut lod_mesh_vs2(uint vid [[vertex_id]], uint iid [[instance_id]], constant CompFrame& f [[buffer(22)]],
-                             device const MeshInstance* inst [[buffer(23)]], device const uint* arena [[buffer(24)]],
-                             device const uint* args [[buffer(25)]], device const uint4* survivors [[buffer(26)]],
-                             device const uint4* table [[buffer(27)]], device const uint* geom [[buffer(28)]], device const uint* crowns [[buffer(29)]],
-                             constant MeshFrame& mf [[buffer(30)]]) {
+static inline MeshVOut meshSurvivorCorner(uint vid, uint iid, constant CompFrame& f,
+                             device const MeshInstance* inst, device const uint* arena,
+                             device const uint* args, device const uint4* survivors,
+                             device const uint4* table, device const uint* geom, device const uint* crowns,
+                             constant MeshFrame& mf) {
     uint sidx = iid * MESH_DRAW_Q + (vid >> 2);
-    if (sidx >= args[ARGS_SURV]) {
+    uint count = args[ARGS_SURV];
+#ifdef SEAM_HANDOFF
+    bool partitioned = args[ARGS_PARTITIONED] != 0u;
+    if (partitioned) count = args[lodHandoffPass ? ARGS_HANDOFF : ARGS_OPAQUE];
+#endif
+    if (sidx >= count) {
         MeshVOut o;
         o.position = float4(0.0, 0.0, -2.0, 1.0);
         o.info = 0u;
         return o;
     }
+#ifdef SEAM_HANDOFF
+    if (partitioned && lodHandoffPass) sidx = uint(mf.caps.x) - 1u - sidx;
+#endif
     uint4 r = survivors[sidx];
     int L = int((r.w >> 20) & 15u);
     if ((r.w & (1u << 24)) != 0u) {
@@ -3081,14 +3138,14 @@ vertex MeshVOut lod_mesh_vs2(uint vid [[vertex_id]], uint iid [[instance_id]], c
 #ifdef SEAM_HANDOFF
         if (r.x >= (mi.a.y & 255u)) return meshHandoffHidden();
         uint w0 = arena[(mi.a.x + r.x) * 2u];
-        if (meshHandoffQuad(f, w0, int(mi.a.z), int(mi.a.w), int((mi.a.y >> 8) & 15u), true, mi.b) != lodHandoffPass)
+        if (!partitioned && meshHandoffQuad(f, w0, int(mi.a.z), int(mi.a.w), int((mi.a.y >> 8) & 15u), true, mi.b) != lodHandoffPass)
             return meshHandoffHidden();
 #endif
         return meshCorner(f, mi, arena, r.x * 4u + (vid & 3u));
     }
     int tz = int(r.w << 12) >> 12;
 #ifdef SEAM_HANDOFF
-    if (meshHandoffQuad(f, r.x, int(r.z), tz, L, false, int4(0)) != lodHandoffPass) return meshHandoffHidden();
+    if (!partitioned && meshHandoffQuad(f, r.x, int(r.z), tz, L, false, int4(0)) != lodHandoffPass) return meshHandoffHidden();
 #endif
     uint w1 = r.y;
     if ((r.x >> 31) != 0u && (vid & 3u) < 2u) {
@@ -3100,6 +3157,14 @@ vertex MeshVOut lod_mesh_vs2(uint vid [[vertex_id]], uint iid [[instance_id]], c
     MeshVOut o = meshQuadCorner(f, r.x, w1, int(r.z), tz, L, false, int4(0), vid & 3u, sidx);
     if (((r.w >> 25) & 3u) != 0u) o.info = 7u | ((r.w >> 25) & 3u) << 3;
     return o;
+}
+
+vertex MeshVOut lod_mesh_vs2(uint vid [[vertex_id]], uint iid [[instance_id]], constant CompFrame& f [[buffer(22)]],
+                             device const MeshInstance* inst [[buffer(23)]], device const uint* arena [[buffer(24)]],
+                             device const uint* args [[buffer(25)]], device const uint4* survivors [[buffer(26)]],
+                             device const uint4* table [[buffer(27)]], device const uint* geom [[buffer(28)]], device const uint* crowns [[buffer(29)]],
+                             constant MeshFrame& mf [[buffer(30)]]) {
+    return meshSurvivorCorner(vid, iid, f, inst, arena, args, survivors, table, geom, crowns, mf);
 }
 
 // The pixel's ray (camera-relative, unnormalized) through window position pos.
@@ -4014,12 +4079,8 @@ kernel void lod_pk_frame(constant CompFrame& f [[buffer(22)]], constant MeshFram
         r = recs[pkRecBase(pk, list[PK_LIST_IDS + k]) + (gid - list[PK_LIST_RECS + k])];
         keep = pkViewKeep(f, mf, table, r, stand, arena);
     }
-    uint k = keep ? 1u : 0u;
-    uint before = simd_prefix_exclusive_sum(k), sum = simd_sum(k);
-    uint base = 0u;
-    if (lane == 0u && sum > 0u) base = atomic_fetch_add_explicit(&args[ARGS_SURV], sum, memory_order_relaxed);
-    base = simd_broadcast_first(base);
-    if (keep && base + before < uint(mf.caps.x)) survivors[base + before] = r;
+    bool handoff = keep && meshRecordHandoff(f, mf, table, stand, arena, r);
+    meshAppendSurvivor(keep, handoff, r, mf, args, survivors, lane);
 }
 
 // The plants of the sectors in view, into this frame's plant instances.
@@ -4038,10 +4099,7 @@ kernel void lod_pk_plants(constant MeshFrame& mf [[buffer(0)]], device const Mes
 // After the per-frame pass: the draws' instance counts within their buffers.
 kernel void lod_pk_finish(constant MeshFrame& f [[buffer(0)]], device uint* args [[buffer(4)]], uint gid [[thread_position_in_grid]]) {
     if (gid != 0u) return;
-    uint n = min(args[ARGS_SURV], uint(f.caps.x));
-    args[ARGS_SURV] = n;
-    args[0] = MESH_DRAW_Q * 6u;
-    args[1] = (n + MESH_DRAW_Q - 1u) / MESH_DRAW_Q;
+    meshFinishSurvivors(f, args);
     args[6] = min(args[6], uint(f.counts.w));
 }
 
@@ -4079,6 +4137,7 @@ kernel void lod_pk_facet_args(device uint* args [[buffer(4)]], constant uint& ca
     if (gid != 0u) return;
     uint n = min(args[ARGS_SURV], cap);
     args[ARGS_SURV] = n;
+    args[ARGS_PARTITIONED] = 0u; // Depth facets retain their unpartitioned record list.
     args[0] = MESH_DRAW_Q * 6u;
     args[1] = (n + MESH_DRAW_Q - 1u) / MESH_DRAW_Q;
     args[2] = 0u;

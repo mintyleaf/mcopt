@@ -554,11 +554,10 @@ int mcl_mesh_draw(LodCols *l, Enc *enc, int gbuffer, const void *comp, int compL
 	[r drawIndexedPrimitives:MTLPrimitiveTypeTriangle indexType:MTLIndexTypeUInt16 indexBuffer:l->meshIdx indexBufferOffset:0 indirectBuffer:args
 		indirectBufferOffset:0];
 	if (hpso) {
-		// The two vertex specializations partition whole quads. Only quads touching the near handoff can reach the
-		// discard-capable fragment stage; the rest retain Metal's opaque hidden-surface optimizations.
+		// Culling compacted disjoint lists. The fade draw visits only the near handoff; far faces stay opaque.
 		[r setRenderPipelineState:hpso];
 		[r drawIndexedPrimitives:MTLPrimitiveTypeTriangle indexType:MTLIndexTypeUInt16 indexBuffer:l->meshIdx indexBufferOffset:0 indirectBuffer:args
-			indirectBufferOffset:0];
+			indirectBufferOffset:112 * 4];
 	}
 	[r setRenderPipelineState:ppso];
 	[r setCullMode:MTLCullModeNone];

@@ -394,3 +394,17 @@ tasks.register('checkLodMeshResults', JavaExec) {
 		jvmArgs '--enable-native-access=ALL-UNNAMED', '-Xmx256M', '-Dmcopt.lod.publish=' + mode
 	}
 }
+
+def survivorCheck = layout.buildDirectory.file('metalChecks/lod-survivors')
+tasks.register('compileLodSurvivorChecks', Exec) {
+	inputs.file 'src/metalChecks/native/lod-survivors.m'
+	outputs.file survivorCheck
+	doFirst { survivorCheck.get().asFile.parentFile.mkdirs() }
+	commandLine 'clang', '-O2', '-Wall', '-fno-objc-arc', '-framework', 'Metal', '-framework', 'Foundation',
+		file('src/metalChecks/native/lod-survivors.m'), '-o', survivorCheck.get().asFile
+}
+tasks.register('checkLodSurvivors', Exec) {
+	dependsOn 'compileLodSurvivorChecks'
+	commandLine survivorCheck.get().asFile, file('src/main/resources/mcopt/lod/columns.metal'),
+		file('src/metalChecks/native/lod-mesh-reference.metal'), file('src/metalChecks/native/lod-survivors.metal')
+}
