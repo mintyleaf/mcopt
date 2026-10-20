@@ -166,7 +166,7 @@ public final class Replay {
         if(!Boolean.parseBoolean(System.getProperty("mcopt.replay.jfr","true")))return;
         recording=new Recording(Configuration.getConfiguration("profile"));
         for(String event:List.of("mcopt.ReplayPhase","mcopt.MetalOperation","mcopt.MetalCommandBuffer","mcopt.MetalPresentation",
-                "mcopt.MetalDrawable","mcopt.MetalPipelineCompile","mcopt.OwnArenaGrowth","mcopt.OwnArenaAllocation",
+                "mcopt.MetalDrawable","mcopt.MetalPipelineCompile","mcopt.OwnArenaGrowth","mcopt.LodArenaGrowth","mcopt.OwnArenaAllocation",
                 "mcopt.LodScheduling","mcopt.LodCaptureQueue","mcopt.LodClientCapture"))recording.enable(event).withoutStackTrace();
         recording.disable("mcopt.MetalGpuPass");
         recording.setDestination(output.resolve("recording.jfr"));recording.setDumpOnExit(true);recording.start();

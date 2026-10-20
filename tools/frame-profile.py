@@ -204,6 +204,7 @@ def parse_events(events):
     gc_pauses = []
     allocation_stalls = []
     arena_growth = []
+    lod_arena_growth = []
     command_buffers, presentations, pipeline_compiles, drawable_waits, lod_scheduling = [], [], [], [], []
     drawable_lifetimes = []
     capture_queues, client_captures, arena_allocations = [], [], []
@@ -253,6 +254,9 @@ def parse_events(events):
         elif kind == "mcopt.OwnArenaGrowth":
             arena_growth.append({key: value.get(key) for key in ("startTime", "kind", "oldBytes", "newBytes",
                                                                 "preparationMs", "copyMs", "writerHoldMs", "writerWaitMs")})
+        elif kind == "mcopt.LodArenaGrowth":
+            lod_arena_growth.append({"startTime": value["startTime"], "durationMs": duration_ms(value.get("duration")),
+                                     **{key: value.get(key) for key in ("phase", "oldBytes", "newBytes", "copiedBytes", "success")}})
         elif kind == "mcopt.LodScheduling":
             lod_scheduling.append({key: value.get(key) for key in ("startTime", "dimension", "missingChunks", "totalChunks", "nearMissingChunks",
                                                                   "coarseRunning", "fineRunning", "waitingWorkers", "generationPressure", "populationPressure",
@@ -357,7 +361,7 @@ def parse_events(events):
         "gcPauseMs": stats(gc_pauses),
         "renderAllocationStallMs": stats([row["durationMs"] for row in allocation_stalls if row["thread"] == "Render thread"]),
         "allocationStalls": allocation_stalls,
-        "terrainArenaGrowth": arena_growth,
+        "terrainArenaGrowth": arena_growth, "lodArenaGrowth": lod_arena_growth,
         "commandBufferTimelines": command_buffers,
         "commandBufferTimingMs": {kind: {metric: stats([row[metric] for row in command_buffers if row["kind"] == kind and row[metric] is not None])
                                          for metric in ("kernelMs", "gpuMs", "gpuStartAfterCommitMs", "completionAfterCommitMs", "cpuReleaseAfterGpuMs")}
@@ -417,7 +421,7 @@ def summarize(output, jfr_tool):
               "mainSubmitIntervalMs": stats([(b-a)*1000 for a,b in zip(sorted(commits["main"].values()), sorted(commits["main"].values())[1:])]),
               "gpuNote": "Command buffer GPU spans include dependencies and can overlap across frames and main/pre buffers. Do not add them or interpret them as per-frame GPU busy time. Submit cadence is not measured scanout FPS. Durations do not attribute individual draw calls.",
               "gpuDiagnostics": diagnostics}
-    event_filter = "jdk.ExecutionSample,jdk.NativeMethodSample,jdk.CPULoad,jdk.ThreadCPULoad,jdk.GCPhasePause,jdk.ZAllocationStall,mcopt.MetalOperation,mcopt.MetalArenaTransfer,mcopt.MetalGpuPass,mcopt.OwnArenaGrowth,mcopt.MetalCommandBuffer,mcopt.MetalPresentation,mcopt.MetalDrawable,mcopt.MetalPipelineCompile,mcopt.LodScheduling,mcopt.LodCaptureQueue,mcopt.LodClientCapture,mcopt.OwnArenaAllocation"
+    event_filter = "jdk.ExecutionSample,jdk.NativeMethodSample,jdk.CPULoad,jdk.ThreadCPULoad,jdk.GCPhasePause,jdk.ZAllocationStall,mcopt.MetalOperation,mcopt.MetalArenaTransfer,mcopt.MetalGpuPass,mcopt.OwnArenaGrowth,mcopt.LodArenaGrowth,mcopt.MetalCommandBuffer,mcopt.MetalPresentation,mcopt.MetalDrawable,mcopt.MetalPipelineCompile,mcopt.LodScheduling,mcopt.LodCaptureQueue,mcopt.LodClientCapture,mcopt.OwnArenaAllocation"
     try:
         dump = run([jfr_tool, "print", "--json", "--events", event_filter, output / "recording.jfr"], timeout=90)
         events = json.loads(dump)["recording"]["events"]

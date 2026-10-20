@@ -65,6 +65,10 @@ final class LodMesh implements LodClip.Listener {
 	private final ArrayDeque<long[]> releaseLater = new ArrayDeque<>();
 	private final ArrayDeque<long[]> buffersLater = new ArrayDeque<>();
 	private long usedWords;
+	private LodArenaGrowth growth;
+	private long growthRetryAt;
+	private static final long COPY_BYTES = Math.max(1024, Long.getLong("mcopt.lod.meshCopyBytes", 4L << 20));
+	private static final long COPY_NANOS = 1_000_000L;
 	// per level, per slot: the installed mesh (offset, words; -1: none), the tile it is, the neighbors it was built with, its sequence
 	private final long[][] off, len, key;
 	private final int[][] builtNeighbors;
@@ -121,7 +125,7 @@ final class LodMesh implements LodClip.Listener {
 		this.tableBytes = (long) clip.levels * slots * 16;
 		this.tableHost = MemoryUtil.nmemCalloc(1, this.tableBytes);
 		for (int i = 0; i < RING; i++) this.tableBufs[i] = LodNative.buffer(ctx, this.tableBytes);
-		this.arenaWords = 16L << 20;
+		this.arenaWords = Math.clamp(Long.getLong("mcopt.lod.meshArenaInitialKiB", 65536L), 16L, MAX_ARENA_WORDS / 256) * 256;
 		this.arenaBuf = LodNative.buffer(ctx, this.arenaWords * 4);
 		this.arenaAddr = LodNative.contents(this.arenaBuf);
 		this.free.put(0L, this.arenaWords);
@@ -346,6 +350,7 @@ final class LodMesh implements LodClip.Listener {
 	/** Once a frame before drawing: finished meshes go into the arena, freed ranges whose frames are done return. */
 	void integrate(long frame) {
 		this.clip.flushStaged();
+		this.advanceGrowth(frame);
 		while (!this.releaseLater.isEmpty() && frame - this.releaseLater.peek()[0] >= RING) {
 			long[] r = this.releaseLater.poll();
 			this.release(r[1], r[2]);
@@ -393,9 +398,13 @@ final class LodMesh implements LodClip.Listener {
 		if (snap != null && this.publishes >= PUBLISH_BUDGET) {
 			this.results.offer(result); return false;
 		}
+		boolean reuse = this.sameMesh(r);
+		if (!reuse && !this.canFit(r[3])) {
+			this.startGrowth(); this.results.offer(result); return false;
+		}
 		try {
-			if (LodClip.PAIRS) this.installPair(frame, r, snap);
-			else this.install(frame, r);
+			if (LodClip.PAIRS) this.installPair(frame, r, snap, reuse);
+			else this.install(frame, r, false, reuse);
 		} finally { result.close(); }
 		return true;
 	}
@@ -405,7 +414,7 @@ final class LodMesh implements LodClip.Listener {
 	 * neighbors' border walls are meshed again against them); one meshed from the clipmap installs only if the words it
 	 * read are still the live ones.
 	 */
-	private void installPair(long frame, long[] r, LodClip.Snapshot snap) {
+	private void installPair(long frame, long[] r, LodClip.Snapshot snap, boolean reuse) {
 		long k = r[0];
 		int level = LodTile.levelOf(k), tx = LodTile.txOf(k), tz = LodTile.tzOf(k);
 		if (!this.clip.resident(level, tx, tz)) return;
@@ -418,7 +427,7 @@ final class LodMesh implements LodClip.Listener {
 			this.publishes++;
 			this.published.incrementAndGet();
 			r[5] = this.clip.writing[level].get(slot);
-			this.install(frame, r, true);
+			this.install(frame, r, true, reuse);
 			int[][] d = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
 			for (int[] n : d) {
 				if (!this.clip.resident(level, tx + n[0], tz + n[1])) continue;
@@ -428,14 +437,11 @@ final class LodMesh implements LodClip.Listener {
 			return;
 		}
 		if (r[5] != this.clip.writing[level].get(slot)) return;
-		this.install(frame, r, true);
+		this.install(frame, r, true, reuse);
 	}
 
-	private void install(long frame, long[] r) {
-		this.install(frame, r, false);
-	}
 
-	private void install(long frame, long[] r, boolean checked) {
+	private void install(long frame, long[] r, boolean checked, boolean reuse) {
 		long k = r[0];
 		int level = LodTile.levelOf(k), tx = LodTile.txOf(k), tz = LodTile.tzOf(k);
 		if (!this.clip.resident(level, tx, tz)) return;
@@ -443,20 +449,20 @@ final class LodMesh implements LodClip.Listener {
 		// an older job finishing after a newer one keeps the newer mesh (PAIRS: the word versions decide, checked by the caller)
 		if (!checked && this.key[level][slot] == k && this.seq[level][slot] > r[1]) return;
 		long words = r[3];
-		if(this.off[level][slot]>=0 && this.key[level][slot]==k && this.len[level][slot]==words
-			&& MemoryUtil.memByteBuffer(this.arenaAddr+this.off[level][slot]*4,(int)(words*4))
-				.mismatch(MemoryUtil.memByteBuffer(r[2],(int)(words*4)))<0) {
+		if (reuse) {
 			// Lighting/color updates publish new words, but can keep the existing geometry and arena allocation.
 			this.seq[level][slot]=r[1];this.builtNeighbors[level][slot]=(int)r[4];this.builtVer[level][slot]=r[5];
 			this.reusedMeshes++;
 			return;
 		}
-		long at = this.allocate(frame, words);
+		long at = this.allocate(words);
 		if (at < 0) {
 			System.out.println("mcopt-lod: mesh arena full (" + (this.arenaWords >> 18) + " MB); tile L" + level + " " + tx + "," + tz + " not drawn");
 			return;
 		}
 		MemoryUtil.memCopy(r[2], this.arenaAddr + at * 4, words * 4);
+		LodArenaGrowth.Prepared target = this.growth == null ? null : this.growth.ready();
+		if (target != null) MemoryUtil.memCopy(r[2], target.address() + at * 4, words * 4);
 		boolean fresh = this.off[level][slot] < 0 || this.key[level][slot] != k;
 		// the position-keyed lists: the blocks whose quads or occluders differ from the mesh this one replaces (a tile new to
 		// the slot: all of them)
@@ -556,21 +562,29 @@ final class LodMesh implements LodClip.Listener {
 			&& this.builtVer[level][slot] != (LodClip.PAIRS ? this.clip.writing[level].get(slot) : this.clip.slotVer[level][slot]);
 	}
 
-	/** First fit in the free ranges (aligned to 16 words); the arena doubles when nothing fits. -1: at its maximum. */
-	private long allocate(long frame, long words) {
-		words = (words + 15) & ~15L;
-		while (true) {
-			for (Map.Entry<Long, Long> f : this.free.entrySet()) {
-				if (f.getValue() < words) continue;
-				long at = f.getKey(), size = f.getValue();
-				this.free.remove(at);
-				if (size > words) this.free.put(at + words, size - words);
-				this.usedWords += words;
-				return at;
-			}
-			if (this.arenaWords * 2 > MAX_ARENA_WORDS) return -1;
-			this.grow(frame);
+	private boolean sameMesh(long[] r) {
+		long k=r[0];int level=LodTile.levelOf(k),slot=this.clip.slot(LodTile.txOf(k),LodTile.tzOf(k));
+		return this.off[level][slot]>=0 && this.key[level][slot]==k && this.len[level][slot]==r[3]
+			&& MemoryUtil.memByteBuffer(this.arenaAddr+this.off[level][slot]*4,(int)(r[3]*4))
+				.mismatch(MemoryUtil.memByteBuffer(r[2],(int)(r[3]*4)))<0;
+	}
+
+	private boolean canFit(long words) {
+		words=(words+15)&~15L;
+		for(long size:this.free.values())if(size>=words)return true;
+		return false;
+	}
+
+	/** First fit never allocates a Metal buffer or copies an old arena on the render thread. */
+	private long allocate(long words) {
+		words=(words+15)&~15L;
+		for(Map.Entry<Long,Long> f:this.free.entrySet()) {
+			if(f.getValue()<words)continue;
+			long at=f.getKey(),size=f.getValue();this.free.remove(at);
+			if(size>words)this.free.put(at+words,size-words);
+			this.usedWords+=words;return at;
 		}
+		return -1;
 	}
 
 	private void release(long at, long words) {
@@ -591,20 +605,46 @@ final class LodMesh implements LodClip.Listener {
 		this.free.put(at, words);
 	}
 
-	private void grow(long frame) {
-		long words = this.arenaWords * 2;
-		long buf = LodNative.buffer(this.ctx, words * 4);
-		long addr = LodNative.contents(buf);
-		MemoryUtil.memCopy(this.arenaAddr, addr, this.arenaWords * 4);
-		this.buffersLater.add(new long[] {frame, this.arenaBuf});
-		// the new half is free
-		this.release(this.arenaWords, this.arenaWords);
-		this.usedWords += this.arenaWords;
-		this.arenaBuf = buf;
-		this.arenaAddr = addr;
-		this.arenaWords = words;
-		System.out.println("mcopt-lod: mesh arena grown to " + (words >> 18) + " MB");
+	private void startGrowth() {
+		if(this.growth!=null || System.nanoTime()<this.growthRetryAt || this.arenaWords*2>MAX_ARENA_WORDS)return;
+		this.growth=new LodArenaGrowth(this.ctx,this.arenaWords,this.arenaWords*2);
 	}
+
+	/** Copy only live spans, with a byte/time budget. Installs during migration write both buffers. */
+	private void advanceGrowth(long frame) {
+		LodArenaGrowth g=this.growth;
+		if(g==null)return;
+		if(g.failure()!=null) {
+			this.growthRetryAt=System.nanoTime()+1_000_000_000L;g.close();this.growth=null;
+			mcopt.metal.DiagnosticLog.println("mcopt-lod: arena growth deferred after allocation failure: "+g.failure());return;
+		}
+		LodArenaGrowth.Prepared target=g.ready();if(target==null)return;
+		long begin=System.nanoTime(),bytes=0;
+		var event=LodArenaGrowth.span("copy",this.arenaWords,g.words);event.begin();
+		int slots=this.tps*this.tps,total=slots*this.clip.levels;
+		while(g.cursor<total && bytes<COPY_BYTES && System.nanoTime()-begin<COPY_NANOS) {
+			int level=g.cursor/slots,slot=g.cursor%slots;
+			if(this.off[level][slot]<0) {g.cursor++;g.progress=0;g.slotSequence=-1;continue;}
+			if(g.slotSequence!=this.seq[level][slot]) {g.progress=0;g.slotSequence=this.seq[level][slot];}
+			long size=this.len[level][slot]*4;
+			long copy=Math.min(size-g.progress,COPY_BYTES-bytes);
+			long at=this.off[level][slot]*4+g.progress;
+			MemoryUtil.memCopy(this.arenaAddr+at,target.address()+at,copy);
+			g.progress+=copy;bytes+=copy;g.copied+=copy;
+			if(g.progress==size) {g.cursor++;g.progress=0;g.slotSequence=-1;}
+		}
+		event.copiedBytes=bytes;event.success=true;event.end();event.commit();
+		if(g.cursor<total)return;
+		var publish=LodArenaGrowth.span("publish",this.arenaWords,g.words);publish.begin();
+		this.buffersLater.add(new long[]{frame,this.arenaBuf});
+		this.release(this.arenaWords,g.words-this.arenaWords);this.usedWords+=g.words-this.arenaWords;
+		this.arenaBuf=target.buffer();this.arenaAddr=target.address();this.arenaWords=g.words;
+		g.adopt();this.growth=null;
+		publish.copiedBytes=g.copied;publish.success=true;publish.end();publish.commit();
+		mcopt.metal.DiagnosticLog.println("mcopt-lod: mesh arena grown to "+(this.arenaWords>>18)+" MB, copied "+g.copied+" live bytes");
+	}
+
+	boolean growing() { return this.growth!=null; }
 
 	long arena() {
 		return this.arenaBuf;
@@ -686,6 +726,7 @@ final class LodMesh implements LodClip.Listener {
 		if (this.closed) return;
 		this.closed = true;
 		this.results.close();
+		if (this.growth != null) { this.growth.close(); this.growth = null; }
 		for (Thread t : this.workers) t.interrupt();
 		this.clip.listener = null;
 		// A dimension switch must not release clipmap buffers while a native mesh job still reads them.

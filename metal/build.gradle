@@ -375,3 +375,13 @@ tasks.register('checkLodMeshResults', JavaExec) {
 			'-Dmcopt.lod.publishBudget=1', '-Dmcopt.lod.meshResultCount=2'
 	}
 }
+
+['checkLodArenaGrowth': 'pair', 'checkLodArenaGrowthGpu': 'gpu'].each { taskName, mode ->
+	tasks.register(taskName, JavaExec) {
+		dependsOn 'metalChecksClasses'
+		classpath = sourceSets.metalChecks.runtimeClasspath
+		mainClass = 'mcopt.metal.lod.LodArenaGrowthChecks'
+		jvmArgs '--enable-native-access=ALL-UNNAMED', '-Xmx256M', '-Dmcopt.lod.publish=' + mode,
+			'-Dmcopt.lod.meshArenaInitialKiB=16', '-Dmcopt.lod.meshCopyBytes=1024'
+	}
+}
