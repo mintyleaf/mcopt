@@ -7,6 +7,7 @@ import com.mojang.renderpearl.backend.api.GpuSurfaceBackend;
 import java.util.Collection;
 import java.util.List;
 import org.lwjgl.sdl.SDLMetal;
+import org.lwjgl.sdl.SDLVideo;
 
 /**
  * A CAMetalLayer on the SDL window. The drawable is fetched at blit time rather than frame start: holding it for
@@ -36,17 +37,39 @@ final class MetalSurface implements GpuSurfaceBackend {
 	private final MetalEncoder encoder;
 	private final long view;
 	private final long layer;
+	private final long window;
+	private static final boolean BOUNDED_DRAWABLE = Boolean.parseBoolean(System.getProperty("mcopt.metal.boundedDrawable", "true"));
+	private final long drawableAcquire;
+	private boolean vsync;
+	private long generation;
+	private int width, height;
+	private long drawableWaitNanos = 22_000_000L;
 
 	MetalSurface(long ctx, MetalEncoder encoder, long window) {
 		this.ctx = ctx;
 		this.encoder = encoder;
+		this.window = window;
 		this.view = SDLMetal.SDL_Metal_CreateView(window);
 		this.layer = SDLMetal.SDL_Metal_GetLayer(this.view);
+		this.drawableAcquire = BOUNDED_DRAWABLE && !MetalEncoder.PRESENT_ACQUIRE ? Native.drawableAcquireNew(this.layer) : 0;
+		var mode = SDLVideo.SDL_GetCurrentDisplayMode(SDLVideo.SDL_GetDisplayForWindow(window));
+		if (mode != null && mode.refresh_rate() > 0)
+			this.drawableWaitNanos = drawableWaitNanos(mode.refresh_rate());
+	}
+
+	static long drawableWaitNanos(float refreshRate) {
+		return (long) Math.clamp(1.25e9 / (refreshRate > 0 ? refreshRate : 60) + 1_000_000, 2_000_000, 60_000_000);
 	}
 
 	@Override
 	public void configure(GpuSurface.Configuration config) {
+		this.generation++;
+		this.width = config.width(); this.height = config.height();
+		var mode = SDLVideo.SDL_GetCurrentDisplayMode(SDLVideo.SDL_GetDisplayForWindow(this.window));
+		this.drawableWaitNanos = drawableWaitNanos(mode == null ? 60 : mode.refresh_rate());
 		boolean vsync = config.presentMode() == GpuSurface.PresentMode.FIFO;
+		this.vsync = vsync;
+		if (this.drawableAcquire != 0) Native.drawableAcquireInvalidate(this.drawableAcquire, config.width(), config.height());
 		this.paced = !vsync && PACE;
 		if (PACE_ADAPT) Native.paceAdapt(this.paced ? 1 : 0);
 		Native.layerConfigure(this.ctx, this.layer, config.width(), config.height(), (vsync || PACE_SYNC && this.paced ? 1 : 0) | DRAWABLES << 8);
@@ -76,17 +99,33 @@ final class MetalSurface implements GpuSurfaceBackend {
 			this.encoder.presentAcquire(this.layer, textureView); // no nextDrawable here: the present side acquires it
 			return;
 		}
-		MetalEvents.Operation event = MetalEvents.begin("nextDrawable", -1, 0);
+		MetalEvents.Operation event = this.encoder.drawableEvent();
+		if (event != null) {
+			event.surfaceLayer = this.layer; event.surfaceGeneration = this.generation;
+			event.surfaceWidth = this.width; event.surfaceHeight = this.height;
+		}
 		long drawable;
 		try {
-			drawable = Native.layerNext(this.layer);
+			drawable = this.vsync && this.drawableAcquire != 0
+				? MetalEvents.nextDrawableBounded(this.drawableAcquire, this.drawableWaitNanos, event)
+				: MetalEvents.nextDrawable(this.layer, event);
 		} finally {
 			MetalEvents.end(event);
 		}
 		if (WaitStats.ON) WaitStats.wait(WaitStats.DRAWABLE, System.nanoTime() - t1, 0);
 		if (drawable == 0) return; // no drawable (window hidden): skip the frame's present
-		this.encoder.presentTexture(drawable, textureView);
-		this.encoder.afterGpuFinishes(() -> Native.release(drawable));
+		MetalEvents.Drawable lifetime = null;
+		boolean scheduled = false;
+		try {
+			lifetime = this.encoder.drawableLifetime(drawable, this.layer, this.generation, this.width, this.height, this.vsync);
+			scheduled = this.encoder.presentTexture(drawable, textureView);
+		} finally {
+			// Presentation owns what it needs now (queued mode retains until submission). Java retirement can be
+			// several submits later; release our ownership here, including when presentTexture throws.
+			boolean released = false;
+			try { Native.release(drawable); released = true; }
+			finally { MetalEvents.drawableEnd(lifetime, scheduled, released); }
+		}
 	}
 
 	@Override
@@ -101,6 +140,10 @@ final class MetalSurface implements GpuSurfaceBackend {
 
 	@Override
 	public void close() {
+		if (this.drawableAcquire != 0) {
+			Native.drawableAcquireClose(this.drawableAcquire);
+			Native.release(this.drawableAcquire);
+		}
 		SDLMetal.SDL_Metal_DestroyView(this.view);
 	}
 }

@@ -41,6 +41,10 @@ final class MetalEncoder implements CommandEncoderBackend {
 	private static final long TRACE_SUBMIT = Long.getLong("mcopt.metal.trace", -1);
 	/** -Dmcopt.own.int.encLog (measurement only, with frameLog): GPU timestamps on every submit, each encoder logged (FrameLog's enclog.csv). */
 	private static final boolean ENC_LOG = Boolean.getBoolean("mcopt.own.int.encLog");
+	/** Diagnostic only: stage samples every fourth submit, active only during an enabled JFR recording. */
+	private static final boolean PASS_JFR = Boolean.getBoolean("mcopt.metal.passJfr");
+	private boolean profileActive;
+	private boolean profileUnavailable;
 	/** -Dmcopt.metal.passTest=N,MODE (measurement only, with encLog): N empty passes at the head of every 20th frame (mcmetal.m mc_pass_test). */
 	private static final int PASS_TEST_N, PASS_TEST_MODE;
 	static {
@@ -117,7 +121,17 @@ final class MetalEncoder implements CommandEncoderBackend {
 	private long waitNanos, statStart, statTerrainFrames;
 	private int statFrames, statPresents;
 
-	private record Frame(long index, long cmd, List<Runnable> after) {
+	private record Frame(long index, long cmd, List<Runnable> after, long preCmd, double committedAt) {
+	}
+
+	MetalEvents.Operation drawableEvent() {
+		MetalEvents.Operation event = MetalEvents.begin("nextDrawable", this.submitIndex, 0);
+		if (event != null) event.pendingFrames = this.inFlight.size();
+		return event;
+	}
+
+	MetalEvents.Drawable drawableLifetime(long drawable, long layer, long generation, int width, int height, boolean vsync) {
+		return MetalEvents.drawableBegin(this.submitIndex, drawable, layer, generation, width, height, vsync);
 	}
 
 	MetalEncoder(long ctx) {
@@ -140,6 +154,34 @@ final class MetalEncoder implements CommandEncoderBackend {
 	 */
 	private static final boolean FRAME_DEPTH_DISCARD = Boolean.getBoolean("mcopt.metal.frameDepthDiscard");
 	private boolean presentedThisSubmit;
+	/** Diagnostic callbacks use native atomic slots; bounded pending IDs do not retain drawable objects. */
+	private final long[] watchedPresents = new long[128];
+	private int watchHead, watchCount;
+
+	private void drainPresentations() {
+		if (!MetalEvents.presentationsEnabled()) { this.watchHead = this.watchCount = 0; return; }
+		while (this.watchCount > 0) {
+			long index = this.watchedPresents[this.watchHead];
+			long callback = Native.cadenceHandler((int) index);
+			if (callback == 0) break;
+			MetalEvents.presentation(index, Native.cadencePresented((int) index), callback, false);
+			this.watchHead = (this.watchHead + 1) % this.watchedPresents.length;
+			this.watchCount--;
+		}
+	}
+
+	private void watchPresent(long drawable) {
+		if (!MetalEvents.presentationsEnabled()) return;
+		this.drainPresentations();
+		if (this.submitIndex >= 1 << 20) { MetalEvents.presentation(this.submitIndex, 0, 0, true); return; }
+		if (this.watchCount == this.watchedPresents.length) {
+			MetalEvents.presentation(this.watchedPresents[this.watchHead], 0, 0, true);
+			this.watchHead = (this.watchHead + 1) % this.watchedPresents.length;
+			this.watchCount--;
+		}
+		this.watchedPresents[(this.watchHead + this.watchCount++) % this.watchedPresents.length] = this.submitIndex;
+		if (drawable != 0 && !GPU_TIMES) Native.cadencePresent(drawable, (int) this.submitIndex);
+	}
 
 	void trace(String op, Object... args) {
 		if (!this.tracing()) return;
@@ -171,14 +213,15 @@ final class MetalEncoder implements CommandEncoderBackend {
 	@Override
 	public void submit() {
 		if (this.currentPass != null) throw new IllegalStateException("Cannot submit inside a render pass");
+		this.drainPresentations();
 		this.trace("submit");
 		this.transientMemory.endSubmit();
 		long samples = 0;
 		int sampleCount = 0;
-		if (profiled(this.submitIndex)) {
+		if (this.profileActive) {
 			try (MemoryStack stack = MemoryStack.stackPush()) {
 				long count = stack.ncalloc(4, 1, 4);
-				if (ENC_LOG) {
+				if (ENC_LOG || PASS_JFR) {
 					long names = stack.ncalloc(1, 128 * 64, 1);
 					Native.profileLabels(this.enc, names, 64, 128);
 					for (int g = 0; g < 128; g++) {
@@ -203,10 +246,16 @@ final class MetalEncoder implements CommandEncoderBackend {
 		}
 		this.presentedThisSubmit = false;
 		MetalEvents.Operation commitEvent = MetalEvents.begin("commit", this.submitIndex, 0);
+		boolean timeline = MetalEvents.commandBuffersEnabled();
+		long preCmd = timeline ? Native.encPreRetain(this.enc) : 0;
+		double committedAt = timeline ? Native.hostSeconds() : 0;
 		long cmd;
 		try {
 			if (GPU_TIMES) GpuTimes.submit(this.submitIndex, this.encoderIndex);
 			cmd = Native.encCommit(this.enc);
+		} catch (RuntimeException | Error failure) {
+			if (preCmd != 0) Native.release(preCmd);
+			throw failure;
 		} finally {
 			MetalEvents.end(commitEvent);
 		}
@@ -218,22 +267,31 @@ final class MetalEncoder implements CommandEncoderBackend {
 				long submit = this.submitIndex;
 				String[] labels = this.encLabels;
 				this.afterThisFrame.add(() -> FrameLog.encoders(this.ctx, submit, s, n, labels));
+			} else if (PASS_JFR) {
+				long submit = this.submitIndex;
+				String[] labels = this.encLabels;
+				this.afterThisFrame.add(() -> this.recordGpuPasses(submit, s, n, labels));
 			} else {
 				this.afterThisFrame.add(() -> this.accumulateProfile(cmd, s, n));
 			}
 		}
-		this.inFlight.add(new Frame(this.submitIndex++, cmd, this.afterThisFrame));
+		this.inFlight.add(new Frame(this.submitIndex++, cmd, this.afterThisFrame, preCmd, committedAt));
 		if (TRACE_SUBMIT >= 0) Native.rpLog(this.submitIndex == TRACE_SUBMIT);  // (measurement: the traced submit's render encoders, mcmetal.m rpLog)
 		if (mcopt.metal.cpu.Cpu.FENCE_STATS) mcopt.metal.cpu.Cpu.fenceTick(this.submitIndex); // opt-in
 		this.afterThisFrame = new ArrayList<>();
 		this.encoderIndex = 0;
 		if (PASS_TEST_N > 0 && profiled(this.submitIndex) && this.submitIndex % 20 == 0) this.passTestPending = true;
-		if (ENC_LOG) {
+		if (ENC_LOG || PASS_JFR && this.profileActive) {
 			this.encLabels = new String[128];
 			this.encStats = new long[128][4];
 			this.encGroupOpen = -1;
 		}
-		if (profiled(this.submitIndex) && !Native.profileBegin(this.enc, 512)) System.out.println("mcopt-metal trace: no GPU timestamps on this device");
+		boolean requestProfile = profiled(this.submitIndex);
+		this.profileActive = !this.profileUnavailable && requestProfile && Native.profileBegin(this.enc, 512);
+		if (!this.profileUnavailable && requestProfile && !this.profileActive) {
+			this.profileUnavailable = true;
+			System.out.println("mcopt-metal trace: no GPU timestamps on this device");
+		}
 		if (this.passTestPending) {
 			Native.passTest(this.enc, PASS_TEST_N, PASS_TEST_MODE);
 			this.passTestPending = false;
@@ -250,12 +308,12 @@ final class MetalEncoder implements CommandEncoderBackend {
 		if (this.statStart == 0) this.statStart = now;
 		if (now - this.statStart < 1_000_000_000L) return;
 		double frameMs = (now - this.statStart) / 1e6 / this.statFrames;
-		System.out.printf("mcopt-metal stats: %d fps, %.3f ms/frame, %.3f ms of it waiting on the GPU, %d presents%s%n", this.statFrames,
+		DiagnosticLog.printf("mcopt-metal stats: %d fps, %.3f ms/frame, %.3f ms of it waiting on the GPU, %d presents%s%n", this.statFrames,
 			frameMs, this.waitNanos / 1e6 / this.statFrames, this.statPresents, (PRESENT_QUEUE ? " (queued" + (PRESENT_ACQUIRE ? ", acquired on the present side" : "") + "; skipped so far " + Native.presentSkipped() + ", dropped " + Native.presentDropped() + ")" : "")
 			+ (MetalSurface.PACE_ADAPT ? String.format(" (pace margin +%.2f ms learned)", Native.paceExtraMs()) : ""));
 		if (MetalTerrain.OCC) {
 			long[] t = this.terrain.lastCompletedCounts();
-			System.out.printf("mcopt-metal stats: terrain drew %d of %d quads (%.1f%%), %d before the split, %d chunks (%.1f quads each), %d frames drew terrain%n", t[0], t[1],
+			DiagnosticLog.printf("mcopt-metal stats: terrain drew %d of %d quads (%.1f%%), %d before the split, %d chunks (%.1f quads each), %d frames drew terrain%n", t[0], t[1],
 				100.0 * t[0] / Math.max(1, t[1]), t[2], t[3], (double) t[1] / Math.max(1, t[3]), this.terrain.terrainFrames - this.statTerrainFrames);
 			this.statTerrainFrames = this.terrain.terrainFrames;
 		}
@@ -267,7 +325,20 @@ final class MetalEncoder implements CommandEncoderBackend {
 
 	/** GPU timestamps cover the traced submit and the PROFILE_FRAMES - 1 after it; one frame alone is too noisy to compare shader variants. */
 	private static boolean profiled(long submit) {
-		return ENC_LOG || TRACE_SUBMIT >= 0 && submit >= TRACE_SUBMIT && submit < TRACE_SUBMIT + PROFILE_FRAMES;
+		return ENC_LOG || TRACE_SUBMIT >= 0 && submit >= TRACE_SUBMIT && submit < TRACE_SUBMIT + PROFILE_FRAMES
+			|| PASS_JFR && submit % 4 == 0 && MetalEvents.gpuPassEnabled();
+	}
+
+	private void recordGpuPasses(long submit, long samples, int count, String[] labels) {
+		try (MemoryStack stack = MemoryStack.stackPush()) {
+			long out = stack.nmalloc(8, Math.max(1, count) * 8);
+			Native.profileRead(this.ctx, samples, count, out); // resolves and releases even if the recording has stopped
+			for (int g = 0; g < count / 4; g++) {
+				long p = out + g * 32L;
+				MetalEvents.gpuPass(submit, g, g < labels.length && labels[g] != null ? labels[g] : "unknown",
+					MemoryUtil.memGetDouble(p), MemoryUtil.memGetDouble(p + 8), MemoryUtil.memGetDouble(p + 16), MemoryUtil.memGetDouble(p + 24));
+			}
+		}
 	}
 
 	private void accumulateProfile(long cmd, long samples, int count) {
@@ -311,8 +382,24 @@ final class MetalEncoder implements CommandEncoderBackend {
 			MetalEvents.end(event);
 		}
 		this.waitNanos += System.nanoTime() - waitStart;
-		frame.after.forEach(Runnable::run);
-		Native.release(frame.cmd);
+		MetalEvents.CommandBuffer mainEvent = null, preEvent = null;
+		try {
+			try {
+				mainEvent = MetalEvents.commandBufferBegin(frame.index, "main", frame.cmd, frame.committedAt);
+				if (frame.preCmd != 0) preEvent = MetalEvents.commandBufferBegin(frame.index, "pre", frame.preCmd, frame.committedAt);
+			} finally {
+				if (frame.preCmd != 0) {
+					boolean released = false;
+					try { Native.release(frame.preCmd); released = true; }
+					finally { MetalEvents.commandBufferEnd(preEvent, released); }
+				}
+			}
+			frame.after.forEach(Runnable::run);
+		} finally {
+			boolean released = false;
+			try { Native.release(frame.cmd); released = true; }
+			finally { MetalEvents.commandBufferEnd(mainEvent, released); }
+		}
 		this.completedIndex = frame.index;
 	}
 
@@ -420,7 +507,7 @@ final class MetalEncoder implements CommandEncoderBackend {
 			if (keptDelegate != null) keptDelegate.begin(this.enc, depthHandle != 0);
 			MetalHooks.Labeler labeler = MetalHooks.labeler;
 			if (labeler != null && continued == 0) labeler.label(this.enc, "game " + descriptor.label().get());
-			if (ENC_LOG && continued == 0) {
+			if ((ENC_LOG || PASS_JFR && this.profileActive) && continued == 0) {
 				int c = Native.profileCount(this.enc);
 				if (c >= 4 && c / 4 - 1 < this.encLabels.length) this.encLabels[c / 4 - 1] = descriptor.label().get();
 				this.encGroupOpen = c >= 4 ? c / 4 - 1 : -1;
@@ -757,15 +844,17 @@ final class MetalEncoder implements CommandEncoderBackend {
 			this.trace("present", view);
 			this.presentedThisSubmit = true;
 			this.flushClear(view.texture());
-			if (Native.presentQueuedAcquire(this.enc, layer, ((MetalTexture.View) view).handle, GPU_TIMES && this.submitIndex < Integer.MAX_VALUE ? this.submitIndex : -1) == 0) return;
+			long cadence = (GPU_TIMES || MetalEvents.presentationsEnabled()) && this.submitIndex < (1 << 20) ? this.submitIndex : -1;
+			if (Native.presentQueuedAcquire(this.enc, layer, ((MetalTexture.View) view).handle, cadence) == 0) return;
 			if (GPU_TIMES) GpuTimes.presentQueued(this.submitIndex);
+			this.watchPresent(0); // The native acquire worker registers the drawable's callback.
 			this.statPresents++;
 		} finally {
 			MetalEvents.end(event);
 		}
 	}
 
-	void presentTexture(long drawable, GpuTextureView view) {
+	boolean presentTexture(long drawable, GpuTextureView view) {
 		MetalEvents.Operation event = MetalEvents.begin("present", this.submitIndex, 0);
 		try {
 			this.trace("present", view);
@@ -773,13 +862,16 @@ final class MetalEncoder implements CommandEncoderBackend {
 			this.flushClear(view.texture());
 			if (PRESENT_QUEUE) {
 				// the frame's command buffer only fills a staging slot; the present goes out on a second queue after the commit
-				if (Native.presentQueued(this.enc, drawable, ((MetalTexture.View) view).handle) == 0) return; // slot still being read: skip
+				if (Native.presentQueued(this.enc, drawable, ((MetalTexture.View) view).handle) == 0) return false; // slot still being read: skip
 				if (GPU_TIMES) GpuTimes.present(this.submitIndex, drawable);
+				this.watchPresent(drawable);
 			} else {
 				if (GPU_TIMES) GpuTimes.present(this.submitIndex, drawable);
+				this.watchPresent(drawable);
 				Native.present(this.enc, drawable, ((MetalTexture.View) view).handle);
 			}
 			this.statPresents++;
+			return true;
 		} finally {
 			MetalEvents.end(event);
 		}

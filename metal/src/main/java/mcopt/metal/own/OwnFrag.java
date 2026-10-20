@@ -1,5 +1,7 @@
 package mcopt.metal.own;
 
+import mcopt.metal.DiagnosticLog;
+
 import com.mojang.renderpearl.api.buffers.GpuBufferSlice;
 import com.mojang.renderpearl.api.textures.GpuSampler;
 import com.mojang.renderpearl.api.textures.GpuTextureView;
@@ -175,7 +177,7 @@ final class OwnFrag {
 		long now = System.nanoTime();
 		if (now < this.a1sLogAt) return;
 		this.a1sLogAt = now + 10_000_000_000L;
-		System.out.printf("mcopt-own-frag tl.a1Split: frames split %d; unsplit: kernel unavailable %d, not written %d, pass unsupported %d%n", this.a1sSplit,
+		DiagnosticLog.printf("mcopt-own-frag tl.a1Split: frames split %d; unsplit: kernel unavailable %d, not written %d, pass unsupported %d%n", this.a1sSplit,
 			this.a1sNoKernel, this.a1sNotWritten, this.a1sPassRefused);
 	}
 	/**
@@ -280,7 +282,7 @@ final class OwnFrag {
 		OwnNative.vGroupStats(this.own, this.vgTel);
 		long[] v = new long[6];
 		for (int i = 0; i < 6; i++) v[i] = MemoryUtil.memGetLong(this.vgTel + 8L * i);
-		System.out.printf("mcopt-own-frag vGroup: culls grouped %d, requested but ungrouped %d; class draws grouped: phase A %d, phase B %d, split halves %d; drawn ungrouped %d%n",
+		DiagnosticLog.printf("mcopt-own-frag vGroup: culls grouped %d, requested but ungrouped %d; class draws grouped: phase A %d, phase B %d, split halves %d; drawn ungrouped %d%n",
 			v[0], v[1], v[2], v[3], v[4], v[5]);
 	}
 	private static int vGroupShift() {
@@ -861,7 +863,7 @@ final class OwnFrag {
 		this.tieLogAt = now;
 		long[] t = TIE_FRAMES;
 		long all = t[0] + t[1] + t[2] + t[3] + t[4] + t[5];
-		System.out.printf("mcopt-own-frag tieClose: %s; uocc frames %d: closure %d, without uocc %d (grouping off, inFlight > 2: %d, cross-section candidate %d, unknown section %d, "
+		DiagnosticLog.printf("mcopt-own-frag tieClose: %s; uocc frames %d: closure %d, without uocc %d (grouping off, inFlight > 2: %d, cross-section candidate %d, unknown section %d, "
 			+ "float scope %d, lists %d); promoted a frame %.2f units, %.1f quads (%d frames counted); entries lost to capacity A %d T %d B %d (run %d / %d / %d)%s; %s%n",
 			tieCloseOn() ? "on" : "off (probe)", all, t[0], all - t[0], t[1], t[2], t[3], t[4], t[5], this.tieCounted == 0 ? 0.0 : (double) this.tiePromoted / this.tieCounted,
 			this.tieCounted == 0 ? 0.0 : (double) this.tiePromotedQuads / this.tieCounted, this.tieCounted, this.tieLost[0], this.tieLost[1], this.tieLost[2],
@@ -1168,7 +1170,7 @@ final class OwnFrag {
 		b.append(String.format("; draws drawn as class draws (no pipeline / no table) %d, table allocation failed %d, table %d KB a set (%d blocks a list)",
 			MemoryUtil.memGetInt(this.exactTel + 96), MemoryUtil.memGetInt(this.exactTel + 100), MemoryUtil.memGetInt(this.exactTel + 104) / 1024,
 			MemoryUtil.memGetInt(this.exactTel + 108)));
-		System.out.println(b);
+		DiagnosticLog.println(b);
 	}
 
 	/** The oracle's sample (ORACLE): its buffers (grown to the record capacity) and a new sample number for the marks. */
@@ -1333,38 +1335,38 @@ final class OwnFrag {
 		this.statFrames++;
 		long now = System.nanoTime();
 		if (now - this.statLast < 5_000_000_000L) return;
-		System.out.printf("mcopt-own-frag stats: %s, units a frame solid %.0f cutout %.0f, lean %.0f%n", c, (double) this.statSolid / this.statFrames,
+		DiagnosticLog.printf("mcopt-own-frag stats: %s, units a frame solid %.0f cutout %.0f, lean %.0f%n", c, (double) this.statSolid / this.statFrames,
 			(double) this.statCutout / this.statFrames, (double) this.statLean / this.statFrames);
 		StringBuilder b = new StringBuilder("mcopt-own-frag buckets (units/quads a frame, +X -X +Y -Y +Z -Z any):");
 		for (int i = 0; i < 7; i++) b.append(String.format(" %.0f/%.0f", (double) this.statBuckets[i * 2] / this.statFrames, (double) this.statBuckets[i * 2 + 1] / this.statFrames));
-		System.out.println(b);
+		DiagnosticLog.println(b);
 		{
 			// the culling funnel (quads a frame): sections passed in (solid + cutout, all facings), after the facing test, listed (after the unit
 			// box frustum test; = drawn on the plain frag path; uocc draws its phase A + B of these)
 			long listed = 0;
 			for (int i = 0; i < 7; i++) listed += this.statBuckets[i * 2 + 1];
-			System.out.printf("mcopt-own-frag funnel: quads a frame in the sections passed in %.0f, after the facing test %.0f, after the unit box test %.0f%n",
+			DiagnosticLog.printf("mcopt-own-frag funnel: quads a frame in the sections passed in %.0f, after the facing test %.0f, after the unit box test %.0f%n",
 				(double) this.statFunnelIn / this.statFrames, (double) this.statFunnelFacing / this.statFrames, (double) listed / this.statFrames);
 			this.statFunnelIn = this.statFunnelFacing = 0;
 		}
 		if (FACESTATS) {
 			double n = this.statFrames, quads = this.statFace[0] / n, back = (this.statFace[1] + this.statFace[2]) / n;
-			System.out.printf("mcopt-own-frag faces: quads listed a frame %.0f, back-facing %.0f (%.2f%%): in facing buckets %.0f, in the any bucket %.0f of its %.0f; degenerate %.0f%n",
+			DiagnosticLog.printf("mcopt-own-frag faces: quads listed a frame %.0f, back-facing %.0f (%.2f%%): in facing buckets %.0f, in the any bucket %.0f of its %.0f; degenerate %.0f%n",
 				quads, back, quads > 0 ? 100 * back / quads : 0, this.statFace[1] / n, this.statFace[2] / n, this.statFace[3] / n, this.statFace[4] / n);
 			java.util.Arrays.fill(this.statFace, 0);
 		}
 		if (c.uocc) {
 			long listed = 0;
 			for (int i = 0; i < 7; i++) listed += this.statBuckets[i * 2 + 1];
-			System.out.printf("mcopt-own-frag uocc: units a frame tested %.0f, phase A %.0f, phase B %.0f; quads drawn A %.0f + B %.0f of %.0f listed%n",
+			DiagnosticLog.printf("mcopt-own-frag uocc: units a frame tested %.0f, phase A %.0f, phase B %.0f; quads drawn A %.0f + B %.0f of %.0f listed%n",
 				(double) this.statTested / this.statFrames, (double) (this.statSolid + this.statCutout) / this.statFrames, (double) this.statB / this.statFrames,
 				(double) this.statQuadsA / this.statFrames, (double) this.statQuadsB / this.statFrames, (double) listed / this.statFrames);
 			if (OwnProbe.bool("frag.bRedraw", B_REDRAW) || this.statRedraw > 0) {
-				System.out.printf("mcopt-own-frag bRedraw: phase A cutout units redrawn in B %.1f a frame (%.0f quads), in %.1f%% of frames%n",
+				DiagnosticLog.printf("mcopt-own-frag bRedraw: phase A cutout units redrawn in B %.1f a frame (%.0f quads), in %.1f%% of frames%n",
 					(double) this.statRedraw / this.statFrames, (double) this.statRedrawQuads / this.statFrames, 100.0 * this.statRedrawFrames / this.statFrames);
 			}
 			this.statTested = this.statB = this.statQuadsA = this.statQuadsB = 0;
-			System.out.printf("mcopt-own-frag a1: %s, a frame: units %.0f, real quads %.0f, class draws' slots %.0f (%.3f a real quad), overflowed lists %.2f%n", this.a1Exact ? "table draws" : "class draws",
+			DiagnosticLog.printf("mcopt-own-frag a1: %s, a frame: units %.0f, real quads %.0f, class draws' slots %.0f (%.3f a real quad), overflowed lists %.2f%n", this.a1Exact ? "table draws" : "class draws",
 				this.statA1Units / (double) this.statFrames, this.statA1Quads / (double) this.statFrames, this.statA1Slots / (double) this.statFrames,
 				this.statA1Quads > 0 ? this.statA1Slots / (double) this.statA1Quads : 0, this.statA1Over / (double) this.statFrames);
 			this.statA1Over = 0;
@@ -1372,7 +1374,7 @@ final class OwnFrag {
 			this.statRedraw = this.statRedrawQuads = this.statRedrawFrames = 0;
 			double n = this.statFrames;
 			long[] q = this.statSlots;
-			System.out.printf("mcopt-own-frag slots at %d (quad slots a frame, rich/lean): near solid %.0f/%.0f, far solid %.0f/%.0f, near cutout %.0f/%.0f, far cutout %.0f/%.0f%n",
+			DiagnosticLog.printf("mcopt-own-frag slots at %d (quad slots a frame, rich/lean): near solid %.0f/%.0f, far solid %.0f/%.0f, near cutout %.0f/%.0f, far cutout %.0f/%.0f%n",
 				System.currentTimeMillis(), q[0] / n, q[1] / n, q[4] / n, q[5] / n, q[2] / n, q[3] / n, q[6] / n, q[7] / n);
 			java.util.Arrays.fill(this.statSlots, 0);
 			if ((Integer.getInteger("mcopt.own.frag.uoccDebug", 0) & 8) != 0) {
@@ -1384,11 +1386,11 @@ final class OwnFrag {
 					tested += MemoryUtil.memGetInt(a + lists(c) * 20L + 8) & 0xFFFFFFFFL;
 					vis += MemoryUtil.memGetInt(a + lists(c) * 20L + 12) & 0xFFFFFFFFL;
 				}
-				System.out.printf("mcopt-own-frag testFast verify: units tested %d; frag_uocc_test passes, testFast doesn't: %d (must be 0); testFast passes, frag_uocc_test doesn't: %d%n", tested, diff, vis);
+				DiagnosticLog.printf("mcopt-own-frag testFast verify: units tested %d; frag_uocc_test passes, testFast doesn't: %d (must be 0); testFast passes, frag_uocc_test doesn't: %d%n", tested, diff, vis);
 			}
 		}
 		if (c.occ) {
-			System.out.printf("mcopt-own-frag occ: quads a frame, phase A solid %.0f cutout %.0f, phase B solid %.0f cutout %.0f%n", (double) this.statOcc[0] / this.statFrames,
+			DiagnosticLog.printf("mcopt-own-frag occ: quads a frame, phase A solid %.0f cutout %.0f, phase B solid %.0f cutout %.0f%n", (double) this.statOcc[0] / this.statFrames,
 				(double) this.statOcc[1] / this.statFrames, (double) this.statOcc[2] / this.statFrames, (double) this.statOcc[3] / this.statFrames);
 			java.util.Arrays.fill(this.statOcc, 0);
 		}

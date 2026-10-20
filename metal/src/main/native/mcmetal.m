@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 
 #define FAN_PRIMITIVE 5
@@ -1001,7 +1002,20 @@ int mc_enc_empty(Enc *enc) { return enc->cmd == nil && enc->pre == nil; }
 double mc_cmd_gpu_us(id<MTLCommandBuffer> c) { return (c.GPUEndTime - c.GPUStartTime) * 1e6; }
 double mc_cmd_gpu_end(id<MTLCommandBuffer> c) { return c.GPUEndTime; }
 double mc_cmd_gpu_start(id<MTLCommandBuffer> c) { return c.GPUStartTime; }
+// Profiling only: retain pre independently of Java's main-buffer retirement, without changing scheduling or inserting waits.
+id<MTLCommandBuffer> mc_enc_pre_retain(Enc *enc) { return [enc->pre retain]; }
+void mc_cmd_timing(id<MTLCommandBuffer> c, double *out) {
+	MTLCommandBufferStatus status = c.status;
+	for (int i = 0; i < 4; i++) out[i] = 0;
+	if (status == MTLCommandBufferStatusCompleted) {
+		out[0] = c.kernelStartTime; out[1] = c.kernelEndTime;
+		out[2] = c.GPUStartTime; out[3] = c.GPUEndTime;
+	}
+	out[4] = CACurrentMediaTime(); out[5] = status;
+}
 double mc_host_seconds(void) { return CACurrentMediaTime(); }
+// Profiling identity only. The caller's existing ownership keeps the drawable alive; this does not retain it.
+uint64_t mc_drawable_id(id<MTLDrawable> drawable) { return drawable.drawableID; }
 // Opt-in cadence probe. Fixed storage; callbacks never enter Java. Callback time is NOT scanout time.
 #define CADENCE_CAPACITY 1048576
 static uint64_t cadenceHandler[CADENCE_CAPACITY], cadencePresented[CADENCE_CAPACITY];
@@ -1689,6 +1703,7 @@ void mc_layer_configure(Ctx *ctx, CAMetalLayer *layer, int width, int height, in
 	layer.device = ctx->device;
 	layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
 	layer.framebufferOnly = YES;
+	layer.allowsNextDrawableTimeout = YES;
 	layer.drawableSize = CGSizeMake(width, height);
 	// vsync: bit 0 = display sync; bits 8-15 = maximumDrawableCount (0 = the default, 3; -Dmcopt.metal.drawables)
 	layer.displaySyncEnabled = (vsync & 1) != 0;
@@ -1793,6 +1808,20 @@ id<CAMetalDrawable> mc_layer_next(CAMetalLayer *layer) {
 	@autoreleasepool {
 		return [[layer nextDrawable] retain];
 	}
+}
+
+// Opt-in profiling only. Native wall time excludes Java safepoints at the downcall boundary;
+// thread CPU distinguishes active driver work from time blocked or descheduled (not those two from each other).
+id<CAMetalDrawable> mc_layer_next_timed(CAMetalLayer *layer, double *out) {
+	struct timespec before, after;
+	int haveBefore = clock_gettime(CLOCK_THREAD_CPUTIME_ID, &before) == 0;
+	double start = CACurrentMediaTime();
+	id<CAMetalDrawable> drawable = mc_layer_next(layer);
+	double end = CACurrentMediaTime();
+	int haveAfter = clock_gettime(CLOCK_THREAD_CPUTIME_ID, &after) == 0;
+	out[0] = start; out[1] = end;
+	out[2] = haveBefore && haveAfter ? (after.tv_sec - before.tv_sec) * 1000.0 + (after.tv_nsec - before.tv_nsec) / 1e6 : -1;
+	return drawable;
 }
 
 // Draws src into the drawable (flipped back to top-down) and schedules the present on the current command buffer.

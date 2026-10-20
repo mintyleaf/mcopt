@@ -46,7 +46,10 @@ final class Native {
 	private static final MethodHandle ENC_EMPTY = fn("mc_enc_empty", true, JAVA_INT, JAVA_LONG);
 	private static final MethodHandle CMD_GPU_END = fn("mc_cmd_gpu_end", false, JAVA_DOUBLE, JAVA_LONG);
 	private static final MethodHandle CMD_GPU_START = fn("mc_cmd_gpu_start", false, JAVA_DOUBLE, JAVA_LONG);
+	private static final MethodHandle ENC_PRE_RETAIN = fn("mc_enc_pre_retain", false, JAVA_LONG, JAVA_LONG);
+	private static final MethodHandle CMD_TIMING = fn("mc_cmd_timing", false, null, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle HOST_SECONDS = fn("mc_host_seconds", false, JAVA_DOUBLE);
+	private static final MethodHandle DRAWABLE_ID = fn("mc_drawable_id", false, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle CADENCE_PRESENT = fn("mc_cadence_present", false, null, JAVA_LONG, JAVA_INT);
 	private static final MethodHandle CADENCE_HANDLER = fn("mc_cadence_handler", false, JAVA_LONG, JAVA_INT);
 	private static final MethodHandle CADENCE_PRESENTED = fn("mc_cadence_presented", false, JAVA_LONG, JAVA_INT);
@@ -106,6 +109,11 @@ final class Native {
 		JAVA_FLOAT, JAVA_FLOAT, JAVA_FLOAT, JAVA_FLOAT, JAVA_FLOAT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT);
 	private static final MethodHandle LAYER_CONFIGURE = fn("mc_layer_configure", false, null, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT);
 	private static final MethodHandle LAYER_NEXT = fn("mc_layer_next", false, JAVA_LONG, JAVA_LONG);
+	private static final MethodHandle LAYER_NEXT_TIMED = fn("mc_layer_next_timed", false, JAVA_LONG, JAVA_LONG, JAVA_LONG);
+	private static final MethodHandle DRAWABLE_ACQUIRE_NEW = fn("mc_drawable_acquire_new", false, JAVA_LONG, JAVA_LONG);
+	private static final MethodHandle DRAWABLE_ACQUIRE_INVALIDATE = fn("mc_drawable_acquire_invalidate", false, null, JAVA_LONG, JAVA_INT, JAVA_INT);
+	private static final MethodHandle DRAWABLE_ACQUIRE_CLOSE = fn("mc_drawable_acquire_close", false, null, JAVA_LONG);
+	private static final MethodHandle DRAWABLE_ACQUIRE_NEXT = fn("mc_drawable_acquire_next", false, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle PRESENT = fn("mc_present", false, null, JAVA_LONG, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle PRESENT_QUEUED = fn("mc_present_queued", false, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle PRESENT_SKIPPED = fn("mc_present_skipped", false, JAVA_LONG);
@@ -166,10 +174,13 @@ final class Native {
 	static boolean encEmpty(long enc) { try { return (int) ENC_EMPTY.invokeExact(enc) != 0; } catch (Throwable t) { throw rethrow(t); } }
 	static double cmdGpuEnd(long cmd) { try { return (double) CMD_GPU_END.invokeExact(cmd); } catch (Throwable t) { throw rethrow(t); } }
 	static double cmdGpuStart(long cmd) { try { return (double) CMD_GPU_START.invokeExact(cmd); } catch (Throwable t) { throw rethrow(t); } }
+	static long encPreRetain(long enc) { try { return (long) ENC_PRE_RETAIN.invokeExact(enc); } catch (Throwable t) { throw rethrow(t); } }
+	static void cmdTiming(long cmd, long out) { try { CMD_TIMING.invokeExact(cmd, out); } catch (Throwable t) { throw rethrow(t); } }
 	static double hostSeconds() { try { return (double) HOST_SECONDS.invokeExact(); } catch (Throwable t) { throw rethrow(t); } }
 	static void cadencePresent(long drawable, int slot) { try { CADENCE_PRESENT.invokeExact(drawable, slot); } catch (Throwable t) { throw rethrow(t); } }
 	static long cadenceHandler(int slot) { try { return (long) CADENCE_HANDLER.invokeExact(slot); } catch (Throwable t) { throw rethrow(t); } }
 	static long cadencePresented(int slot) { try { return (long) CADENCE_PRESENTED.invokeExact(slot); } catch (Throwable t) { throw rethrow(t); } }
+	static long drawableId(long drawable) { try { return (long) DRAWABLE_ID.invokeExact(drawable); } catch (Throwable t) { throw rethrow(t); } }
 	static double cmdGpuMicros(long cmd) { try { return (double) CMD_GPU_US.invokeExact(cmd); } catch (Throwable t) { throw rethrow(t); } }
 	static void diagEnable(double thresholdMs) { try { DIAG_ENABLE.invokeExact(thresholdMs); } catch (Throwable t) { throw rethrow(t); } }
 	static void gpuCountEnable(String path, int every, boolean groups) {
@@ -227,6 +238,11 @@ final class Native {
 	static void clearRect(long enc, long color, long depth, float r, float g, float b, float a, float depthValue, int x, int y, int w, int h, int mip) { if (FrameCapture.FULL && FrameCapture.active()) FrameCapture.clearRect(color, depth, r, g, b, a, depthValue, x, y, w, h, mip); try { CLEAR_RECT.invokeExact(enc, color, depth, r, g, b, a, depthValue, x, y, w, h, mip); } catch (Throwable t) { throw rethrow(t); } }
 	static void layerConfigure(long ctx, long layer, int w, int h, int vsync) { try { LAYER_CONFIGURE.invokeExact(ctx, layer, w, h, vsync); } catch (Throwable t) { throw rethrow(t); } }
 	static long layerNext(long layer) { try { return (long) LAYER_NEXT.invokeExact(layer); } catch (Throwable t) { throw rethrow(t); } }
+	static long layerNextTimed(long layer, long out) { try { return (long) LAYER_NEXT_TIMED.invokeExact(layer, out); } catch (Throwable t) { throw rethrow(t); } }
+	static long drawableAcquireNew(long layer) { try { return (long) DRAWABLE_ACQUIRE_NEW.invokeExact(layer); } catch (Throwable t) { throw rethrow(t); } }
+	static void drawableAcquireInvalidate(long state, int width, int height) { try { DRAWABLE_ACQUIRE_INVALIDATE.invokeExact(state, width, height); } catch (Throwable t) { throw rethrow(t); } }
+	static void drawableAcquireClose(long state) { try { DRAWABLE_ACQUIRE_CLOSE.invokeExact(state); } catch (Throwable t) { throw rethrow(t); } }
+	static long drawableAcquireNext(long state, long waitNs, long out) { try { return (long) DRAWABLE_ACQUIRE_NEXT.invokeExact(state, waitNs, out); } catch (Throwable t) { throw rethrow(t); } }
 	static void present(long enc, long drawable, long texture) { if (FrameCapture.FULL && FrameCapture.active()) FrameCapture.present(texture); try { PRESENT.invokeExact(enc, drawable, texture); } catch (Throwable t) { throw rethrow(t); } }
 	static int presentQueued(long enc, long drawable, long texture) { if (FrameCapture.FULL && FrameCapture.active()) FrameCapture.present(texture); try { return (int) PRESENT_QUEUED.invokeExact(enc, drawable, texture); } catch (Throwable t) { throw rethrow(t); } }
 	static long presentSkipped() { try { return (long) PRESENT_SKIPPED.invokeExact(); } catch (Throwable t) { throw rethrow(t); } }

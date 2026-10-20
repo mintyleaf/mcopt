@@ -15,7 +15,7 @@ dependencies {
 def nativeOut = layout.buildDirectory.dir('natives/natives')
 
 tasks.register('compileNative', Exec) {
-	def sources = ['mcmetal.m', 'mclod.m', 'lodseam.m', 'lodmesh.c', 'lodnoise.c', 'rec.m', 'mcown.m', 'mccap.m'].collect { file("src/main/native/$it") }
+	def sources = ['mcmetal.m', 'mcdrawable.m', 'mclod.m', 'lodseam.m', 'lodmesh.c', 'lodnoise.c', 'rec.m', 'mcown.m', 'mccap.m'].collect { file("src/main/native/$it") }
 	def output = nativeOut.get().file('libmcmetal.dylib').asFile
 	inputs.files sources, file('src/main/native/mcmetal.h'), file('src/main/native/lodmesh.h')
 	outputs.file output
@@ -73,6 +73,20 @@ tasks.register('checkMetalPipelines', JavaExec) {
 	if (project.hasProperty('verifyMslCache')) args 'verify-cache'
 	if (project.hasProperty('pipelineTimingOutput')) jvmArgs '-Dmcopt.metal.jfr=true',
 		'-XX:StartFlightRecording=filename=' + rootProject.file(project.property('pipelineTimingOutput')).absolutePath
+}
+
+tasks.register('checkMetalTimings', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.MetalTimingChecks'
+	jvmArgs '--enable-native-access=ALL-UNNAMED', '-Dmcopt.metal.jfr=true'
+	if (project.hasProperty('timingOutput')) args rootProject.file(project.property('timingOutput')).absolutePath
+}
+
+tasks.register('checkDiagnosticLog', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.DiagnosticLogChecks'
 }
 
 tasks.register('checkLodProjection', JavaExec) {

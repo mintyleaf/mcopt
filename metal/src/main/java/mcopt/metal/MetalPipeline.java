@@ -99,6 +99,7 @@ final class MetalPipeline implements BackendRenderPipeline {
 
 	static @Nullable MetalPipeline compile(MetalEncoder encoder, CreateInfo info) {
 		long ctx = encoder.ctx;
+		MetalEvents.PipelineCompile event = MetalEvents.pipelineBegin(info.name(), "initial");
 		long t0 = System.nanoTime(), t1 = t0, t2 = t0;
 		CreateInfo.Shader vertex = shader(info, ShaderType.VERTEX), fragment = shader(info, ShaderType.FRAGMENT);
 		long vlib = 0, flib = 0, plib = 0;
@@ -157,6 +158,7 @@ final class MetalPipeline implements BackendRenderPipeline {
 			long translation = (t1 == t0 ? t3 : t1) - t0;
 			long library = t1 == t0 ? 0 : (t2 == t0 ? t3 : t2) - t1;
 			long state = t2 == t0 ? 0 : t3 - t2;
+			MetalEvents.pipelineEnd(event, complete, translation, library, state);
 			synchronized (MetalPipeline.class) {
 				compiled++;
 				translateNs += translation;
@@ -383,6 +385,9 @@ final class MetalPipeline implements BackendRenderPipeline {
 	 */
 	long withoutDepth() {
 		if (this.withoutDepth == 0) {
+			MetalEvents.PipelineCompile event = MetalEvents.pipelineBegin(this.name, "without-depth");
+			long start = System.nanoTime(), librariesDone = start;
+			boolean complete = false;
 			Translated v = Objects.requireNonNull(this.vertexSource, this.name), f = Objects.requireNonNull(this.fragmentSource, this.name);
 			long ctx = this.encoder.ctx, vlib = 0, flib = 0;
 			try (MemoryStack stack = MemoryStack.stackPush()) {
@@ -391,6 +396,7 @@ final class MetalPipeline implements BackendRenderPipeline {
 				if (vlib == 0) throw new IllegalStateException(this.name + " vertex: " + MemoryUtil.memUTF8(err) + "\n" + v.msl);
 				flib = Native.libraryNew(ctx, MemoryUtil.memAddress(stack.UTF8(f.msl)), err, 4096);
 				if (flib == 0) throw new IllegalStateException(this.name + " fragment: " + MemoryUtil.memUTF8(err) + "\n" + f.msl);
+				librariesDone = System.nanoTime();
 				long vname = MemoryUtil.memAddress(stack.UTF8(v.entry)), fname = MemoryUtil.memAddress(stack.UTF8(f.entry));
 				if (GPU_COUNT) Native.gpuCountLabel(this.name + " (no depth)");
 				long pso = pipelineNewCounted(ctx, vlib, vname, flib, fname, describe(stack, this.info, false, true), err, 4096);
@@ -398,9 +404,13 @@ final class MetalPipeline implements BackendRenderPipeline {
 				this.withoutDepth = pso;
 				this.depthStateWithoutDepth = Native.depthStateNew(ctx, 7, 0);  // MTLCompareFunctionAlways, no write: there's no depth to test
 				this.vertexSource = this.fragmentSource = null;
+				complete = true;
 			} finally {
 				if (vlib != 0) Native.release(vlib);
 				if (flib != 0) Native.release(flib);
+				long end = System.nanoTime();
+				MetalEvents.pipelineEnd(event, complete, 0, (librariesDone == start ? end : librariesDone) - start,
+					librariesDone == start ? 0 : end - librariesDone);
 			}
 		}
 		return this.withoutDepth;

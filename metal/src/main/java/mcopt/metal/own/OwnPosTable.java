@@ -65,7 +65,7 @@ final class OwnPosTable {
 			long now = System.nanoTime();
 			if (now > syncLogAt) {
 				syncLogAt = now + 5_000_000_000L;
-				System.out.println("mcopt-own mesh exactPos: table " + n + " of " + SIZE + " entries, " + OVERFLOW.get() + " rounded");
+				mcopt.metal.DiagnosticLog.println("mcopt-own mesh exactPos: table " + n + " of " + SIZE + " entries, " + OVERFLOW.get() + " rounded");
 			}
 		}
 		for (int i = from; i < n; i++) MemoryUtil.memPutFloat(a + 4L * i, VALUES[i]);

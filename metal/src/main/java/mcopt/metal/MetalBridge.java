@@ -29,6 +29,10 @@ public final class MetalBridge {
 	private MetalBridge() {
 	}
 
+	/** Optional event-pump timing; no keyboard, mouse or window-event payload is recorded. */
+	public static Object windowEventsBegin() { return MetalEvents.begin("pollEvents", -1, 0); }
+	public static void windowEventsEnd(Object event) { MetalEvents.end((MetalEvents.Operation) event); }
+
 	/** libmcmetal as loaded by the backend; mcpack.m's functions live in the same image. */
 	public static SymbolLookup library() {
 		return Native.lookup();

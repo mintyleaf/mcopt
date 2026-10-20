@@ -1,5 +1,6 @@
 package mcopt.metal.own;
 
+import mcopt.metal.DiagnosticLog;
 
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.renderpearl.api.buffers.GpuBuffer;
@@ -3238,32 +3239,32 @@ public final class OwnTerrain {
 			quadsUsed = this.quadAlloc.used();
 			quadCap = this.quadAlloc.capacity();
 		}
-		System.out.printf("mcopt-own stats: %d frames, slots %d (cap %d), meshes %d, records %d, quads %d (%.1f of %.1f MB), lists %d, drawn records solid %d cutout %d%n",
+		DiagnosticLog.printf("mcopt-own stats: %d frames, slots %d (cap %d), meshes %d, records %d, quads %d (%.1f of %.1f MB), lists %d, drawn records solid %d cutout %d%n",
 			this.statFrames, this.maxSlot + 1, this.slotCap, this.meshes.size(), this.recAlloc.used(), quadsUsed, quadsUsed * ARENA_QUAD / 1048576.0,
 			(double) quadCap * ARENA_QUAD / 1048576.0, this.listCap, MemoryUtil.memGetInt(this.argsAddress + 4) + MemoryUtil.memGetInt(this.argsAddress + 44),
 			MemoryUtil.memGetInt(this.argsAddress + 24) + MemoryUtil.memGetInt(this.argsAddress + 64));
 		if (QUADS && this.qArgsAddress != 0) {
-			System.out.printf("mcopt-own quads: units tested %d, quads drawn A solid %d cutout %d, B solid %d cutout %d%n", MemoryUtil.memGetInt(this.argsAddress + 80),
+			DiagnosticLog.printf("mcopt-own quads: units tested %d, quads drawn A solid %d cutout %d, B solid %d cutout %d%n", MemoryUtil.memGetInt(this.argsAddress + 80),
 				MemoryUtil.memGetInt(this.qArgsAddress) / 6, MemoryUtil.memGetInt(this.qArgsAddress + 20) / 6, MemoryUtil.memGetInt(this.qArgsAddress + 40) / 6,
 				MemoryUtil.memGetInt(this.qArgsAddress + 60) / 6);
 			if (this.qDrawnFrames > 0) {
-				System.out.printf("mcopt-own quads mean: drawn %.0f a frame (A %.0f, B %.0f) over %d frames%n", (double) (this.qDrawnA + this.qDrawnB) / this.qDrawnFrames,
+				DiagnosticLog.printf("mcopt-own quads mean: drawn %.0f a frame (A %.0f, B %.0f) over %d frames%n", (double) (this.qDrawnA + this.qDrawnB) / this.qDrawnFrames,
 					(double) this.qDrawnA / this.qDrawnFrames, (double) this.qDrawnB / this.qDrawnFrames, this.qDrawnFrames);
 				this.qDrawnA = this.qDrawnB = this.qDrawnFrames = 0;
 			}
 		}
-		if (this.solid != null) System.out.println("mcopt-own solid: " + this.solid.stats());
+		if (this.solid != null) DiagnosticLog.println("mcopt-own solid: " + this.solid.stats());
 		if (this.qsBuffer != 0 && this.qsFrames > 0) {
 			long[] v = new long[8];
 			for (int i = 0; i < 8; i++) v[i] = Integer.toUnsignedLong(MemoryUtil.memGetInt(this.qsAddress + i * 4L));
 			double fr = this.qsFrames;
-			System.out.printf("mcopt-own tally per frame: units %.0f, quads %.0f, back-facing %.0f, outside frustum %.0f, no pixel centre %.0f, hidden %.0f, visible %.0f, vertex invocations %.0f%n",
+			DiagnosticLog.printf("mcopt-own tally per frame: units %.0f, quads %.0f, back-facing %.0f, outside frustum %.0f, no pixel centre %.0f, hidden %.0f, visible %.0f, vertex invocations %.0f%n",
 				v[0] / fr, v[1] / fr, v[2] / fr, v[3] / fr, v[4] / fr, v[5] / fr, v[6] / fr, v[7] / fr);
 			MemoryUtil.memSet(this.qsAddress, 0, 64);
 			this.qsFrames = 0;
 		}
 		long c = COMPILES.sumThenReset(), cns = COMPILE_NS.sumThenReset(), st = STORES.sumThenReset(), sns = STORE_NS.sumThenReset();
-		System.out.printf("mcopt-own mesh: %d compiles %.3f ms each (%.0f ms), %d layer stores %.3f ms each (%.0f ms)%n", c, c == 0 ? 0 : cns / 1e6 / c, cns / 1e6, st,
+		DiagnosticLog.printf("mcopt-own mesh: %d compiles %.3f ms each (%.0f ms), %d layer stores %.3f ms each (%.0f ms)%n", c, c == 0 ? 0 : cns / 1e6 / c, cns / 1e6, st,
 			st == 0 ? 0 : sns / 1e6 / st, sns / 1e6);
 		this.statFrames = 0;
 		this.statLast = now;

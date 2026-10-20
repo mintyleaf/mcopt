@@ -67,7 +67,7 @@ final class WaitStats {
 			fenceCallers.entrySet().stream().sorted((x, y) -> Long.compare(y.getValue()[0], x.getValue()[0])).limit(4)
 				.forEach(e -> b.append(String.format(" %s %.0f us/frame x%.2f", e.getKey(), e.getValue()[0] / 1e3 / frames, (double) e.getValue()[1] / frames)));
 		}
-		System.out.println(b);
+		DiagnosticLog.println(b);
 		java.util.Arrays.fill(nanos, 0);
 		java.util.Arrays.fill(counts, 0);
 		for (long[] l : lagNanos) java.util.Arrays.fill(l, 0);
