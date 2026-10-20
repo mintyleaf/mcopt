@@ -1311,18 +1311,18 @@ public final class Lod {
 		long now = System.nanoTime();
 		if (now - this.statStart < 1_000_000_000L) return;
 		this.guardReport();
-		System.out.printf("mcopt-lod stats: parts ms/frame results %.4f update %.4f mask %.4f installs %.4f%n", this.partNanos[0] / 1e6 / this.statFrames,
+		mcopt.metal.DiagnosticLog.printf("mcopt-lod stats: parts ms/frame results %.4f update %.4f mask %.4f installs %.4f%n", this.partNanos[0] / 1e6 / this.statFrames,
 			this.partNanos[1] / 1e6 / this.statFrames, this.partNanos[2] / 1e6 / this.statFrames, this.partNanos[3] / 1e6 / this.statFrames);
 		java.util.Arrays.fill(this.partNanos, 0);
 		if (HANDOFF_DRAWN) {
-			System.out.printf("mcopt-lod stats: mask ms/frame walk %.4f cells %.4f changes %.4f nearest %.4f, builtColumn %.1f heights %.1f a frame, builtColumn ms/frame %.4f, worst frame %.3f ms%n",
+			mcopt.metal.DiagnosticLog.printf("mcopt-lod stats: mask ms/frame walk %.4f cells %.4f changes %.4f nearest %.4f, builtColumn %.1f heights %.1f a frame, builtColumn ms/frame %.4f, worst frame %.3f ms%n",
 				this.maskNanos[0] / 1e6 / this.statFrames, this.maskNanos[1] / 1e6 / this.statFrames, this.maskNanos[2] / 1e6 / this.statFrames,
 				this.maskNanos[3] / 1e6 / this.statFrames, (double) this.maskBuilt / this.statFrames, (double) this.maskHeights / this.statFrames,
 				this.maskBuiltNanos / 1e6 / this.statFrames, this.maskMax / 1e6);
 			java.util.Arrays.fill(this.maskNanos, 0);
 			this.maskBuilt = this.maskHeights = this.maskBuiltNanos = this.maskMax = 0;
 		}
-		System.out.printf("mcopt-lod stats: %d fps, cpu %.3f ms/frame, columns %d, band rows %d..%d, tiles needed %d missing %d, generated %d (%.1f ms avg), "
+		mcopt.metal.DiagnosticLog.printf("mcopt-lod stats: %d fps, cpu %.3f ms/frame, columns %d, band rows %d..%d, tiles needed %d missing %d, generated %d (%.1f ms avg), "
 				+ "loaded %d, pending %d, queued %d, chunks %d, nearest far %.0f, settled %s%s%n",
 			this.statFrames, this.statCpuNanos / 1e6 / this.statFrames, this.lastColumns, this.lastR0, this.lastR1, w.needed, w.missing, w.generated.get(),
 			w.generated.get() == 0 ? 0 : w.genNanos.get() / 1e6 / w.generated.get(), w.loaded.get(), w.pendingJobs(), w.queued(), w.chunksSummarized.get(),
@@ -1336,22 +1336,22 @@ public final class Lod {
 			gen.append(String.format(" L%d:%d tiles %.0f/%.0f/%.0f ms", i, n, w.noise.stageNanos.get(i * 4) / 1e6 / n, w.noise.stageNanos.get(i * 4 + 1) / 1e6 / n,
 				w.noise.stageNanos.get(i * 4 + 2) / 1e6 / n));
 		}
-		if (gen.length() > 0) System.out.println("mcopt-lod stats: generation density/biomes/materials per tile:" + gen);
+		if (gen.length() > 0) mcopt.metal.DiagnosticLog.println("mcopt-lod stats: generation density/biomes/materials per tile:" + gen);
 		LodMesh mesh = this.mesh;
 		if (mesh != null) {
 			long n = mesh.meshed.get();
-			System.out.printf("mcopt-lod stats: mesh %d tiles installed, %d meshed (%.2f ms, %.0f quads a tile), %d pending, arena %.1f of %.0f MB%n", mesh.installed, n,
+			mcopt.metal.DiagnosticLog.printf("mcopt-lod stats: mesh %d tiles installed, %d meshed (%.2f ms, %.0f quads a tile), %d pending, arena %.1f of %.0f MB%n", mesh.installed, n,
 				n == 0 ? 0 : mesh.meshNanos.get() / 1e6 / n, n == 0 ? 0 : (double) mesh.meshQuads.get() / n, mesh.pending(), mesh.usedMb(), mesh.arenaMb());
 		}
 		LodPk pk = this.pk;
 		if (pk != null) {
-			System.out.printf("mcopt-lod stats: pk %d frames (+%d fast: full cull, %d switches), %d with stale sectors in view (%d sectors drawn live; stale in view:"
+			mcopt.metal.DiagnosticLog.printf("mcopt-lod stats: pk %d frames (+%d fast: full cull, %d switches), %d with stale sectors in view (%d sectors drawn live; stale in view:"
 					+ " %d unbuilt, %d dirty, %d expired), %d sectors rebuilt (%d of the hand-off band), %d generations, %d overflows, %d mesh changes skipped (live ring, level not drawn"
 					+ " there), %d occluder drops, records %.0f MB, %d sectors pruned to the visible set%n",
 				pk.statFrames, pk.statFastFrames, pk.statSwitches, pk.statFallbacks, pk.statLive, pk.statUnbuilt, pk.statDirty, pk.statExpired, pk.statRebuilt,
 				pk.statRebuiltNear, pk.statGenerations, pk.statOverflows, pk.statSkipped, pk.statOccDrops, pk.recordsMb(), pk.statVisPruned);
 			pk.statVisPruned = 0;
-			if (LodPk.LOAD) System.out.println("mcopt-lod stats: pk " + pk.loadState());
+			if (LodPk.LOAD) mcopt.metal.DiagnosticLog.println("mcopt-lod stats: pk " + pk.loadState());
 			this.pkSwitches += pk.statSwitches;
 			pk.statOccDrops = 0;
 			this.pkFast += pk.statFastFrames;

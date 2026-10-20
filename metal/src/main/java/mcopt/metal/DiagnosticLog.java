@@ -15,7 +15,11 @@ public final class DiagnosticLog {
 	}
 
 	public static void printf(String format, Object... values) {
-		OUTPUT.offer(String.format(format, values).stripTrailing());
+		printf(java.util.Locale.ROOT, format, values);
+	}
+
+	public static void printf(java.util.Locale locale, String format, Object... values) {
+		OUTPUT.offer(String.format(locale, format, values).stripTrailing());
 	}
 
 	public static long dropped() { return OUTPUT.dropped(); }

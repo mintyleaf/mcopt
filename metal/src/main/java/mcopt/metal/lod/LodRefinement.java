@@ -156,7 +156,7 @@ public final class LodRefinement implements AutoCloseable {
 		retiring.removeIf(p -> near(p, f) || level.getChunkSource().getChunkNow(p.x(), p.z()) == null);
 		if (now >= nextStatus) {
 			nextStatus = now + 30_000_000_000L;
-			System.out.printf(java.util.Locale.ROOT,
+			mcopt.metal.DiagnosticLog.printf(java.util.Locale.ROOT,
 				"mcopt-lod: %s population %s, frame %.1fms tick %.1fms, heap %d MiB retained %d/%d MiB, loaded %d, FULL %d/%d probes %d/%d, imported %d generated %d%n",
 				level.dimension().identifier(), budget.reason(), f.frameMs, tickMs(), (runtime.totalMemory()-runtime.freeMemory()) >> 20,
 				retained < 0 ? -1 : retained >> 20, runtime.maxMemory() >> 20, level.getChunkSource().getLoadedChunksCount(),
