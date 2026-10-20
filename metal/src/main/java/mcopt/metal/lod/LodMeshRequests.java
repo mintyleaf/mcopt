@@ -40,6 +40,11 @@ final class LodMeshRequests {
 		}
 	}
 
+	synchronized boolean current(Request request) { return this.current(request.key, request.sequence); }
+	synchronized boolean current(long key, long sequence) {
+		return this.latest[this.index(LodTile.levelOf(key), LodTile.txOf(key), LodTile.tzOf(key))] == sequence;
+	}
+
 	/** A raced worker must not replace a newer coordinate/version after the ring moves. */
 	synchronized boolean retry(Request request) {
 		int i = this.index(LodTile.levelOf(request.key), LodTile.txOf(request.key), LodTile.tzOf(request.key));

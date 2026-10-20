@@ -358,3 +358,20 @@ tasks.register('checkLodPredictionCache', JavaExec) {
 	classpath = sourceSets.metalChecks.runtimeClasspath
 	mainClass = 'mcopt.metal.lod.LodPredictionCacheChecks'
 }
+
+tasks.register('checkLodMeshResults', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.lod.LodMeshResultChecks'
+	jvmArgs '--enable-native-access=ALL-UNNAMED'
+}
+
+['checkLodMeshPressure': 'pair', 'checkLodMeshPressureGpu': 'gpu'].each { taskName, mode ->
+	tasks.register(taskName, JavaExec) {
+		dependsOn 'metalChecksClasses'
+		classpath = sourceSets.metalChecks.runtimeClasspath
+		mainClass = 'mcopt.metal.lod.LodSnapshotMeshChecks'
+		jvmArgs '--enable-native-access=ALL-UNNAMED', '-Xmx256M', '-Dmcopt.lod.publish=' + mode,
+			'-Dmcopt.lod.publishBudget=1', '-Dmcopt.lod.meshResultCount=2'
+	}
+}

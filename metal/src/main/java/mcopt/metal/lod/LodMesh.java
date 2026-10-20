@@ -4,7 +4,6 @@ import java.util.ArrayDeque;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicLong;
 import org.jspecify.annotations.Nullable;
 import org.lwjgl.system.MemoryUtil;
@@ -81,16 +80,14 @@ final class LodMesh implements LodClip.Listener {
 	final long frame = MemoryUtil.nmemCalloc(1, FRAME_BYTES);
 	// meshing
 	private final LodMeshRequests jobs;
-	private final ConcurrentLinkedQueue<long[]> results = new ConcurrentLinkedQueue<>();
+	private final LodMeshResults results = new LodMeshResults(
+		Math.max(2, Integer.getInteger("mcopt.lod.meshResultMiB", 32)) * 1048576L,
+		Math.max(1, Integer.getInteger("mcopt.lod.meshResultCount", 128)));
 	/** PAIRS: the latest staged snapshot per tile key, waiting for a mesh job (render thread puts, workers read). */
 	private final ConcurrentHashMap<Long, LodClip.Snapshot> snaps = new ConcurrentHashMap<>();
-	/** PAIRS: the snapshot each result was meshed from (by its block's address), published with it. */
-	private final ConcurrentHashMap<Long, LodClip.Snapshot> resultSnaps = new ConcurrentHashMap<>();
 	/** PAIRS: per level, per slot, the staged version last published. */
 	private final long[][] publishedVer;
-	/** PAIRS: results whose publish waits for the next frame (a frame publishes at most PUBLISH_BUDGET tiles). */
-	private final ArrayDeque<long[]> publishLater = new ArrayDeque<>();
-	private static final int PUBLISH_BUDGET = Math.min(LodPublish.CAP, Integer.getInteger("mcopt.lod.publishBudget", 32));
+	private static final int PUBLISH_BUDGET = Math.max(1, Math.min(LodPublish.CAP, Integer.getInteger("mcopt.lod.publishBudget", 32)));
 	/** publish=gpu: neighbors' remeshes after a publish wait until the GPU has written its words ({frame due, level, tx, tz}). */
 	private final ArrayDeque<long[]> requestLater = new ArrayDeque<>();
 	/** PAIRS: the scratch plane's log size (a tile and its 1-cell border fit, addressed like the clipmap). */
@@ -238,14 +235,26 @@ final class LodMesh implements LodClip.Listener {
 						continue;
 					}
 					long words = HDR_WORDS + 2L * n;
-					long block = MemoryUtil.nmemAlloc(words * 4);
-					MemoryUtil.memCopy(header, block, (long) HDR_WORDS * 4);
-					MemoryUtil.memCopy(quads, block + (long) HDR_WORDS * 4, (long) n * 8);
-					this.meshed.incrementAndGet();
-					this.meshQuads.addAndGet(n);
-					if (snap != null) this.resultSnaps.put(block, snap);
-					this.results.add(new long[] {k, s, block, words, neighbors, ver});
-					held = null; // The result now owns the worker's lease through deferred installation.
+					if (!this.jobs.current(job) || !this.clip.resident(level, tx, tz)) continue;
+					if (!this.results.reserve(words * 4)) return;
+					long block = 0;
+					try {
+						if (!this.jobs.current(job) || !this.clip.resident(level, tx, tz)) continue;
+						block = MemoryUtil.nmemAlloc(words * 4);
+						MemoryUtil.memCopy(header, block, (long) HDR_WORDS * 4);
+						MemoryUtil.memCopy(quads, block + (long) HDR_WORDS * 4, (long) n * 8);
+						this.meshed.incrementAndGet(); this.meshQuads.addAndGet(n);
+						var result = this.results.new Result(new long[] {k, s, block, words, neighbors, ver}, snap);
+						held = null; block = -1; // result owns native storage, credits and the snapshot lease
+						this.results.offer(result);
+					} finally {
+						if (block >= 0) {
+							if (block != 0) MemoryUtil.nmemFree(block);
+							this.results.release(words * 4);
+						}
+					}
+				} catch (InterruptedException stopped) {
+					return;
 				} catch (RuntimeException e) {
 					System.out.println("mcopt-lod: mesh job failed: " + e);
 				} finally {
@@ -342,50 +351,53 @@ final class LodMesh implements LodClip.Listener {
 			this.release(r[1], r[2]);
 		}
 		while (!this.buffersLater.isEmpty() && frame - this.buffersLater.peek()[0] >= RING) LodNative.release(this.buffersLater.poll()[1]);
-		long[] r;
-		int budget = 256;
+		int budget = Math.min(256, this.results.size());
+		long bytes = 0;
+		long begin = System.nanoTime();
 		this.publishes = 0;
 		while (!this.requestLater.isEmpty() && this.requestLater.peek()[0] <= frame) {
 			long[] q = this.requestLater.poll();
 			if (this.clip.resident((int) q[1], (int) q[2], (int) q[3])) this.request((int) q[1], (int) q[2], (int) q[3]);
 		}
-		// (PAIRS) publishes held over from the last frame go first, in order
-		int held = this.publishLater.size();
-		for (int i = 0; i < held; i++) {
-			r = this.publishLater.poll();
-			if (this.publishes >= PUBLISH_BUDGET) {
-				this.publishLater.add(r);
-				continue;
-			}
-			this.installOrHold(frame, r);
+		while (budget-- > 0) {
+			var result = this.results.poll();
+			if (result == null) break;
+			boolean installed = this.installOrHold(frame, result);
+			if (!installed) break;
+			bytes += result.data[3] * 4;
+			if (bytes >= 4L * 1048576 || System.nanoTime() - begin >= 2_000_000L) break;
 		}
-		while (budget-- > 0 && (r = this.results.poll()) != null) this.installOrHold(frame, r);
 		this.healthFrames++;
 		long now=System.nanoTime();
 		if(now-this.healthAt>=30_000_000_000L) {
 			long quads=0;for(long[] level:this.len) for(long words:level) if(words>0) quads+=Math.max(0,(words-HDR_WORDS)/2);
 			mcopt.metal.DiagnosticLog.printf(java.util.Locale.ROOT,"mcopt-lod: render %.1f fps, mesh %d tiles / %d quads, pending %d, arena %.1f/%.0f MiB, reused %d meshes, unchanged %d cells, GPU copies %d%n",
-				this.healthFrames*1e9/(now-this.healthAt),this.installed,quads,this.pending()+this.publishLater.size(),this.usedMb(),this.arenaMb(),this.reusedMeshes,this.clip.unchangedCells,this.clip.pendingGpuCount());
+				this.healthFrames*1e9/(now-this.healthAt),this.installed,quads,this.pending(),this.usedMb(),this.arenaMb(),this.reusedMeshes,this.clip.unchangedCells,this.clip.pendingGpuCount());
 			this.healthAt=now;this.healthFrames=0;
 		}
 	}
 
 	private int publishes;
 
-	private void installOrHold(long frame, long[] r) {
-		LodClip.Snapshot snap = LodClip.PAIRS ? this.resultSnaps.get(r[2]) : null;
-		if (snap != null && this.publishes >= PUBLISH_BUDGET) {
-			this.publishLater.add(r);
-			return;
+	private boolean installOrHold(long frame, LodMeshResults.Result result) {
+		long[] r = result.data;
+		LodClip.Snapshot snap = result.snapshot;
+		long k = r[0]; int level = LodTile.levelOf(k), tx = LodTile.txOf(k), tz = LodTile.tzOf(k);
+		int slot = this.clip.slot(tx, tz);
+		// Reject obsolete/nonresident results before they can occupy a publication slot or be deferred.
+		if (!this.clip.resident(level, tx, tz) || !this.jobs.current(k, r[1])
+			|| snap != null && (snap.version <= this.publishedVer[level][slot] || snap.epoch != this.clip.epoch[level][slot])
+			|| LodClip.PAIRS && snap == null && r[5] != this.clip.writing[level].get(slot)) {
+			result.close(); return true;
 		}
-		if (snap != null) this.resultSnaps.remove(r[2]);
+		if (snap != null && this.publishes >= PUBLISH_BUDGET) {
+			this.results.offer(result); return false;
+		}
 		try {
 			if (LodClip.PAIRS) this.installPair(frame, r, snap);
 			else this.install(frame, r);
-		} finally {
-			LodClip.release(snap);
-			MemoryUtil.nmemFree(r[2]);
-		}
+		} finally { result.close(); }
+		return true;
 	}
 
 	/**
@@ -673,6 +685,7 @@ final class LodMesh implements LodClip.Listener {
 	void close() {
 		if (this.closed) return;
 		this.closed = true;
+		this.results.close();
 		for (Thread t : this.workers) t.interrupt();
 		this.clip.listener = null;
 		// A dimension switch must not release clipmap buffers while a native mesh job still reads them.
@@ -682,14 +695,9 @@ final class LodMesh implements LodClip.Listener {
 			catch (InterruptedException e) { interrupted = true; }
 		}
 		if (interrupted) Thread.currentThread().interrupt();
-		long[] result;
-		while ((result = this.results.poll()) != null) MemoryUtil.nmemFree(result[2]);
-		while ((result = this.publishLater.poll()) != null) MemoryUtil.nmemFree(result[2]);
 		this.jobs.clear();
 		for (LodClip.Snapshot s : this.snaps.values()) s.release();
 		this.snaps.clear();
-		for (LodClip.Snapshot s : this.resultSnaps.values()) s.release();
-		this.resultSnaps.clear();
 		MemoryUtil.nmemFree(this.tableHost);
 		MemoryUtil.nmemFree(this.frame);
 	}
