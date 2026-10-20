@@ -3,6 +3,11 @@
 	"package": "mcopt.metal.mixin.compat",
 	"plugin": "mcopt.metal.mixin.compat.CompatMixinPlugin",
 	"compatibilityLevel": "JAVA_25",
-	"client": ["DhRenderApiMixin"],
-	"injectors": { "defaultRequire": 0 }
+	"client": [
+		"DhRenderApiMixin",
+		"MoreCullingFaceMixin"
+	],
+	"injectors": {
+		"defaultRequire": 0
+	}
 }

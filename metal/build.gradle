@@ -127,6 +127,14 @@ tasks.register('checkLodCaptureIo', JavaExec) {
 	jvmArgs '--enable-native-access=ALL-UNNAMED'
 }
 
+tasks.register('checkMoreCullingFaces', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.compat.MoreCullingFaceChecks'
+	jvmArgs '-XX:-DoEscapeAnalysis'
+	if (project.hasProperty('moreCullingBlock')) args rootProject.file(project.property('moreCullingBlock')).absolutePath
+}
+
 tasks.register('checkLodStaging', JavaExec) {
 	dependsOn 'metalChecksClasses'
 	classpath = sourceSets.metalChecks.runtimeClasspath
