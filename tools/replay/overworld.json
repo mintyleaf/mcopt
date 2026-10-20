@@ -1,0 +1,143 @@
+{
+  "schema": 1,
+  "seed": 12345,
+  "warmupSeconds": 15,
+  "phases": [
+    {
+      "name": "floor",
+      "seconds": 6,
+      "from": [
+        0,
+        180,
+        0
+      ],
+      "to": [
+        0,
+        180,
+        0
+      ],
+      "yaw": -90,
+      "pitch": 85,
+      "fov": 70
+    },
+    {
+      "name": "far",
+      "seconds": 6,
+      "from": [
+        0,
+        180,
+        0
+      ],
+      "to": [
+        0,
+        180,
+        0
+      ],
+      "yaw": -90,
+      "pitch": 15,
+      "fov": 70
+    },
+    {
+      "name": "zoom",
+      "seconds": 6,
+      "from": [
+        0,
+        180,
+        0
+      ],
+      "to": [
+        0,
+        180,
+        0
+      ],
+      "yaw": -90,
+      "pitch": 15,
+      "fov": 30
+    },
+    {
+      "name": "flight_low",
+      "seconds": 12,
+      "from": [
+        0,
+        180,
+        0
+      ],
+      "to": [
+        384,
+        180,
+        0
+      ],
+      "yaw": -90,
+      "pitch": 15,
+      "fov": 70
+    },
+    {
+      "name": "flight_climb",
+      "seconds": 12,
+      "from": [
+        384,
+        180,
+        0
+      ],
+      "to": [
+        768,
+        320,
+        0
+      ],
+      "yaw": -90,
+      "pitch": 15,
+      "fov": 70
+    },
+    {
+      "name": "flight_high",
+      "seconds": 12,
+      "from": [
+        768,
+        320,
+        0
+      ],
+      "to": [
+        1152,
+        320,
+        0
+      ],
+      "yaw": -90,
+      "pitch": 15,
+      "fov": 70
+    },
+    {
+      "name": "descent",
+      "seconds": 6,
+      "from": [
+        1152,
+        320,
+        0
+      ],
+      "to": [
+        1344,
+        180,
+        0
+      ],
+      "yaw": -90,
+      "pitch": 15,
+      "fov": 70
+    },
+    {
+      "name": "stop_zoom",
+      "seconds": 8,
+      "from": [
+        1344,
+        180,
+        0
+      ],
+      "to": [
+        1344,
+        180,
+        0
+      ],
+      "yaw": -90,
+      "pitch": 20,
+      "fov": 30
+    }
+  ]
+}

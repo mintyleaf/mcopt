@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "seed": 12345,
+  "warmupSeconds": 5,
+  "phases": [
+    {
+      "name": "far",
+      "seconds": 3,
+      "from": [
+        0,
+        180,
+        0
+      ],
+      "to": [
+        0,
+        180,
+        0
+      ],
+      "yaw": -90,
+      "pitch": 15,
+      "fov": 70
+    },
+    {
+      "name": "flight",
+      "seconds": 5,
+      "from": [
+        0,
+        180,
+        0
+      ],
+      "to": [
+        160,
+        180,
+        0
+      ],
+      "yaw": -90,
+      "pitch": 15,
+      "fov": 70
+    }
+  ]
+}

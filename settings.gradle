@@ -8,3 +8,6 @@ pluginManagement {
 
 rootProject.name = 'mcopt'
 include 'metal', 'fpshud'
+
+// Development harness is built separately; tools/release still packages only :metal.
+include 'replay'

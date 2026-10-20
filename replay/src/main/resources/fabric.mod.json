@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "mcopt-replay",
+  "version": "${version}",
+  "name": "mcopt deterministic profiling harness",
+  "description": "Development-only controlled route and disposable-world profiling. Not included in releases.",
+  "environment": "client",
+  "license": "Apache-2.0",
+  "mixins": ["mcopt-replay.mixins.json"],
+  "depends": {"fabricloader": ">=0.19.5", "minecraft": "~26.3", "java": ">=25"}
+}
