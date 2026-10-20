@@ -193,6 +193,27 @@ tasks.register('checkOwnQuadOrder', JavaExec) {
 	jvmArgs '--enable-native-access=ALL-UNNAMED', '-Dmcopt.own.compact=true', '-Dmcopt.own.mesh.order=cell', '-Dmcopt.own.mesh.qrec=true'
 }
 
+tasks.register('checkLodRefinement', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.lod.LodRefinementChecks'
+}
+
+tasks.register('checkLodScheduling', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.lod.LodSchedulingChecks'
+	jvmArgs '--enable-native-access=ALL-UNNAMED', '-Xmx256M', '-Dmcopt.lod.yield=missing:0', '-Dmcopt.metal.jfr=true'
+	if (project.hasProperty('schedulingOutput')) args rootProject.file(project.property('schedulingOutput')).absolutePath
+}
+
+tasks.register('checkLodScouting', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.lod.LodScoutingChecks'
+	jvmArgs '-Dmcopt.lod=true'
+}
+
 tasks.register('checkLodChorus', JavaExec) {
 	dependsOn 'metalChecksClasses'
 	classpath = sourceSets.metalChecks.runtimeClasspath
@@ -205,6 +226,23 @@ tasks.register('checkLodDimensions', JavaExec) {
 	classpath = sourceSets.metalChecks.runtimeClasspath
 	mainClass = 'mcopt.metal.lod.LodDimensionChecks'
 	jvmArgs '--enable-native-access=ALL-UNNAMED'
+}
+
+tasks.register('checkLodRefinementServer', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.lod.LodRefinementServerChecks'
+	jvmArgs '--enable-native-access=ALL-UNNAMED', '-Xmx2G', '-Dmcopt.lod=true', '-Dmcopt.lod.refineRadius=8'
+	doFirst { workingDir = layout.buildDirectory.dir('refinement-server-check').get().asFile; workingDir.mkdirs() }
+}
+
+tasks.register('checkLodRefinementConcurrency', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.lod.LodRefinementServerChecks'
+	jvmArgs '--enable-native-access=ALL-UNNAMED', '-Xmx2G', '-Dmcopt.lod=true', '-Dmcopt.lod.refineRadius=8'
+	environment 'MCOPT_LOD_CONCURRENCY_PROBE', 'true'
+	doFirst { workingDir = layout.buildDirectory.dir('refinement-concurrency-check').get().asFile; workingDir.mkdirs() }
 }
 
 tasks.register('checkLodSurfaces', JavaExec) {

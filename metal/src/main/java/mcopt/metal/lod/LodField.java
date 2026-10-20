@@ -45,7 +45,7 @@ final class LodField {
 	final @org.jspecify.annotations.Nullable LodForest forest;
 	final Path cache;
 	private final LodCaptures captures;
-	private final Object refinement = null;
+	private final LodRefinement refinement;
 	final boolean skyLight;
 	private final ConcurrentHashMap<Long, Boolean> pending = new ConcurrentHashMap<>();
 	private final LodJobQueue<Job> jobs = new LodJobQueue<>(this::jobLane);
@@ -117,6 +117,8 @@ final class LodField {
 		this.skyLight = noise.level.dimensionType().hasSkyLight();
 		this.forest = noise.level.dimensionType().hasCeiling() ? null : new LodForest(noise);
 		this.captures = new LodCaptures(cache, clip.levels, LodConfig.DISK_CACHE);
+		this.refinement = LodConfig.REFINE && LodConfig.CHUNKS
+			? new LodRefinement(noise.level, this.captures, this::refined, () -> this.results.size() >= 32 || this.captures.pendingCount() >= 32, noise.cavernY) : null;
 		this.winTx = new int[clip.levels];
 		this.winTz = new int[clip.levels];
 		for (int i = 0; i < LodConfig.THREADS; i++) {
@@ -132,6 +134,7 @@ final class LodField {
 	}
 
 	void close() {
+		if (this.refinement != null) this.refinement.close();
 		// Drain accepted real-chunk snapshots before stopping generation workers or releasing this world's clipmap.
 		this.captures.close();
 		this.saveDirty(true);
@@ -641,7 +644,9 @@ final class LodField {
 	private final java.util.HashMap<Long, Long> chunkRequests = new java.util.HashMap<>();
 
 	void refine(double x, double z, double fx, double fz, int rd, boolean paused) {
-		// Population producer is added separately; live chunk captures already correct estimated tiles.
+		if (this.refinement == null) return;
+		if (paused) this.refinement.pause();
+		else this.refinement.focus(x, z, fx, fz, rd);
 	}
 
 	/** Server producer; saved reads may only publish if a newer client edit has not superseded them. */
@@ -1289,7 +1294,8 @@ final class LodField {
 		lines.add("LOD tiles: " + this.missing + "/" + this.needed + " missing, " + this.pendingJobs() + " pending, " + this.results.size() + " ready");
 		lines.add("LOD terrain: " + this.generated.get() + " generated, " + this.loaded.get() + " cached, " + this.chunksSummarized.get() + " chunk captures");
 		lines.add("LOD captures: " + this.captures.pendingCount() + " queued, " + this.captureFallbacks + " pressure fallbacks");
-		lines.add("LOD population: unavailable for this world");
+		if (this.refinement != null) lines.addAll(this.refinement.debugLines());
+		else lines.add("LOD population: " + (LodConfig.REFINE ? "unavailable for this world" : "disabled"));
 		return java.util.List.copyOf(lines);
 	}
 
