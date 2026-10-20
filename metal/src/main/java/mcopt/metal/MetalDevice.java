@@ -186,8 +186,21 @@ final class MetalDevice implements GpuDeviceBackend {
 	@Override
 	public BackendRenderPipeline.Pending compilePipeline(BackendRenderPipeline.CreateInfo info) {
 		// Called on a worker thread by the frontend; Metal pipeline creation is thread-safe, so compile right here.
-		MetalPipeline pipeline = MetalPipeline.compile(this.encoder, info);
-		return () -> pipeline;
+		try {
+			MetalPipeline pipeline = MetalPipeline.compile(this.encoder, info);
+			return () -> pipeline;
+		} catch (RuntimeException | Error failure) {
+			// 26.3's PipelineBuilder closes the native SPIR-V modules only after a successful backend finishCompile.
+			// Throwing here skips that cleanup; a mod retrying a rejected pipeline every frame would leak every attempt.
+			for (BackendRenderPipeline.CreateInfo.Shader shader : info.shaders()) {
+				try {
+					shader.module().close();
+				} catch (RuntimeException | Error cleanup) {
+					failure.addSuppressed(cleanup);
+				}
+			}
+			throw failure;
+		}
 	}
 
 	@Override

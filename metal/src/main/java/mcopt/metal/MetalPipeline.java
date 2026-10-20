@@ -102,6 +102,8 @@ final class MetalPipeline implements BackendRenderPipeline {
 		long t0 = System.nanoTime(), t1 = t0, t2 = t0;
 		CreateInfo.Shader vertex = shader(info, ShaderType.VERTEX), fragment = shader(info, ShaderType.FRAGMENT);
 		long vlib = 0, flib = 0, plib = 0;
+		long withDepth = 0, withoutDepth = 0, depthState = 0;
+		boolean complete = false;
 		try (MemoryStack stack = MemoryStack.stackPush()) {
 			long err = stack.nmalloc(1, 4096);
 			boolean points = info.primitiveTopology() == PrimitiveTopology.POINTS;
@@ -125,9 +127,8 @@ final class MetalPipeline implements BackendRenderPipeline {
 			long vname = MemoryUtil.memAddress(stack.UTF8(v.entry)), fname = MemoryUtil.memAddress(stack.UTF8(f.entry));
 			DepthStencilState depth = info.depthStencilState();
 			if (GPU_COUNT) Native.gpuCountLabel(info.name());  // -Dmcopt.metal.gpuCount: names the per-pipeline counts
-			long withDepth = pipelineNewCounted(ctx, vlib, vname, flib, fname, describe(stack, info, true, true), err, 4096);
+			withDepth = pipelineNewCounted(ctx, vlib, vname, flib, fname, describe(stack, info, true, true), err, 4096);
 			if (withDepth == 0) throw new IllegalStateException(info.name() + ": " + MemoryUtil.memUTF8(err));
-			long withoutDepth = 0;
 			if (depth == null) {
 				if (GPU_COUNT) Native.gpuCountLabel(info.name() + " (no depth)");
 				withoutDepth = pipelineNewCounted(ctx, vlib, vname, flib, fname, describe(stack, info, false, true), err, 4096);
@@ -135,23 +136,32 @@ final class MetalPipeline implements BackendRenderPipeline {
 			}
 			long pulled = 0;
 			int compare = depth == null ? 7 : MetalConst.compare(depth.depthTest());
-			long depthState = Native.depthStateNew(ctx, compare, depth != null && depth.writeDepth() ? 1 : 0);
+			depthState = Native.depthStateNew(ctx, compare, depth != null && depth.writeDepth() ? 1 : 0);
 			MetalPipeline pipeline = new MetalPipeline(encoder, withDepth, withoutDepth, pulled, depthState, compare, info);
 			if (withoutDepth == 0) {
 				pipeline.vertexSource = v;
 				pipeline.fragmentSource = f;
 			}
+			complete = true;
 			return pipeline;
 		} finally {
+			if (!complete) {
+				if (withDepth != 0) Native.release(withDepth);
+				if (withoutDepth != 0) Native.release(withoutDepth);
+				if (depthState != 0) Native.release(depthState);
+			}
 			if (vlib != 0) Native.release(vlib);
 			if (flib != 0) Native.release(flib);
 			if (plib != 0) Native.release(plib);
 			long t3 = System.nanoTime();
+			long translation = (t1 == t0 ? t3 : t1) - t0;
+			long library = t1 == t0 ? 0 : (t2 == t0 ? t3 : t2) - t1;
+			long state = t2 == t0 ? 0 : t3 - t2;
 			synchronized (MetalPipeline.class) {
 				compiled++;
-				translateNs += t1 - t0;
-				libraryNs += t2 - t1;
-				stateNs += t3 - t2;
+				translateNs += translation;
+				libraryNs += library;
+				stateNs += state;
 			}
 		}
 	}

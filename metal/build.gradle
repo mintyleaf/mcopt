@@ -45,3 +45,22 @@ tasks.withType(JavaCompile).configureEach {
 	// --add-modules jdk.incubator.vector
 	if (it.name == 'compileJava') it.options.compilerArgs += ['--add-modules', 'jdk.incubator.vector']
 }
+
+// Uses the real shader translator and Metal driver; run on an Apple Silicon Mac.
+sourceSets {
+	metalChecks {
+		compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
+		runtimeClasspath += sourceSets.main.output + sourceSets.main.runtimeClasspath
+	}
+}
+
+tasks.register('checkMetalPipelines', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.MetalPipelineChecks'
+	jvmArgs '--enable-native-access=ALL-UNNAMED'
+	if (project.hasProperty('verifyMslCache')) args 'verify-cache'
+	if (project.hasProperty('pipelineTimingOutput')) jvmArgs '-Dmcopt.metal.jfr=true',
+		'-XX:StartFlightRecording=filename=' + rootProject.file(project.property('pipelineTimingOutput')).absolutePath
+}
+
