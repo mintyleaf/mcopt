@@ -94,8 +94,8 @@ CSV output includes per-phase p50/p95/p99/max frame intervals, gaps over 50 ms,
 GPU command-buffer span p95, render-thread allocation stalls and arena growths.
 Comparison checks fixture/route/settings hashes, supporting mod versions and
 actual display/backend/heap setup. Renderer jar hashes are experiment variables;
-run.json records every installed jar hash. Mismatches are reported. Runs with lost
-focus or route-position errors are flagged invalid. This flag only validates the
+run.json records every installed jar hash. Mismatches are reported. Setup is sampled after warmup; runs with lost focus, route-position errors or
+changes to render distance/framebuffer/VSync/FPS cap during measurement are flagged invalid. This flag only validates the
 replay lifecycle: external load and thermal conditions still need assessment.
 
 Use several repeats and alternate baseline/candidate order. A single run, or

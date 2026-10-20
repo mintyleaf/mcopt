@@ -196,7 +196,7 @@ mcopt.own.arena.reserveMaxMiB=512
     (game / 'options.txt').write_text(''.join(k+':'+v+'\n' for k,v in options.items()))
     data = read_owner(game)
     data.update(fixture=str(fixture),fixtureSha256=tree_digest(fixture / 'world'),sourceVersion=version,java=java,
-                width=args.width,height=args.height,modset=args.modset,
+                width=args.width,height=args.height,modset=args.modset,rendererJar=metal.name,
                 mods={p.name:digest(p) for p in sorted(mods.glob('*.jar'))},
                 controlledOptions=(game / 'options.txt').read_text(),
                 controlledConfig=(config / 'mcopt.properties').read_text())
@@ -254,7 +254,7 @@ def run(args):
              '-Dmcopt.replay.plan='+str(route),'-Dmcopt.replay.output='+str(output)]
     if any(any(ch.isspace() for ch in f) for f in flags): raise ValueError('Use an output path without spaces')
     cfg.write_text('\n'.join(lines)+'\nJvmArgs="'+' '.join(flags)+'"\n')
-    manifest = dict(schema=1,case=args.case,planSha256=digest(route),fixtureSha256=data['fixtureSha256'],mods=data['mods'],
+    manifest = dict(schema=1,case=args.case,rendererJar=data["rendererJar"],planSha256=digest(route),fixtureSha256=data['fixtureSha256'],mods=data['mods'],
         optionsSha256=digest(game / 'options.txt'),configSha256=digest(game / 'config/mcopt.properties'),
         saveDirectoryBirthTime=birth,lodCacheFilesBefore=len(cache_files),lodCacheBytesBefore=sum(p.stat().st_size for p in cache_files),
         startedEpoch=time.time(),memoryBefore=memory_state(),instance=args.instance,
@@ -289,7 +289,7 @@ def run(args):
         shutil.copy2(game/'logs/latest.log',output/'game.log')
         manifest.update(endedEpoch=time.time(),memoryAfter=memory_state(),lodCacheFilesAfter=len(list(cache.rglob('*.lod')))+len(list(cache.rglob('*.lodc'))))
         manifest['cacheIdentities'] = [str(p.relative_to(cache)) for p in cache.rglob('world-*') if p.is_dir()]
-        manifest['validForComparison'] = all(p['frames']>0 and p['unfocusedFrames']==0 and p['maxPositionError']<1 for p in report['phases'])
+        manifest['validForComparison'] = report['setup'].get('stableDuringMeasurement', True) and all(p['frames']>0 and p['unfocusedFrames']==0 and p['maxPositionError']<1 for p in report['phases'])
         write_json(output/'run.json',manifest)
         metadata=json.loads((output/'capture.json').read_text());metadata['endEpoch']=time.time();write_json(output/'capture.json',metadata)
         print(json.dumps(dict(validForComparison=manifest['validForComparison'],phases=report['phases']),indent=2),flush=True)
@@ -380,6 +380,11 @@ def compare(args):
             if report['setup'].get(key)!=reference[2]['setup'].get(key): mismatches.append(str(directory.name)+': '+key)
         other_mods=lambda r:{k:v for k,v in r['setup']['mods'].items() if k!='mcopt-metal'}
         if other_mods(report)!=other_mods(reference[2]): mismatches.append(str(directory.name)+': supporting mods')
+        def supporting_hashes(m):
+            renderer=m.get('rendererJar')
+            return {k:v for k,v in m['mods'].items() if k!=renderer and (renderer or not k.startswith('mcopt-'))}
+        if supporting_hashes(manifest)!=supporting_hashes(reference[1]): mismatches.append(str(directory.name)+': supporting mod hashes')
+
     rows=[]
     for directory,manifest,report,telemetry in records:
         for phase in report['phases']:

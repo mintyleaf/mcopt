@@ -39,6 +39,8 @@ public final class Replay {
     private static double warmup,total;
     private static long startedAt,measureAt,lastFrame;
     private static int phase=-1,frames,lastFov=-1;
+    private static boolean stableSetup=true;
+    private static int minRenderDistance=Integer.MAX_VALUE,maxRenderDistance;
     private static Path output;
     private static Recording recording;
     private static Marker marker;
@@ -110,6 +112,14 @@ public final class Replay {
                 System.out.println("[mcopt-replay] warmup started");
             }
             if(now<measureAt) { target=warmPose;applyPose();return; }
+            // Effective distance can still be negotiating with the integrated server at initial world entry.
+            if(phase<0) { setup=setup(mc);setup.addProperty("sampledAfterWarmup",true); }
+            int rd=mc.options.getEffectiveRenderDistance();minRenderDistance=Math.min(minRenderDistance,rd);maxRenderDistance=Math.max(maxRenderDistance,rd);
+            stableSetup &= rd==setup.get("renderDistance").getAsInt()
+                && mc.getWindow().getWidth()==setup.get("framebufferWidth").getAsInt()
+                && mc.getWindow().getHeight()==setup.get("framebufferHeight").getAsInt()
+                && mc.options.enableVsync().get()==setup.get("vsync").getAsBoolean()
+                && mc.options.framerateLimit().get()==setup.get("maxFps").getAsInt();
             if(lastFrame!=0 && phase>=0) {
                 if(frames==CAPACITY)throw new IllegalStateException("Frame sample capacity exceeded");
                 times[frames]=lastFrame-measureAt;durations[frames]=now-lastFrame;phases[frames]=phase;
@@ -194,6 +204,7 @@ public final class Replay {
             if(recording!=null) {recording.stop();recording.close();}
             JsonObject report=new JsonObject();report.addProperty("schema",1);report.addProperty("completed",error==null);
             if(error!=null)report.addProperty("error",error);
+            if(setup!=null) {setup.addProperty("stableDuringMeasurement",stableSetup);setup.addProperty("minMeasuredRenderDistance",minRenderDistance);setup.addProperty("maxMeasuredRenderDistance",maxRenderDistance);}
             report.add("setup",setup);report.addProperty("frameDefinition","Minecraft.runTick start-to-start; intervals belong to the preceding phase; not scanout FPS");
             JsonArray summaries=new JsonArray();
             for(int p=0;p<segments.size();p++) {
