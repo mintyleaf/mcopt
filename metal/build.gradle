@@ -352,3 +352,9 @@ tasks.register('checkLodMeshRequests', JavaExec) {
 	classpath = sourceSets.metalChecks.runtimeClasspath
 	mainClass = 'mcopt.metal.lod.LodMeshRequestChecks'
 }
+
+tasks.register('checkLodPredictionCache', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.lod.LodPredictionCacheChecks'
+}

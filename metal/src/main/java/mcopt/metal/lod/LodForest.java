@@ -58,6 +58,10 @@ final class LodForest {
 
 	private static final int VEG = GenerationStep.Decoration.VEGETAL_DECORATION.ordinal();
 	private static final int CACHE_MAX = 40000;
+	private static final int GROUND_CACHE = 0, TREE_CACHE = 1, ICE_CACHE = 2;
+	private static final long GROUND_BYTES = 256L * (2 + 1 + 8) + 256;
+	private final LodPredictionCache cache = new LodPredictionCache(
+		Math.max(1, Integer.getInteger("mcopt.lod.forestCacheMiB", 64)) * 1048576L, CACHE_MAX);
 	private final LodNoise noise;
 	private final ServerLevel level;
 	private final ChunkGenerator generator;
@@ -69,15 +73,12 @@ final class LodForest {
 	private final ConcurrentHashMap<Holder<Biome>, List<IceFeature>> iceBiomes = new ConcurrentHashMap<>();
 	/** Iceberg features need a scratch volume while carving, but only their exposed columns are retained. Five ints each:
 	 * world x, world z, top face y, top state, wall state. Keep this cache much smaller than the tree/ground caches. */
-	private final ConcurrentHashMap<Long, int[]> iceColumns = new ConcurrentHashMap<>();
 	/** Per global feature index of the vegetal step: whether it grows trees (big plants seen from afar). */
 	private final boolean[] tree;
 	/** Per global feature index: whether it grows plants (grass, ferns, flowers, bushes, cane, cacti, pumpkins). */
 	private final boolean[] plants;
 	/** In a chunk's block list: the block was set by a tree feature (else by a plant feature). */
 	static final int FROM_TREE = 1 << 30;
-	private final ConcurrentHashMap<Long, Ground> grounds = new ConcurrentHashMap<>();
-	private final ConcurrentHashMap<Long, Trees> trees = new ConcurrentHashMap<>();
 	private final ThreadLocal<Stand> stands;
 	final java.util.concurrent.atomic.AtomicLong runs = new java.util.concurrent.atomic.AtomicLong(), runNanos = new java.util.concurrent.atomic.AtomicLong(),
 		failures = new java.util.concurrent.atomic.AtomicLong();
@@ -211,12 +212,9 @@ final class LodForest {
 				List<IceFeature> wanted = this.wantedIce(biome);
 				if (wanted.isEmpty()) continue;
 				long key = chunkKey(cx, cz);
-				int[] columns = this.iceColumns.get(key);
-				if (columns == null) {
-					columns = this.runIce(cx, cz, wanted);
-					if (this.iceColumns.size() > 4096) this.iceColumns.clear();
-					this.iceColumns.put(key, columns);
-				}
+				int chunkX = cx, chunkZ = cz;
+				int[] columns = this.cache.get(ICE_CACHE, key, () -> this.runIce(chunkX, chunkZ, wanted),
+					value -> 128L + 4L * value.length);
 				consumer.accept(columns);
 			}
 		}
@@ -296,25 +294,21 @@ final class LodForest {
 
 	/** The chunk's ground at block resolution (cached). */
 	Ground ground(int chunkX, int chunkZ) {
-		long key = chunkKey(chunkX, chunkZ);
-		Ground g = this.grounds.get(key);
-		if (g != null) return g;
-		LodTile t = new LodTile(0, chunkX * 16, chunkZ * 16, 16);
-		t.impostorTrees = false;
-		this.noise.generate(t);
-		g = groundOf(t, 0, 0, 16);
-		if (this.grounds.size() > CACHE_MAX) this.grounds.clear();
-		this.grounds.put(key, g);
-		return g;
+		return this.cache.get(GROUND_CACHE, chunkKey(chunkX, chunkZ), () -> {
+			LodTile t = new LodTile(0, chunkX * 16, chunkZ * 16, 16);
+			t.impostorTrees = false;
+			this.noise.generate(t);
+			return groundOf(t, 0, 0, 16);
+		}, value -> GROUND_BYTES);
 	}
 
 	/** A level-0 tile's chunks go into the ground cache as it is generated (tile cells from (cx, cz), 16 x 16). */
 	void offer(LodTile t) {
-		if (t.level != 0) return;
+		if (t.level != 0 || !this.available() || LodConfig.TREE_LEVELS <= 0) return;
 		for (int cz = 0; cz < t.size / 16; cz++) {
 			for (int cx = 0; cx < t.size / 16; cx++) {
 				long key = chunkKey((t.x0 >> 4) + cx, (t.z0 >> 4) + cz);
-				if (!this.grounds.containsKey(key)) this.grounds.put(key, groundOf(t, cx * 16, cz * 16, t.size));
+				if (!this.cache.contains(GROUND_CACHE, key)) this.cache.offer(GROUND_CACHE, key, groundOf(t, cx * 16, cz * 16, t.size), GROUND_BYTES);
 			}
 		}
 	}
@@ -340,13 +334,8 @@ final class LodForest {
 
 	/** The chunk's trees (cached): every block the game's tree features set when decorating it. */
 	Trees trees(int chunkX, int chunkZ) {
-		long key = chunkKey(chunkX, chunkZ);
-		Trees t = this.trees.get(key);
-		if (t != null) return t;
-		t = this.run(chunkX, chunkZ);
-		if (this.trees.size() > CACHE_MAX) this.trees.clear();
-		this.trees.put(key, t);
-		return t;
+		return this.cache.get(TREE_CACHE, chunkKey(chunkX, chunkZ), () -> this.run(chunkX, chunkZ),
+			value -> 128L + 4L * value.blocks.length);
 	}
 
 	private Trees run(int chunkX, int chunkZ) {
