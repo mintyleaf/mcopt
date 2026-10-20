@@ -26,16 +26,27 @@ isn't required; keep it if your other mods need it.
 
 To check it's working: press F3 (fn + F3 on a Mac keyboard); the bottom right says `Metal 3 (mcopt)`.
 
-Shows an fps counter in the top-left corner (hidden with F1 or F3; fn + F1 or fn + F3 on a Mac keyboard).
+F3 shows FPS and LOD generation/scouting statistics. The release does not include a separate FPS overlay.
 
 ## Settings
 
 - The perf profile is on by default.
 - `profile=none` in `~/Library/Application Support/minecraft/config/mcopt.properties` (in Prism, the instance's
   `minecraft/config` folder) turns it off. The first launch writes that file.
+- With Mod Menu installed, use **mcopt > Configure** for LOD rendering, population/scouting, saved imports and performance settings. Population workload (`low`/`balanced`/`high`) controls background work; Optimization profile controls renderer defaults. Save and restart Minecraft to apply changes; JVM arguments take precedence.
 - Far terrain is an experimental opt-in: `mcopt.lod=true` in the same file, for Macs with 10 or more GPU cores.
 
-## Numbers
+Opt-in settings (in the same file, or as `-D` flags):
+
+- `mcopt.renderScale=0.5` - render the game at a fraction of the window size and upscale (not pixel-exact: blurrier).
+- `mcopt.own.rgssTri=true` - atlas sampling at the exact mip level with linear filtering (not pixel-exact).
+- `mcopt.own.rgssOne=true` - with rgssTri: one far sample instead of four (not pixel-exact: distant shimmer).
+- `mcopt.metal.presentQueue=true` - present frames from a second command queue; `=acquire` also acquires there.
+- `mcopt.own.frag.tOcc=false` - turns the translucent-occlusion default back off.
+
+## Historical upstream benchmarks
+
+These upstream results predate this fork series and do not measure its LOD changes.
 
 fps spinning / flying, same test world, 1920x1080, render distance 16, VSync off, at least two runs each:
 
@@ -45,7 +56,7 @@ fps spinning / flying, same test world, 1920x1080, render distance 16, VSync off
 | MacBook Neo (A18 Pro, 5-core GPU, 8 GB) | 79-81 / 69-72 | 133-146 / 85-91 | 514-579 / 422-449 | 591-638 / 477-504 |
 | Mac mini M6 (12-core GPU, 16 GB) | 297-328 / 283-291 | 454-460 / 406-413 | 1988-1991 / 1738-1742 | 2020-2022 / 1690-1704 |
 
-The mini and Neo cells ran on 6c133ecc, whose only difference from 9865a0a3 is vGroup, which is gated off on those GPUs. The Neo's vanilla and Sodium cells come from the da566d00 run. This build differs from 9865a0a3 only in code that runs when Distant Horizons is installed.
+The mini and Neo cells ran on 6c133ecc, whose only difference from 9865a0a3 is vGroup, which is gated off on those GPUs. The Neo's vanilla and Sodium cells come from the da566d00 run. The benchmarked upstream build differs from 9865a0a3 only in code that runs when Distant Horizons is installed.
 
 For the most fps: Options > Video Settings, VSync off and Max Framerate Unlimited. The numbers above are with VSync off.
 

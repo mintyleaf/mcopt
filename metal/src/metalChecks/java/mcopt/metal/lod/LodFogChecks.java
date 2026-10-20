@@ -3,7 +3,7 @@ package mcopt.metal.lod;
 import net.minecraft.client.renderer.fog.FogData;
 import net.minecraft.world.level.material.FogType;
 
-/** Regression for Atmospherics biome transitions crossing the vanilla haze threshold. */
+/** Regression for environmental fog transitions crossing the vanilla haze threshold. */
 public final class LodFogChecks {
 	public static void main(String[] args) {
 		float previous = 0;

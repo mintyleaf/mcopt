@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
-"""Build the single installable jar: the mcopt-metal jar (natives inside) with the fps counter nested through Fabric's
-jar-in-jar.
+"""Package the single installable Metal jar, including its native libraries.
 
-  tools/bundle.py --metal METAL.jar --fps FPS.jar --out OUT.jar
+  tools/bundle.py --metal METAL.jar --out OUT.jar
 
-The outer jar stays mod id mcopt-metal (java -jar still explains the install). It gains META-INF/jars/<fps jar>, a
-"jars" list in fabric.mod.json, and META-INF/licenses/mcopt-fps/ with the nested jar's own licence files. Sodium is
-never bundled: it's a separate download.
+--fps optionally nests the legacy FPS overlay; standard releases omit it.
 """
 import argparse, io, json, os, re, zipfile
 
@@ -16,11 +13,11 @@ LICENCE_NAME = re.compile(r'^(META-INF/)?(LICEN[CS]E|COPYING|NOTICE)[^/]*$', re.
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--metal', required=True)
-    p.add_argument('--fps', required=True)
+    p.add_argument('--fps', help='Optional legacy FPS overlay; omitted from standard releases')
     p.add_argument('--out', required=True)
     a = p.parse_args()
 
-    nested = [('mcopt-fps', os.path.basename(a.fps), open(a.fps, 'rb').read())]  # (slug, file name, bytes)
+    nested = [('mcopt-fps', os.path.basename(a.fps), open(a.fps, 'rb').read())] if a.fps else []  # (slug, file name, bytes)
     licences = {}  # archive path -> bytes
     listing = []
     for slug, name, data in nested:

@@ -9,3 +9,5 @@ mcopt-pack-cache/
 dist/
 .replay-stamp
 .replay-lineage
+# Driver-backed checks bootstrap Minecraft logging.
+metal/logs/
