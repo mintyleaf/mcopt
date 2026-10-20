@@ -609,7 +609,7 @@ final class LodPk {
 	// ---- the visible set (VIS) ----
 
 	private final boolean[] visPending = new boolean[SECTORS];
-	private final long visFacet = MemoryUtil.nmemCalloc(1, 512), visUse = MemoryUtil.nmemCalloc(1, 16);
+	private final long visFacet = MemoryUtil.nmemCalloc(1, Lod.COMP_FRAME_BYTES), visUse = MemoryUtil.nmemCalloc(1, 16);
 	int statVisPruned;
 
 	/**

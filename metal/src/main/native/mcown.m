@@ -183,7 +183,9 @@ Own *mco_new(Ctx *ctx, const char *source, int compact, int fat, int cpuClip, ch
 		[vcv setConstantValue:&vsMode type:MTLDataTypeInt atIndex:7];
 		[vcv setConstantValue:&no type:MTLDataTypeBool atIndex:8];
 		[vcv setConstantValue:&yes type:MTLDataTypeBool atIndex:4];
+		[vcv setConstantValue:&yes type:MTLDataTypeBool atIndex:26];
 		w->vsTranslucent = [lib newFunctionWithName:@"own_vs" constantValues:vcv error:&e];
+		[vcv setConstantValue:&no type:MTLDataTypeBool atIndex:26];
 		[vcv setConstantValue:&yes type:MTLDataTypeBool atIndex:8];
 		[vcv setConstantValue:&no type:MTLDataTypeBool atIndex:4];
 		w->vsQuads = [lib newFunctionWithName:@"own_vs" constantValues:vcv error:&e];
@@ -201,6 +203,8 @@ Own *mco_new(Ctx *ctx, const char *source, int compact, int fat, int cpuClip, ch
 			[cv setConstantValue:&cut type:MTLDataTypeBool atIndex:0];
 			[cv setConstantValue:&limit type:MTLDataTypeFloat atIndex:5];
 			[cv setConstantValue:&lvl type:MTLDataTypeBool atIndex:6];
+			bool water = c == 2;
+			[cv setConstantValue:&water type:MTLDataTypeBool atIndex:26];
 			id<MTLFunction> fs = [lib newFunctionWithName:@"own_fs" constantValues:cv error:&e];
 			if (!fs) {
 				ownErr(e, "own_fs", err, errCap);
@@ -547,6 +551,8 @@ static id<MTLFunction> ownStage(Own *w, int kind, int vertex, char *err, int err
 	[cv setConstantValue:&fogvertAll type:MTLDataTypeBool atIndex:19];
 	[cv setConstantValue:&qflat type:MTLDataTypeBool atIndex:21];
 	[cv setConstantValue:&fogvertT type:MTLDataTypeBool atIndex:20];
+	bool water = translucent != 0;
+	[cv setConstantValue:&water type:MTLDataTypeBool atIndex:26];
 	if (group) [cv setConstantValue:&group type:MTLDataTypeBool atIndex:25];
 	if (vertex) {
 		bool cmp = w->compact != 0, fatv = w->fat != 0, clipv = w->cpuClip != 0, tr = translucent != 0;
@@ -816,6 +822,14 @@ int mco_draw(Own *w, Enc *enc, int cutout, const void *frame, int frameLength, i
 	[r setFragmentBuffer:(id<MTLBuffer>) (void *) u[2] offset:(NSUInteger) u[3] atIndex:22];
 	[r setFragmentBuffer:(id<MTLBuffer>) (void *) u[4] offset:(NSUInteger) u[5] atIndex:23];
 	[r setFragmentBuffer:(id<MTLBuffer>) (void *) u[6] offset:(NSUInteger) u[7] atIndex:24];
+	if ((cutout & 15) == 3 && frameLength >= 192) {
+		const uint8_t *water = (const uint8_t *) frame + 80;
+		const uint64_t *buffers = (const uint64_t *) (water + 80);
+		[r setFragmentBytes:water length:80 atIndex:25];
+		[r setFragmentBuffer:buffers[0] ? (id<MTLBuffer>) (void *) buffers[0] : sections offset:0 atIndex:28];
+		[r setFragmentBuffer:buffers[1] ? (id<MTLBuffer>) (void *) buffers[1] : recs offset:0 atIndex:29];
+		[r setFragmentBuffer:buffers[2] ? (id<MTLBuffer>) (void *) buffers[2] : lists offset:0 atIndex:30];
+	}
 	if ((cutout >> 13) & 3) [r setVertexBuffer:(id<MTLBuffer>) (void *) u[6] offset:(NSUInteger) u[7] atIndex:24];  // (F_FOGVERT: the fog block per vertex)
 	[r setVertexTexture:light atIndex:17];
 	[r setVertexSamplerState:lightSampler atIndex:15];

@@ -278,7 +278,9 @@ kernel void seam_publish(constant PubFrame& f [[buffer(0)]], device const PubTil
     if ((t.flags & 4u) != 0u) {
         tex[f.levelWords + off] = staging[s + 4096u * k];
         tex[2u * f.levelWords + off] = staging[s + 4096u * (k + 1u)];
+        k += 2u;
     }
+    if ((t.flags & 8u) != 0u) tex[3u * f.levelWords + off] = staging[s + 4096u * k];
 }
 
 // -Dmcopt.lod.taa=ALPHA (LodTaa): a temporal filter for the far terrain's pixels only, against shimmer (thin far features

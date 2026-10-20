@@ -23,7 +23,7 @@ final class LodPublish {
 	private static final int RING = 4;
 	/** Tiles a frame publishes at most (LodMesh holds the rest for the next frame). */
 	static final int CAP = 32;
-	private static final int TILE_WORDS = 4096 * 7, TILE_BYTES = 32, FRAME_BYTES = 16;
+	private static final int TILE_WORDS = 4096 * 8, TILE_BYTES = 32, FRAME_BYTES = 16;
 	private static final MethodHandle NEW = fn("mcl_seam_new", JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT);
 	private static final MethodHandle PUBLISH = fn("mcl_seam_publish", null, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG,
 		JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT);
@@ -31,7 +31,10 @@ final class LodPublish {
 	private final long seam;
 	private final long[] staging = new long[RING], tiles = new long[RING];
 	private final long frameBuf = MemoryUtil.nmemCalloc(1, FRAME_BYTES);
-	private int slot, count, words;
+	private int slot, count, words, submissions;
+	private long frame;
+	long frame() {return this.frame;}
+	private final java.util.HashMap<Long,Integer> tileSlots=new java.util.HashMap<>();
 	final java.util.concurrent.atomic.AtomicLong tilesPublished = new java.util.concurrent.atomic.AtomicLong();
 
 	LodPublish(long ctx) {
@@ -67,18 +70,23 @@ final class LodPublish {
 
 	/** Start of a frame's installs: this frame's staging slot (written by the CPU now, read by this frame's GPU work only). */
 	void begin(long frame) {
+		this.frame=frame;
 		this.slot = (int) (frame % RING);
 		this.count = 0;
 		this.words = 0;
+		this.submissions=0;
+		this.tileSlots.clear();
 	}
 
 	boolean full() {
-		return this.count >= CAP;
+		return this.submissions >= CAP;
 	}
 
 	/** Stages one tile's words (already masked as LodClip writes them). */
 	void stage(int level, int tx, int tz, int[] g, int[] c, int @org.jspecify.annotations.Nullable [] cr, int @org.jspecify.annotations.Nullable [] runs,
 		int @org.jspecify.annotations.Nullable [] tw, int @org.jspecify.annotations.Nullable [] pl) {
+		if(this.full()) throw new IllegalStateException("LOD publication budget exhausted");
+		this.submissions++;
 		long base = LodNative.contents(this.staging[this.slot]);
 		int src = this.words;
 		long at = base + (long) src * 4;
@@ -99,15 +107,22 @@ final class LodPublish {
 			at = put(at, pl, 4096);
 			flags |= 4;
 		}
+		if (tw != null && tw.length > 4096) {
+			at = put(at, tw, 4096);
+			flags |= 8;
+		}
 		this.words += (int) ((at - (base + (long) src * 4)) / 4);
-		long t = LodNative.contents(this.tiles[this.slot]) + (long) this.count * TILE_BYTES;
+		// One GPU workgroup per destination tile: two versions writing the same cells concurrently can tear planes.
+		long key=LodTile.key(level,tx,tz);Integer previous=this.tileSlots.get(key);
+		int destination=previous!=null?previous:this.count++;
+		this.tileSlots.put(key,destination);
+		long t = LodNative.contents(this.tiles[this.slot]) + (long) destination * TILE_BYTES;
 		MemoryUtil.memPutInt(t, level);
 		MemoryUtil.memPutInt(t + 4, tx);
 		MemoryUtil.memPutInt(t + 8, tz);
 		MemoryUtil.memPutInt(t + 12, flags);
 		MemoryUtil.memPutInt(t + 16, src);
-		this.count++;
-		this.tilesPublished.incrementAndGet();
+		if(previous==null) this.tilesPublished.incrementAndGet();
 	}
 
 	private static long put(long at, int[] a, int from) {

@@ -22,9 +22,11 @@ import org.jspecify.annotations.Nullable;
  * - spare[:M]: under pressure (the client lacks chunks in the render distance), a fine tile may still run while fewer far
  *   workers generate than the cores the server's worldgen pool leaves idle (cores - its active threads - M, M default 2: the
  *   render and server threads), measured at admission from Util.backgroundExecutor()'s ForkJoinPool.
- * -Dmcopt.lod.yield.budget=K lets K workers keep generating under pressure (default 0: the far terrain only fills when the
- * server is idle; the coarsest level's tiles always pass, they are the fallback under everything). Disk-cache loads and real
- * chunks' summaries never wait. Pressure is sampled on the render thread every 3 frames.
+ * -Dmcopt.lod.yield.budget=K explicitly allows K fine workers under pressure (default 0). In missing/spare modes,
+ * mcopt.lod.yield.streaming=true also lets visible tiles ahead share the fallback allowance during ordinary edge streaming.
+ * Near-player holes or severe backlog stop this automatic fine allowance; population has its own stricter backlog gate.
+ * The default shared allowance is one job total, not one fallback plus one fine job. Cached tiles and real summaries bypass CPU generation
+ * admission; optional cached tile decoding still yields to LodMemoryBudget. Pressure is sampled on the render thread every3frames.
  */
 final class LodYield {
 	private LodYield() {
@@ -35,12 +37,21 @@ final class LodYield {
 	static final boolean ON = MODE != 0;
 	static final int THRESH = SPEC.contains(":") ? Integer.parseInt(SPEC.substring(SPEC.indexOf(':') + 1).trim()) : MODE == 3 ? 2 : 0;
 	private static final int CORES = Runtime.getRuntime().availableProcessors();
-	private static final AtomicInteger spareRunning = new AtomicInteger();
+	private static final LodGenerationBudget generation = new LodGenerationBudget();
 	private static java.util.concurrent.@Nullable ForkJoinPool pool;
 	static final int BUDGET = Integer.getInteger("mcopt.lod.yield.budget", 0);
+	private static final int COARSE_BUDGET = Math.max(1, Integer.getInteger("mcopt.lod.yield.coarseBudget", 1));
+	private static final boolean STREAMING = Boolean.parseBoolean(System.getProperty("mcopt.lod.yield.streaming", "true"));
 
 	static volatile boolean pressure;
-	/** The coarsest level (its tiles never wait), set by Lod with the clipmap. */
+	static volatile boolean populationPressure;
+	static volatile boolean severeChunkPressure;
+	static final AtomicLong streamingStarts = new AtomicLong();
+	private static boolean memoryPressure;
+	private static java.lang.ref.WeakReference<ClientLevel> coverageOwner = new java.lang.ref.WeakReference<>(null);
+	private static LodChunkPressure chunkPressure = new LodChunkPressure();
+	private static LodStreamingPressure streamingPressure = new LodStreamingPressure();
+	/** The coarsest fallback level, set by Lod with the clipmap. */
 	static volatile int top = Integer.MAX_VALUE;
 	private static final AtomicInteger holders = new AtomicInteger(), paused = new AtomicInteger();
 	static final AtomicLong pausedNanos = new AtomicLong(), pressureFrames = new AtomicLong(), sampledFrames = new AtomicLong();
@@ -52,15 +63,33 @@ final class LodYield {
 	private static java.lang.reflect.Method hasWork;
 
 	/** Render thread: the pressure now. */
-	static void frame(Minecraft mc, double camX, double camZ, int rd) {
-		if (frames++ % 3 != 0 || mc.level == null) return;
+	static void frame(Minecraft mc, double camX, double camY, double camZ, int rd, LodField field) {
+		if (mc.level == null) return;
+		if (coverageOwner.get() != mc.level) {
+			coverageOwner = new java.lang.ref.WeakReference<>(mc.level);
+			chunkPressure = new LodChunkPressure();
+			streamingPressure = new LodStreamingPressure();
+			frames = 0;
+		}
+		if (frames++ % 3 != 0) return;
+		var coverage = LodGenStats.coverage(mc.level, camX, camZ, rd);
+		boolean backlog = chunkPressure.sample(coverage.missing(), coverage.total(), coverage.nearMissing());
+		boolean severe = streamingPressure.sample(coverage.missing(), coverage.total(), coverage.nearMissing());
 		boolean p;
 		if (MODE == 1) {
 			p = serverHasWork(mc);
 		} else {
-			p = LodGenStats.missing(mc.level, camX, camZ, rd) > (MODE == 3 ? 0 : THRESH);
+			p = coverage.missing() > (MODE == 3 ? 0 : THRESH);
 		}
+		boolean memory = LodMemoryBudget.pressured();
+		boolean changed = pressure != p || populationPressure != backlog || memoryPressure != memory || severeChunkPressure != severe;
+		memoryPressure = memory;
 		pressure = p;
+		populationPressure = backlog;
+		severeChunkPressure = severe;
+		if (changed) wake();
+		LodScheduling.sample(System.nanoTime(), mc.level.dimension(), coverage, generation, p, backlog, paused.get(),
+			mc, field, camX, camY, camZ);
 		sampledFrames.incrementAndGet();
 		if (p) pressureFrames.incrementAndGet();
 	}
@@ -89,41 +118,63 @@ final class LodYield {
 
 	/**
 	 * -Dmcopt.lod.yield.at=take (default): the gate is LodField's worker loop, before a generation job is taken on (admit);
-	 * a job that may not run goes back into the queue, so no worker ever holds a waiting tile and the coarsest level's tiles
-	 * (first in the queue's order) keep flowing. tile: the gate is inside LodNoise.generate (enter, checkpoints), the first
+ * a job that may not run goes back into an eligibility lane. Cached, fallback and visible jobs remain selectable behind
+ * a denied fine head. tile: the gate is inside LodNoise.generate (enter, checkpoints), the first
 	 * version: a worker blocks holding its tile (holes when all of them do).
 	 */
 	static final boolean AT_TAKE = !"tile".equals(System.getProperty("mcopt.lod.yield.at", "take"));
 
-	/** Per worker: the budget (2) or spare-capacity (3) slot its last admitted tile held, released when it asks again. */
+	/** Per worker: coarse (1) or fine (2) lease, released in the job's finally block, including failures/shutdown. */
 	private static final ThreadLocal<int[]> SLOT = ThreadLocal.withInitial(() -> new int[1]);
 
 	/**
 	 * LodField's worker, about to generate a tile of this level: whether it may now (else the job goes back into the queue).
-	 * Without pressure, or for the coarsest level (the fallback under everything, never yet published where it is queued),
-	 * always; under pressure only with a budget slot or (spare) an idle core. A slot is held until the same worker asks
-	 * again: its tile is done by then.
+	 * All running jobs count, including ones admitted before pressure arrived. Cache loads do not need a lease.
 	 */
 	static boolean admit(int level) {
+		return admit(level, false);
+	}
+
+	static boolean streamingAllowed() { return STREAMING && (MODE == 2 || MODE == 3) && !severeChunkPressure; }
+
+	private static int fineBudget() {
+		return Math.max(0, BUDGET) + (MODE == 3 ? Math.max(0, CORES - serverActive() - THRESH) : 0);
+	}
+
+	/** Non-reserving hint for queue selection. The acquire below resolves competing workers atomically. */
+	static boolean available(int level, boolean visible) {
+		if (!ON || !AT_TAKE) return true;
+		int base = fineBudget();
+		int fine = Math.max(base, visible && streamingAllowed() ? 1 : 0);
+		return generation.available(level >= top, pressure, COARSE_BUDGET, fine, COARSE_BUDGET + base);
+	}
+
+	static boolean admit(int level, boolean visible) {
 		if (!AT_TAKE) return true;
 		int[] slot = SLOT.get();
-		if (slot[0] == 2) holders.decrementAndGet();
-		else if (slot[0] == 3) spareRunning.decrementAndGet();
-		slot[0] = 0;
-		if (!pressure || level >= top) return true;
-		int h = holders.get();
-		if (h < BUDGET && holders.compareAndSet(h, h + 1)) {
-			slot[0] = 2;
-			return true;
-		}
-		if (MODE == 3) {
-			int idle = CORES - serverActive() - THRESH, r = spareRunning.get();
-			if (r < idle && spareRunning.compareAndSet(r, r + 1)) {
-				slot[0] = 3;
-				return true;
-			}
-		}
-		return false;
+		if (slot[0] != 0) throw new IllegalStateException("LOD generation lease still held");
+		boolean coarse = level >= top;
+		int base = fineBudget();
+		int fineLimit = Math.max(base, visible && streamingAllowed() ? 1 : 0);
+		// Fine streaming shares the existing fallback allowance, rather than adding another worker to it.
+		if (!generation.acquire(coarse, pressure, COARSE_BUDGET, fineLimit, COARSE_BUDGET + base)) return false;
+		if (!coarse && pressure && visible && base == 0) streamingStarts.incrementAndGet();
+		slot[0] = coarse ? 1 : 2;
+		return true;
+	}
+
+	static void completed() {
+		if (!AT_TAKE) return;
+		int[] slot = SLOT.get();
+		int kind = slot[0]; slot[0] = 0;
+		if (kind != 0) generation.release(kind == 1);
+	}
+
+	static long revision() { return generation.revision(); }
+	static void wake() { generation.signal(); }
+	static void awaitWork(long observed) {
+		try { generation.awaitWork(observed); }
+		catch (InterruptedException e) { Thread.currentThread().interrupt(); }
 	}
 
 	/** The server's worldgen pool (Worker-Main): threads busy now (approximate, any thread may ask). */
@@ -140,12 +191,12 @@ final class LodYield {
 		}
 	}
 
-	/** A worker whose job was requeued parks a moment (the pressure is re-sampled every 3 frames). */
-	static void idle() {
+	/** Wait for coverage/work/permit changes instead of repeatedly locking the queue every 3 ms. */
+	static void idle(long observed) {
 		long t0 = System.nanoTime();
 		paused.incrementAndGet();
 		try {
-			Thread.sleep(3);
+			generation.await(observed);
 		} catch (InterruptedException e) {
 			Thread.currentThread().interrupt();
 		} finally {

@@ -37,7 +37,7 @@ struct CullFrame {
 	float4 planes[4];     // left, right, bottom, top of the view frustum, camera-relative world space (xyz . p + w >= 0 inside)
 	int4 camBlock;        // camera block position
 	float4 camOffset;     // block position - camera position (vanilla's CameraOffset)
-	int4 camSection;      // camera section (x, y, z)
+	int4 camSection;      // camera section (x, y, z), vertical section range in w
 	int viewDistance;     // chunks
 	uint sectionCount;
 	uint listCap;         // per layer
@@ -195,11 +195,11 @@ kernel void own_cull(constant CullFrame &f [[buffer(0)]], device const Section *
 	if (f.useMask != 0 && (mask[i >> 5] & (1u << (i & 31))) == 0) return;
 	Section s = sections[i];
 	if (s.recCount == 0) return;
-	// vanilla's distance rule (SectionOcclusionGraph.isInViewDistance, ChunkTrackingView.isWithinDistance; vertical: getRelativeFrom)
+	// Horizontal vanilla distance rule; the vertical range also includes the full column while LOD fog is extended.
 	int3 sec = int3(s.x, s.y, s.z) >> 4;
 	int dx = max(0, abs(sec.x - f.camSection.x) - 1), dz = max(0, abs(sec.z - f.camSection.z) - 1);
 	if (dx * dx + dz * dz >= f.viewDistance * f.viewDistance) return;
-	if (abs(sec.y - f.camSection.y) > f.viewDistance) return;
+	if (abs(sec.y - f.camSection.y) > f.camSection.w) return;
 	float3 o = float3(int3(s.x, s.y, s.z) - f.camBlock.xyz) + f.camOffset.xyz;
 	for (int p = 0; p < 4; p++) {
 		float4 pl = f.planes[p];
@@ -291,7 +291,7 @@ kernel void own_cull_r(constant CullFrame &f [[buffer(0)]], device const Section
 				int3 sec = int3(s.x, s.y, s.z) >> 4;
 				int dx = max(0, abs(sec.x - f.camSection.x) - 1), dz = max(0, abs(sec.z - f.camSection.z) - 1);
 				float3 o = float3(int3(s.x, s.y, s.z) - f.camBlock.xyz) + f.camOffset.xyz;
-				bool in = dx * dx + dz * dz < f.viewDistance * f.viewDistance && abs(sec.y - f.camSection.y) <= f.viewDistance;
+				bool in = dx * dx + dz * dz < f.viewDistance * f.viewDistance && abs(sec.y - f.camSection.y) <= f.camSection.w;
 				for (int p = 0; p < 4 && in; p++) {
 					float4 pl = f.planes[p];
 					float3 v = o + select(float3(0), float3(16), pl.xyz > 0);
@@ -539,7 +539,7 @@ kernel void frag_cull(constant CullFrame &f [[buffer(0)]], device const Section 
 	int3 sec = int3(s.x, s.y, s.z) >> 4;
 	int dx = max(0, abs(sec.x - f.camSection.x) - 1), dz = max(0, abs(sec.z - f.camSection.z) - 1);
 	if (dx * dx + dz * dz >= f.viewDistance * f.viewDistance) return;
-	if (abs(sec.y - f.camSection.y) > f.viewDistance) return;
+	if (abs(sec.y - f.camSection.y) > f.camSection.w) return;
 	float3 o = float3(int3(s.x, s.y, s.z) - f.camBlock.xyz) + f.camOffset.xyz;
 	if (!fragBoxIn(f, o, o + 16)) return;
 	float3 cam = -o;
@@ -687,7 +687,7 @@ template <ushort W> static void fragCullS(constant CullFrame &f, device const Se
 	int3 sec = int3(s.x, s.y, s.z) >> 4;
 	int dx = max(0, abs(sec.x - f.camSection.x) - 1), dz = max(0, abs(sec.z - f.camSection.z) - 1);
 	if (dx * dx + dz * dz >= f.viewDistance * f.viewDistance) return;
-	if (abs(sec.y - f.camSection.y) > f.viewDistance) return;
+	if (abs(sec.y - f.camSection.y) > f.camSection.w) return;
 	float3 o = float3(int3(s.x, s.y, s.z) - f.camBlock.xyz) + f.camOffset.xyz;
 	if (!fragBoxIn(f, o, o + 16)) return;
 	float3 cam = -o;
@@ -1604,6 +1604,12 @@ static float linearFogV(float vertexDistance, float fogStart, float fogEnd) {
 // marks the units that own at least one visible pixel
 constant bool F_ORACLE_SET [[function_constant(17)]];
 constant bool F_ORACLE = is_function_constant_defined(F_ORACLE_SET) && F_ORACLE_SET;
+constant bool F_WATER_SET [[function_constant(26)]];
+#ifdef OWN_WATER_TRANSITION
+constant bool F_WATER = is_function_constant_defined(F_WATER_SET) && F_WATER_SET;
+#else
+constant bool F_WATER = false;
+#endif
 
 struct VOut {
 	float4 pos [[position]];
@@ -1616,6 +1622,7 @@ struct VOut {
 	uint oracleUnit [[flat]] [[function_constant(F_ORACLE)]];
 	float fogF [[function_constant(F_FVT)]];
 	uint fogIn [[flat]] [[function_constant(F_FVT)]];
+	float2 waterRel [[function_constant(F_WATER)]];
 };
 
 static void putColor(thread VOut &o, float4 c) {
@@ -1922,6 +1929,7 @@ static VOut ownShade(Vtx v, int3 origin, int uploadMs, constant DrawFrame &df, c
 	rel = float3(v.pos);
 	int3 cbp = int3(g.CameraBlockPos);
 	float3 pos = float3(v.pos) + float3(origin - cbp) + float3(g.CameraOffset);
+	if (F_WATER) o.waterRel = pos.xz;
 	if (CPU_CLIP) o.pos = df.clip * float4(pos, 1.0);
 	else o.pos = (proj.ProjMat * t.ModelViewMat) * float4(pos, 1.0);
 	o.pos.y = -o.pos.y;  // the backend's row order (SPIRV-Cross flip_vert_y)
@@ -2312,8 +2320,49 @@ static float linear_fog_value(float vertexDistance, float fogStart, float fogEnd
 constant bool CUTOUT [[function_constant(0)]];
 constant float CUTOUT_LIMIT [[function_constant(5)]];  // vanilla's ALPHA_CUTOUT: 0.5 cutout, 0.1 translucent
 
+struct WaterFrame {
+	float4 stillUv, flowUv;
+	int4 mask;  // chunk origin x/z, side length
+	int4 clip;  // log2 N, level-0 window origin x/z in blocks, N (0: disabled)
+	float4 light; // LOD sky light RGB, transition width in blocks
+};
+
+static bool ownWaterUv(float2 uv, float4 rect) {
+	return all(uv > rect.xy) && all(uv < rect.zw);
+}
+
+static float ownWaterEdge(device const float *edges, int2 p, int size, float width) {
+	return any(p < 0) || any(p >= size) ? -width : edges[p.y * size + p.x];
+}
+
+// Close to a real handoff edge, fade both the water's texture/color and its transparency to the far-water approximation.
+// The signed field follows missing chunks as well as the render-distance border; four reads replace a per-pixel mask search.
+static float4 ownWaterTransition(float4 color, float2 uv, float2 rel, constant Globals &g, constant WaterFrame &water,
+	device const uint *geom, device const uint *colors, device const float *edges) {
+	if (water.clip.w <= 0 || water.mask.z <= 0 || water.light.w <= 0
+		|| !(ownWaterUv(uv, water.stillUv) || ownWaterUv(uv, water.flowUv))) return color;
+	float2 blockRel = rel - float2(g.CameraOffset.x, g.CameraOffset.z);
+	int2 block = int2(g.CameraBlockPos.x, g.CameraBlockPos.z) + int2(floor(blockRel));
+	if (any(block < water.clip.yz) || any(block >= water.clip.yz + water.clip.w)) return color;
+	int m = (1 << water.clip.x) - 1;
+	uint idx = uint(((block.y & m) << water.clip.x) | (block.x & m));
+	uint geometry = geom[idx];
+	if ((geometry & 0x3000u) != 0x3000u) return color; // valid wet cell only; glass, lava and dry terrain keep vanilla shading
+	float2 cell = (blockRel + float2(int2(g.CameraBlockPos.x, g.CameraBlockPos.z) - water.mask.xy * 16)) / 16.0 - 0.5;
+	int2 p = int2(floor(cell));
+	float2 t = fract(cell);
+	float distance = mix(mix(ownWaterEdge(edges, p, water.mask.z, water.light.w), ownWaterEdge(edges, p + int2(1, 0), water.mask.z, water.light.w), t.x),
+		mix(ownWaterEdge(edges, p + int2(0, 1), water.mask.z, water.light.w), ownWaterEdge(edges, p + 1, water.mask.z, water.light.w), t.x), t.y);
+	float blend = 1.0 - smoothstep(0.0, water.light.w, distance);
+	uint c = colors[idx] & 0xffffu;
+	float3 target = float3(float((c >> 11) & 31u) / 31.0, float((c >> 5) & 63u) / 63.0, float(c & 31u) / 31.0) * water.light.rgb;
+	return mix(color, float4(target, 1.0), blend);
+}
+
 fragment float4 own_fs(VOut in [[stage_in]], constant Globals &g [[buffer(22)]], constant Terrain &t [[buffer(23)]], constant Fog &fog [[buffer(24)]],
-	texture2d<float> atlas [[texture(16)]], sampler atlasSampler [[sampler(14)]]) {
+	texture2d<float> atlas [[texture(16)]], sampler atlasSampler [[sampler(14)]],
+	constant WaterFrame &water [[buffer(25), function_constant(F_WATER)]], device const uint *waterGeom [[buffer(28), function_constant(F_WATER)]],
+	device const uint *waterColors [[buffer(29), function_constant(F_WATER)]], device const float *waterEdges [[buffer(30), function_constant(F_WATER)]]) {
 #ifdef OWN_TPROBE
 	// (probes 1 and 3: the translucent fragment stage returns a constant, blending kept; translucent = cutout at limit 0.1)
 	if ((OWN_TPROBE == 1 || OWN_TPROBE == 3) && CUTOUT && CUTOUT_LIMIT < 0.2) return float4(0.2, 0.3, 0.8, 0.5);
@@ -2326,6 +2375,7 @@ fragment float4 own_fs(VOut in [[stage_in]], constant Globals &g [[buffer(22)]],
 	float2 pixelSize = 1.0f / float2(t.TextureSize);
 	float4 color = (g.UseRgss == 1 ? sampleRGSS(atlas, atlasSampler, in.texCoord0, pixelSize) : sampleNearest(atlas, atlasSampler, in.texCoord0, pixelSize))
 		* getColor(in);
+	if (F_WATER) color = ownWaterTransition(color, in.texCoord0, in.waterRel, g, water, waterGeom, waterColors, waterEdges);
 	// F_LEAN: the chunk visibility is 1 (mix(x, y, 1) is y), the render-distance fog value 0 (max(e, 0) is e for e >= 0)
 	if (F_RICH) color = mix(fog.FogColor * float4(1, 1, 1, color.a), color, in.chunkVisibility);
 	if (CUTOUT && color.a < CUTOUT_LIMIT) discard_fragment();

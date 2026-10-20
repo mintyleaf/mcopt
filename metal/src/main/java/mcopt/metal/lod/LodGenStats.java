@@ -28,18 +28,27 @@ final class LodGenStats {
 
 	/** Chunks whose centre lies within the render distance of the camera that the client doesn't have. */
 	static int missing(ClientLevel level, double camX, double camZ, int rd) {
+		return coverage(level, camX, camZ, rd).missing();
+	}
+
+	record Coverage(int missing, int total, int nearMissing) { }
+	static Coverage coverage(ClientLevel level, double camX, double camZ, int rd) {
 		int pcx = (int) Math.floor(camX) >> 4, pcz = (int) Math.floor(camZ) >> 4;
 		double r2 = rd * 16.0 * rd * 16.0;
-		int missing = 0;
+		int missing = 0, total = 0, nearMissing = 0;
 		var chunks = level.getChunkSource();
 		for (int dz = -rd - 1; dz <= rd + 1; dz++) {
 			for (int dx = -rd - 1; dx <= rd + 1; dx++) {
 				double ox = (pcx + dx) * 16 + 8 - camX, oz = (pcz + dz) * 16 + 8 - camZ;
 				if (ox * ox + oz * oz > r2) continue;
-				if (!chunks.hasChunk(pcx + dx, pcz + dz)) missing++;
+				total++;
+				if (!chunks.hasChunk(pcx + dx, pcz + dz)) {
+					missing++;
+					if (Math.abs(dx) <= 2 && Math.abs(dz) <= 2) nearMissing++;
+				}
 			}
 		}
-		return missing;
+		return new Coverage(missing, total, nearMissing);
 	}
 
 	static synchronized void frame(ClientLevel level, LodField field, double camX, double camZ, int rd) {

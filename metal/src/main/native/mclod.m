@@ -41,6 +41,7 @@ void mcl_release(id obj) {
 #define LOD_PSO_COMP 0
 #define LOD_PSO_MESH 1
 #define LOD_PSO_PLANT 2
+#define LOD_PSO_HANDOFF 3
 
 typedef struct {
 	MTLPixelFormat colors[MAX_COLORS];
@@ -57,6 +58,8 @@ typedef struct {
 	id<MTLComputePipelineState> march, segMax, segFill, rows;
 	id<MTLComputePipelineState> meshReset, meshCull, meshFinish, meshQuads, meshFinish2, hzClear, hzPrefix, meshEmit, meshFinishList;
 	id<MTLFunction> meshVs, meshFsVanilla, meshFsGbuffer, plantVs, plantFsVanilla, plantFsGbuffer;
+	id<MTLFunction> handoffVs, handoffFsVanilla, handoffFsGbuffer;
+	int profileSplit;
 	id<MTLBuffer> meshIdx, plantIdx;   // {0, 1, 2, 2, 3, 0} + 4q for the survivors' 64-quad and the plants' 32-quad instances
 	id<MTLDepthStencilState> depthTest;
 	// -Dmcopt.lod.meshFences: the cull's outputs untracked, ordered by two fences instead: the draw's vertex stage waits for
@@ -75,6 +78,13 @@ typedef struct {
 	MTLTimestamp cullCpu0, cullGpu0;
 	uint64_t cullLast[16];
 } LodCols;
+
+static id<MTLFunction> meshFunction(id<MTLLibrary> library, NSString *name, int specialized, bool handoff, NSError **error) {
+	if (!specialized) return [library newFunctionWithName:name];
+	MTLFunctionConstantValues *values = [[MTLFunctionConstantValues new] autorelease];
+	[values setConstantValue:&handoff type:MTLDataTypeBool atIndex:0];
+	return [library newFunctionWithName:name constantValues:values error:error];
+}
 
 LodCols *mcl_cols_new(Ctx *ctx, const char *source, char *err, int errCap) {
 	@autoreleasepool {
@@ -103,6 +113,7 @@ LodCols *mcl_cols_new(Ctx *ctx, const char *source, char *err, int errCap) {
 		}
 		LodCols *l = calloc(1, sizeof(LodCols));
 		l->ctx = ctx;
+		l->profileSplit = strstr(source, "#define LOD_PROFILE_SPLIT 1") != NULL;
 		l->cullSlot = -1;
 		l->library = lib;
 		l->march = pso;
@@ -150,9 +161,21 @@ LodCols *mcl_cols_new(Ctx *ctx, const char *source, char *err, int errCap) {
 				goto fail;
 			}
 		}
-		l->meshVs = [lib newFunctionWithName:@"lod_mesh_vs2"];
-		l->meshFsVanilla = [lib newFunctionWithName:@"lod_mesh_vanilla"];
-		l->meshFsGbuffer = [lib newFunctionWithName:@"lod_mesh_gbuffer"];
+		id<MTLFunction> meshTemplate = [lib newFunctionWithName:@"lod_mesh_vs2"];
+		int handoff = meshTemplate.functionConstantsDictionary[@"lodHandoffPass"] != nil;
+		[meshTemplate release];
+		l->meshVs = meshFunction(lib, @"lod_mesh_vs2", handoff, false, &e);
+		l->meshFsVanilla = meshFunction(lib, @"lod_mesh_vanilla", handoff, false, &e);
+		l->meshFsGbuffer = meshFunction(lib, @"lod_mesh_gbuffer", handoff, false, &e);
+		if (handoff) {
+			l->handoffVs = meshFunction(lib, @"lod_mesh_vs2", 1, true, &e);
+			l->handoffFsVanilla = meshFunction(lib, @"lod_mesh_vanilla", 1, true, &e);
+			l->handoffFsGbuffer = meshFunction(lib, @"lod_mesh_gbuffer", 1, true, &e);
+			if (!l->handoffVs || !l->handoffFsVanilla || !l->handoffFsGbuffer) {
+				lodErr(e, "lod handoff specialization", err, errCap);
+				goto fail;
+			}
+		}
 		l->plantVs = [lib newFunctionWithName:@"lod_mesh_plant_vs"];
 		l->plantFsVanilla = [lib newFunctionWithName:@"lod_mesh_plant_vanilla"];
 		l->plantFsGbuffer = [lib newFunctionWithName:@"lod_mesh_plant_gbuffer"];
@@ -178,6 +201,7 @@ fail:
 		[l->meshReset release]; [l->meshCull release]; [l->meshFinish release]; [l->meshQuads release]; [l->meshFinish2 release];
 		[l->hzClear release]; [l->hzPrefix release]; [l->meshEmit release]; [l->meshFinishList release];
 		[l->meshVs release]; [l->meshFsVanilla release]; [l->meshFsGbuffer release];
+		[l->handoffVs release]; [l->handoffFsVanilla release]; [l->handoffFsGbuffer release];
 		[l->plantVs release]; [l->plantFsVanilla release]; [l->plantFsGbuffer release];
 		[l->march release]; [l->library release];
 		free(l);
@@ -197,9 +221,11 @@ static id<MTLRenderPipelineState> colPipeline(LodCols *l, Enc *enc, int gbuffer,
 	}
 	@autoreleasepool {
 		MTLRenderPipelineDescriptor *pd = [[MTLRenderPipelineDescriptor new] autorelease];
-		pd.label = gbuffer ? @"lod columns gbuffer" : @"lod columns vanilla";
-		pd.vertexFunction = kind == LOD_PSO_MESH ? l->meshVs : kind == LOD_PSO_PLANT ? l->plantVs : l->vs;
+		pd.label = kind == LOD_PSO_HANDOFF ? @"lod mesh handoff" : kind == LOD_PSO_MESH ? @"lod mesh opaque"
+			: gbuffer ? @"lod columns gbuffer" : @"lod columns vanilla";
+		pd.vertexFunction = kind == LOD_PSO_HANDOFF ? l->handoffVs : kind == LOD_PSO_MESH ? l->meshVs : kind == LOD_PSO_PLANT ? l->plantVs : l->vs;
 		if (kind == LOD_PSO_MESH) pd.fragmentFunction = gbuffer ? l->meshFsGbuffer : l->meshFsVanilla;
+		else if (kind == LOD_PSO_HANDOFF) pd.fragmentFunction = gbuffer ? l->handoffFsGbuffer : l->handoffFsVanilla;
 		else if (kind == LOD_PSO_PLANT) pd.fragmentFunction = gbuffer ? l->plantFsGbuffer : l->plantFsVanilla;
 		else pd.fragmentFunction = gbuffer ? l->fsGbuffer : l->fsVanilla;
 		for (int c = 0; c < enc->colorCount; c++) {
@@ -345,7 +371,7 @@ static id<MTLComputeCommandEncoder> cullEncoder(LodCols *l, Enc *enc) {
 	id<MTLCommandBuffer> cb = mc_pre(enc);
 	int slot = l->cullSlot;
 	l->cullSlot = -1;
-	if (slot < 0 || !l->cullTimes) return [cb computeCommandEncoder];
+	if (slot < 0 || !l->cullTimes) return enc->samples ? [mc_profiled_compute(enc, cb, MTLDispatchTypeSerial) autorelease] : [cb computeCommandEncoder];
 	MTLComputePassDescriptor *d = [MTLComputePassDescriptor computePassDescriptor];
 	d.sampleBufferAttachments[0].sampleBuffer = l->cullTimes;
 	d.sampleBufferAttachments[0].startOfEncoderSampleIndex = (NSUInteger) (2 * slot);
@@ -466,15 +492,25 @@ void mcl_mesh_cull(LodCols *l, Enc *enc, const void *frame, int frameLength, con
 
 // The mesh's two indirect draws into the open render encoder (shaders off: color 0 and depth; native shading: its
 // G-buffer): the opaque faces that survived the culls, then the plants (two-sided, cut to their sprites). Leaves pipeline,
-// depth and cull state changed: the caller puts the game's back. 0, or -1 with err set.
+// depth and cull state changed: the caller puts the game's back. 0 normally, 1 if the diagnostic split needs full state
+// restoration, or -1 with err set.
 int mcl_mesh_draw(LodCols *l, Enc *enc, int gbuffer, const void *comp, int compLength, id<MTLBuffer> arena, id<MTLBuffer> args, id<MTLBuffer> inst,
 	id<MTLBuffer> plantInst, id<MTLBuffer> survivors, id<MTLBuffer> geom, id<MTLBuffer> color, id<MTLBuffer> crowns, id<MTLBuffer> texWords,
-	id<MTLBuffer> palette, id<MTLTexture> atlas, id<MTLBuffer> table, const void *meshFrame, int meshFrameLength, int fences, char *err, int errCap) {
+	id<MTLBuffer> palette, id<MTLTexture> atlas, id<MTLBuffer> table, const void *meshFrame, int meshFrameLength, int fences, id<MTLBuffer> mask, char *err, int errCap) {
 	id<MTLRenderCommandEncoder> r = enc->render;
 	if (!r) return 0;
-	id<MTLRenderPipelineState> pso = colPipeline(l, enc, gbuffer, LOD_PSO_MESH, err, errCap);
-	id<MTLRenderPipelineState> ppso = pso ? colPipeline(l, enc, gbuffer, LOD_PSO_PLANT, err, errCap) : nil;
-	if (!pso || !ppso) return -1;
+	// A later lookup can evict an earlier layout; keep the selected pipelines alive through all three draws.
+	id<MTLRenderPipelineState> pso = [colPipeline(l, enc, gbuffer, LOD_PSO_MESH, err, errCap) retain];
+	id<MTLRenderPipelineState> ppso = pso ? [colPipeline(l, enc, gbuffer, LOD_PSO_PLANT, err, errCap) retain] : nil;
+	id<MTLRenderPipelineState> hpso = l->handoffVs && ppso ? [colPipeline(l, enc, gbuffer, LOD_PSO_HANDOFF, err, errCap) retain] : nil;
+	if (!pso || !ppso || (l->handoffVs && !hpso)) {
+		[pso release]; [ppso release]; [hpso release];
+		return -1;
+	}
+	// Diagnostic only: isolate this draw's stage timestamps from the main terrain. Store/load overhead is intentional.
+	int split = l->profileSplit && enc->samples && mc_tl_restart(enc, 1);
+	r = enc->render;
+	if (split) r.label = @"lod mesh (profile split)";
 	[r pushDebugGroup:@"lod mesh"];
 	if (fences) [r waitForFence:l->cullDone beforeStages:MTLRenderStageVertex];
 	[r setDepthStencilState:l->depth];
@@ -483,6 +519,8 @@ int mcl_mesh_draw(LodCols *l, Enc *enc, int gbuffer, const void *comp, int compL
 	[r setVertexBytes:comp length:compLength atIndex:22];
 	[r setFragmentBytes:comp length:compLength atIndex:22];
 	[r setVertexBuffer:arena offset:0 atIndex:24];
+	// Lod's mask ring appends one arrival weight per chunk after its fixed 128 x 128 coverage bits.
+	[r setFragmentBuffer:mask offset:128 * 128 / 8 atIndex:23];
 	[r setVertexBuffer:args offset:0 atIndex:25];
 	[r setVertexBuffer:survivors offset:0 atIndex:26];
 	[r setFragmentBuffer:geom offset:0 atIndex:24];
@@ -508,6 +546,13 @@ int mcl_mesh_draw(LodCols *l, Enc *enc, int gbuffer, const void *comp, int compL
 	[r setVertexBuffer:inst offset:0 atIndex:23];
 	[r drawIndexedPrimitives:MTLPrimitiveTypeTriangle indexType:MTLIndexTypeUInt16 indexBuffer:l->meshIdx indexBufferOffset:0 indirectBuffer:args
 		indirectBufferOffset:0];
+	if (hpso) {
+		// The two vertex specializations partition whole quads. Only quads touching the near handoff can reach the
+		// discard-capable fragment stage; the rest retain Metal's opaque hidden-surface optimizations.
+		[r setRenderPipelineState:hpso];
+		[r drawIndexedPrimitives:MTLPrimitiveTypeTriangle indexType:MTLIndexTypeUInt16 indexBuffer:l->meshIdx indexBufferOffset:0 indirectBuffer:args
+			indirectBufferOffset:0];
+	}
 	[r setRenderPipelineState:ppso];
 	[r setCullMode:MTLCullModeNone];
 	[r setVertexBuffer:plantInst offset:0 atIndex:23];
@@ -515,7 +560,9 @@ int mcl_mesh_draw(LodCols *l, Enc *enc, int gbuffer, const void *comp, int compL
 		indirectBufferOffset:5 * 4];
 	if (fences) [r updateFence:l->drawDone afterStages:MTLRenderStageVertex];
 	[r popDebugGroup];
-	return 0;
+	[pso release]; [ppso release]; [hpso release];
+	if (split) mc_tl_restart(enc, 1);
+	return split ? 1 : 0;
 }
 
 // ---- position-keyed candidate lists (-Dmcopt.lod.pk; columns.metal lod_pk_*) ----

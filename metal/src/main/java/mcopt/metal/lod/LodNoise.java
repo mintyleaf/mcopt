@@ -52,6 +52,7 @@ import org.jspecify.annotations.Nullable;
 final class LodNoise {
 	private static final int STEP_Y = 8;
 	final ServerLevel level;
+	final int cavernY;
 	final NoiseGeneratorSettings settings;
 	final RandomState random;
 	final DensityFunction terrain;
@@ -64,6 +65,9 @@ final class LodNoise {
 	 * density are interpolated, which moves steep surfaces by a block or more: squeeze saturates).
 	 */
 	final @Nullable Split split;
+	/** End cells are 8x4, unlike the Overworld's 4x8. Never pass a coarse strided End volume to InterpolatedFunction. */
+	final @Nullable Split islands;
+	private final @Nullable LodEndIslets islets;
 	/** The game's aquifers (levels 0-1: whether a column's ground lies under water, and the water's level), or null. */
 	final Aquifer.@Nullable Config aquifers;
 	final @Nullable PositionalRandomFactory aquiferRandom;
@@ -149,6 +153,7 @@ final class LodNoise {
 		final DensitySampler.Bound terrain = this.samplers.get(LodNoise.this.terrain);
 		final DensitySampler.Bound fine = this.samplers.get(LodNoise.this.fine);
 		final DensitySampler.@Nullable Bound inner = LodNoise.this.split != null ? this.samplers.get(LodNoise.this.split.inner()) : null;
+		final DensitySampler.@Nullable Bound islandDensity = LodNoise.this.islands != null ? this.samplers.get(LodNoise.this.islands.inner()) : null;
 		final DensitySampler.Bound[] carvers = LodNoise.this.split != null
 			? LodNoise.this.split.carvers().stream().map(this.samplers::get).toArray(DensitySampler.Bound[]::new) : new DensitySampler.Bound[0];
 		final Climate.Sampler climate = LodNoise.this.random.createClimateSampler(this.ctx);
@@ -156,18 +161,25 @@ final class LodNoise {
 		float[] columns = new float[0];
 	}
 
-	private LodNoise(ServerLevel level, NoiseGeneratorSettings settings, RandomState random, DensityFunction terrain, boolean slideTop) {
+	private LodNoise(ServerLevel level, NoiseGeneratorSettings settings, RandomState random, DensityFunction terrain, boolean slideTop, int cavernY) {
 		this.level = level;
+		this.cavernY = cavernY;
 		this.settings = settings;
 		this.random = random;
 		this.terrain = terrain;
 		this.fine = LodConfig.FINE_DENSITY ? settings.noiseRouter().finalDensity() : terrain;
 		Split sp = LodConfig.FINE_DENSITY ? split(settings.noiseRouter().finalDensity(), java.util.List.of()) : null;
+		Split endSplit = level.dimension() == net.minecraft.world.level.Level.END
+			? split(settings.noiseRouter().finalDensity(), java.util.List.of()) : null;
+		this.islands = endSplit != null && endSplit.carvers().isEmpty() ? endSplit : null;
 		// the walk below assumes the game's cells of 4 x 8 x 4 blocks
 		this.split = sp != null && sp.cellXz() == 4 && sp.cellY() == STEP_Y ? sp : null;
-		if (this.split == null && LodConfig.FINE_DENSITY) System.out.println("mcopt-lod: final density: " + describe(settings.noiseRouter().finalDensity(), 5));
-		System.out.println("mcopt-lod: final density " + (this.split != null ? "split: interpolated over " + sp.cellXz() + "x" + sp.cellY() + " cells, "
-			+ this.split.carvers().size() + " carver(s) per block" : "not split (" + (sp == null ? "unexpected shape" : "cells " + sp.cellXz() + "x" + sp.cellY()) + ")"));
+		if (this.islands != null) System.out.println("mcopt-lod: bounded island density at native " + this.islands.cellXz() + "x" + this.islands.cellY() + " cells; dense interpolation bypassed");
+		else {
+			if (this.split == null && LodConfig.FINE_DENSITY) System.out.println("mcopt-lod: final density: " + describe(settings.noiseRouter().finalDensity(), 5));
+			System.out.println("mcopt-lod: final density " + (this.split != null ? "split: interpolated over " + sp.cellXz() + "x" + sp.cellY() + " cells, "
+				+ this.split.carvers().size() + " carver(s) per block" : "not split (" + (sp == null ? "unexpected shape" : "cells " + sp.cellXz() + "x" + sp.cellY()) + ")"));
+		}
 		this.slideTop = slideTop;
 		Aquifer.Config aq = settings.aquifers().orElse(null);
 		Aquifer.FluidPicker picker = null;
@@ -191,12 +203,16 @@ final class LodNoise {
 		this.maxY = Math.min(level.getMaxY(), settings.noiseSettings().minY() + settings.noiseSettings().height() - 1);
 		this.context = new WorldGenerationContext(gen, level);
 		this.workers = ThreadLocal.withInitial(Worker::new);
+		this.islets=this.islands==null?null:new LodEndIslets(this);
 	}
 
-	/** A generator for this level, or null when it isn't noise-based (flat, debug) or has a ceiling. */
+	/** Noise terrain; ceiling dimensions select an interior air layer instead of the bedrock roof. */
 	static @Nullable LodNoise of(ServerLevel level) {
+		return of(level, level.dimensionType().hasCeiling() ? 64 : LodCaverns.NONE);
+	}
+
+	static @Nullable LodNoise of(ServerLevel level, int cavernY) {
 		if (!(level.getChunkSource().getGenerator() instanceof NoiseBasedChunkGenerator gen)) return null;
-		if (level.dimensionType().hasCeiling()) return null;
 		NoiseGeneratorSettings settings = gen.generatorSettings().value();
 		RandomState random = level.getChunkSource().randomState();
 		DensityFunction terrain = settings.noiseRouter().finalDensity();
@@ -208,12 +224,84 @@ final class LodNoise {
 			slide = true;
 		}
 		System.out.println("mcopt-lod: terrain from " + (slide ? "overworld/sloped_cheese (+ top slide)" : "the router's final density") + " in " + level.dimension().identifier());
-		return new LodNoise(level, settings, random, terrain, slide);
+		return new LodNoise(level, settings, random, terrain, slide, cavernY);
 	}
 
 	/** This thread's biome resolver (the climate noise, as the game's chunks are filled). */
 	BiomeResolver resolver() {
 		return this.workers.get().resolver;
+	}
+
+	/** Upgrade cached water colors using the biome alone; no terrain regeneration or client chunk loading. */
+	void refreshWaterColors(long key, int[] g, int[] c, int[] cr) {
+		var resolver = this.resolver();
+		var colors = new java.util.HashMap<Long, Integer>();
+		BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+		LodWaterColor.migrate(key, g, c, cr, (x, y, z) -> colors.computeIfAbsent(BlockPos.asLong(x >> 2, y >> 2, z >> 2), k -> {
+			Biome biome = resolver.getNoiseBiome(x >> 2, y >> 2, z >> 2).value();
+			return biome.coldEnoughToSnow(pos.set(x, y, z), this.seaLevel) ? -1 : LodColors.top(this.water, biome, x, z);
+		}));
+	}
+
+	/** Old generic overhang extraction also split enclosed cave roofs and used their buried foot as the wall material. */
+	void repairOverhangs(long key, int[] g, int[] c, int[] cr, int[] tw, int[] runs) {
+		if (cr == null || tw == null) return;
+		BiomeResolver resolver = null;
+		int step = 1 << LodTile.levelOf(key), x0 = LodTile.txOf(key) * 64 * step, z0 = LodTile.tzOf(key) * 64 * step;
+		for (int i = 0; i < LodTile.CELLS; i++) {
+			if ((g[i] & LodClip.GEOM_CROWN) == 0 || (tw[i] & LodClip.TEX_OVERHANG) == 0) continue;
+			int topId = tw[i] & 1023;
+			BlockState state = LodPalette.stateOf(topId);
+			if (state == null || LodColors.mushroomCap(state)) continue;
+			if (resolver == null) resolver = this.resolver();
+			int x = x0 + (i & 63) * step, z = z0 + (i >> 6) * step, y = (g[i] & 4095) - 512;
+			Biome biome = resolver.getNoiseBiome(x >> 2, y >> 2, z >> 2).value();
+			int side = LodColors.side(state, biome, x, z);
+			int light = tw.length > LodTile.CELLS ? tw[LodTile.CELLS + i] : 0;
+			if (this.level.dimensionType().hasSkyLight() && !LodOverhang.exposedGap(light)) {
+				BlockState below = state.is(Blocks.GRASS_BLOCK) || state.is(Blocks.MYCELIUM) || state.is(Blocks.PODZOL)
+					? Blocks.DIRT.defaultBlockState() : state;
+				LodOverhang.closeCached(i, g, c, cr, tw, runs, side, topId, LodPalette.id(below), LodColors.side(below, biome, x, z));
+			} else {
+				c[i] = (c[i] & 65535) | LodClip.rgb565(side) << 16;
+				tw[i] = LodPalette.word(topId, topId, (tw[i] >>> 20) & 1023) | (tw[i] & 0xC0000000);
+			}
+		}
+	}
+
+	/** Older tree placement treated hanging vines as full solid columns. Rebuild only those generated columns, using
+	 * 4x4 microtiles so cache reads do not regenerate a whole forest tile or overwrite captured builds. */
+	boolean repairGeneratedVines(long key, int[] g, int[] c, int[] cr, int[] tw, int[] runs, int[] plants, LodForest forest) {
+		if (LodTile.levelOf(key) != 0 || tw == null) return false;
+		java.util.BitSet bad = new java.util.BitSet(LodTile.CELLS);
+		for (int i = 0; i < LodTile.CELLS; i++) {
+			if ((g[i] & LodClip.GEOM_CLEAR) != 0 || (tw[i] & (LodClip.TEX_LIGHT | LodClip.TEX_OVERHANG)) != 0) continue;
+			BlockState state = LodPalette.stateOf(tw[i] & 1023);
+			if (state != null && LodChunks.generatedHangingDecoration(g[i], tw[i], state)) bad.set(i);
+		}
+		if (bad.isEmpty()) return false;
+		int x0 = LodTile.txOf(key) * 64, z0 = LodTile.tzOf(key) * 64;
+		for (int first = bad.nextSetBit(0); first >= 0; first = bad.nextSetBit(0)) {
+			int mx = (first & 63) & ~3, mz = (first >> 6) & ~3;
+			LodTile tile = new LodTile(0, x0 + mx, z0 + mz, 4);
+			boolean exact = forest != null && forest.available();
+			tile.impostorTrees = !exact;
+			this.generate(tile);
+			if (exact) { forest.plant(tile); this.dressTrees(tile); this.dressGround(tile); }
+			int[] mg = new int[16], mc = new int[16], mcr = cr == null ? null : new int[16], mr = new int[16];
+			LodField.pack(tile, mg, mc, mcr, mr, null);
+			for (int z = 0; z < 4; z++) for (int x = 0; x < 4; x++) {
+				int i = (mz+z)*64 + mx+x, k = z*4+x;
+				if (!bad.get(i)) continue;
+				g[i] = mg[k]; c[i] = mc[k]; tw[i] = tile.tex[k];
+				if (cr != null) cr[i] = mcr[k];
+				if (runs != null) runs[i] = mr[k];
+				if (plants != null) plants[i] = plants[LodTile.CELLS+i] = 0;
+				if (tw.length > LodTile.CELLS) tw[LodTile.CELLS+i] = 0;
+				bad.clear(i);
+			}
+		}
+		return true;
 	}
 
 	/** Nanoseconds spent per level in each stage (density, biomes, materials), and tiles, for the stats line. */
@@ -236,6 +324,17 @@ final class LodNoise {
 	private void generate0(LodTile t) {
 		long t0 = System.nanoTime();
 		Worker w = this.workers.get();
+		if (this.islands != null) {
+			this.islandGeometry(t);
+			this.islets.apply(t);
+			this.finish(t, w, t0);
+			LodChorus.approximate(t, this.level.getSeed());
+			return;
+		}
+		if (this.cavernY != LodCaverns.NONE) {
+			this.caverns(t, w, t0);
+			return;
+		}
 		int c = t.cell(), x0 = t.minX(), z0 = t.minZ(), size = t.size;
 		// Sample grid: every s blocks (s >= 4, the game's cell width), corners included, so finer levels interpolate.
 		int s = Math.max(c, 4), n = size * c / s, g = n + 1;
@@ -320,25 +419,38 @@ final class LodNoise {
 	private short waterOver(Aquifer aquifer, float[] col, int x, int top, int z, int y0) {
 		if (top >= this.seaLevel) return LodTile.DRY;
 		try {
-			BlockState over = aquifer.computeSubstance(x, top, z, Math.min(-1e-4F, interpolatedAt(col, top, y0)));
-			int y = top;
-			if (over == null || !over.getFluidState().is(net.minecraft.tags.FluidTags.WATER)) {
-				// Right over the ground the aquifer can answer for a barrier (or a lower local level) even under the open sea, and
-				// the column came out dry: a hole down to the floor in the far ocean, its walls hanging under the water's surface at
-				// the hand-off (noahdunnagan/mcopt#14). The column is the sea's when the aquifer has water just under sea level.
-				int sea = this.seaLevel - 1;
-				BlockState at = aquifer.computeSubstance(x, sea, z, Math.min(-1e-4F, interpolatedAt(col, sea, y0)));
-				if (at == null || !at.getFluidState().is(net.minecraft.tags.FluidTags.WATER)) return LodTile.DRY;
-				y = sea;
-			}
-			while (y < this.seaLevel + 16) {
-				BlockState next = aquifer.computeSubstance(x, y + 1, z, Math.min(-1e-4F, interpolatedAt(col, y + 1, y0)));
-				if (next == null || !next.getFluidState().is(net.minecraft.tags.FluidTags.WATER)) break;
-				y++;
-			}
-			return (short) (y + 1);
+			return LodWaterSurface.find(top, this.seaLevel, y -> {
+				BlockState state = aquifer.computeSubstance(x, y, z, Math.min(-1e-4F, interpolatedAt(col, y, y0)));
+				return state != null && state.getFluidState().is(net.minecraft.tags.FluidTags.WATER);
+			});
 		} catch (RuntimeException e) {
 			return top < this.seaLevel ? (short) this.seaLevel : LodTile.DRY;
+		}
+	}
+
+	/** Repair old generated cave-pool holes only where the aquifer confirms water at the ocean surface. */
+	void repairOceanSurface(long key, int[] g, int[] c, int[] cr, int[] tw) {
+		int level = LodTile.levelOf(key);
+		if (level >= LodConfig.FINE_LEVELS || this.aquifers == null || this.aquiferRandom == null || this.fluidPicker == null) return;
+		Aquifer aquifer = null;
+		Worker w = null;
+		int step = 1 << level, x0 = LodTile.txOf(key) * 64 * step, z0 = LodTile.tzOf(key) * 64 * step;
+		for (int i = 0; i < LodTile.CELLS; i++) {
+			if ((g[i] & (LodClip.GEOM_VALID | LodClip.GEOM_CROWN | LodClip.GEOM_CLEAR)) != LodClip.GEOM_VALID || (g[i] & 4095) - 512 >= this.seaLevel
+				|| (tw != null && (tw[i] & (LodClip.TEX_LIGHT | LodClip.TEX_OVERHANG)) != 0)) continue;
+			if (w == null) {
+				w = this.workers.get();
+				int y0 = Math.floorDiv(this.minY, STEP_Y) * STEP_Y, ny = (this.maxY - this.minY) / STEP_Y + 1, grid = 64 * step / 4 + 1;
+				aquifer = this.aquifers.create(w.samplers, this.aquiferRandom, new DensityVolume(grid, ny, grid, x0, y0, z0, 4, STEP_Y, 4), this.fluidPicker);
+			}
+			int x = x0 + (i & 63) * step + step / 2, z = z0 + (i >> 6) * step + step / 2;
+			BlockState state = aquifer.computeSubstance(x, this.seaLevel - 1, z, -1e-4F);
+			if (state == null || !state.getFluidState().is(net.minecraft.tags.FluidTags.WATER)) continue;
+			Biome biome = w.resolver.getNoiseBiome(x >> 2, this.seaLevel >> 2, z >> 2).value();
+			int color = LodColors.top(this.water, biome, x, z);
+			g[i] = LodClip.geomWord(this.seaLevel, true);
+			c[i] = LodClip.colorWord(color, color);
+			if (tw != null) tw[i] = 0;
 		}
 	}
 
@@ -424,6 +536,7 @@ final class LodNoise {
 		if (LodYield.ON) LodYield.checkpoint();
 		long t2 = System.nanoTime();
 		this.surfaceMaterials(t, w);
+		LodFrozenOcean.apply(t, this.random.surfaceSystem());
 		long t3 = System.nanoTime();
 		int l = Math.min(15, t.level);
 		this.stageNanos.addAndGet(l * 4, t1 - t0);
@@ -464,8 +577,8 @@ final class LodNoise {
 				}
 				if (t.standing[i] || t.level >= LodConfig.CROWN_LEVELS) {
 					// a column the tree stands in: its top block's leaves on top and along its upper block, its trunk below
-					BlockState trunk = t.trunk[i];
-					int trunkColor = trunk != null ? LodColors.side(trunk, b, bx, bz) : sideColor;
+					BlockState trunk = LodColors.treeBase(top, t.trunk[i]);
+					int trunkColor = LodColors.side(trunk, b, bx, bz);
 					t.height[i] = (short) Math.max(t.height[i], t.canopyHi[i] + 1);
 					t.top[i] = topColor;
 					t.side[i] = sideColor;
@@ -474,7 +587,7 @@ final class LodNoise {
 					t.standing[i] = true;
 					if (LodConfig.TEXTURES) {
 						boolean snowy = leaves && b.coldEnoughToSnow(pos, this.seaLevel);
-						t.tex[i] = LodPalette.word(LodPalette.id(snowy ? this.snow : top), LodPalette.id(top), LodPalette.id(trunk != null ? trunk : top));
+						t.tex[i] = LodPalette.word(LodPalette.id(snowy ? this.snow : top), LodPalette.id(top), LodPalette.id(trunk));
 					}
 					continue;
 				}
@@ -522,6 +635,102 @@ final class LodNoise {
 			}
 		}
 		return this.minY;
+	}
+
+	/** Sample the sign-preserving inner density, never InterpolatedFunction's dense fallback for strided volumes. */
+	void islandGeometry(LodTile t) {
+		if (this.islands == null) throw new IllegalStateException("No bounded island sampler");
+		Worker w = this.workers.get();
+		int cell = t.cell(), stride = Math.max(cell, this.islands.cellXz()), stepY = this.islands.cellY();
+		int x0 = Math.floorDiv(t.minX(), stride) * stride, z0 = Math.floorDiv(t.minZ(), stride) * stride;
+		int nx = Math.ceilDiv(t.minX() - x0 + t.size * cell, stride) + 1;
+		int nz = Math.ceilDiv(t.minZ() - z0 + t.size * cell, stride) + 1;
+		int y0 = Math.floorDiv(this.minY, stepY) * stepY, ny = Math.ceilDiv(this.maxY + 1 - y0, stepY) + 1;
+		var volume = new DensityVolume(nx, ny, nz, x0, y0, z0, stride, stepY, stride);
+		var buffer = DensityBuffer.createUnpooled(volume.size());
+		w.islandDensity.sampleVolume(buffer, volume);
+		float[] column = new float[ny];
+		t.islandBottom = new short[t.cells()];
+		t.waterKnown = true;
+		for (int z = 0; z < t.size; z++) for (int x = 0; x < t.size; x++) {
+			float gx = (t.minX() - x0 + x * cell + (cell - 1) * 0.5F) / stride;
+			float gz = (t.minZ() - z0 + z * cell + (cell - 1) * 0.5F) / stride;
+			int ix = Math.min(nx - 2, (int)gx), iz = Math.min(nz - 2, (int)gz);
+			float fx = gx - ix, fz = gz - iz;
+			for (int y = 0; y < ny; y++) {
+				float a = buffer.get(volume.indexUnchecked(ix,y,iz)), b = buffer.get(volume.indexUnchecked(ix+1,y,iz));
+				float c = buffer.get(volume.indexUnchecked(ix,y,iz+1)), d = buffer.get(volume.indexUnchecked(ix+1,y,iz+1));
+				column[y] = (a + (b-a)*fx) + ((c + (d-c)*fx) - (a + (b-a)*fx))*fz;
+			}
+			var interval = LodIslands.interval(column, y0, stepY);
+			int i = z * t.size + x;
+			t.height[i] = interval == null ? LodIslands.EMPTY : (short)Math.min(this.maxY + 1, interval.top());
+			t.islandBottom[i] = interval == null ? LodIslands.EMPTY : (short)Math.max(this.minY, interval.bottom());
+			t.water[i] = LodTile.DRY;
+		}
+	}
+
+	/** Batched four-block vertical density grid, then a floor and ceiling around the current view band. */
+	private void caverns(LodTile t, Worker w, long started) {
+		CavernGeometry geometry = this.cavernGeometry(t);
+		short[] ceilings = geometry.ceilings;
+		boolean[] lava = geometry.lava;
+		int cell=t.cell();
+		t.impostorTrees=false;
+		this.finish(t,w,started);
+		for(int i=0;i<t.cells();i++) {
+			if(lava[i]) {
+				t.state[i]=Blocks.LAVA.defaultBlockState();
+				int x=t.minX()+(i%t.size)*cell,z=t.minZ()+(i/t.size)*cell;
+				t.top[i]=t.side[i]=t.below[i]=LodColors.top(t.state[i],t.biome[i].value(),x,z);
+				t.tex[i]=LodPalette.word(LodPalette.id(t.state[i]),LodPalette.id(t.state[i]),LodPalette.id(t.state[i]));
+			}
+			if(ceilings[i]!=Short.MIN_VALUE) {
+				t.canopyLo[i]=ceilings[i];t.canopyHi[i]=(short)Math.min(this.maxY,ceilings[i]+15);
+				t.canopyState[i]=this.settings.defaultBlock();
+				t.crownTop[i]=t.crownSide[i]=LodColors.top(t.canopyState[i],t.biome[i].value(),t.minX()+(i%t.size)*cell,t.minZ()+(i/t.size)*cell);
+				t.tex[i]=LodPalette.word(LodPalette.id(t.canopyState[i]),LodPalette.id(t.canopyState[i]),LodPalette.id(t.state[i])) | LodClip.TEX_OVERHANG;
+			}
+		}
+	}
+
+	record CavernGeometry(short[] ceilings, boolean[] lava) { }
+	CavernGeometry cavernGeometry(LodTile t) {
+		Worker w=this.workers.get();
+		int cell=t.cell(), stride=Math.max(4,cell), n=t.size*cell/stride, grid=n+1;
+		int y0=this.minY, ny=Math.ceilDiv(this.maxY-y0,4)+1;
+		var volume=new DensityVolume(grid,ny,grid,t.minX(),y0,t.minZ(),stride,4,stride);
+		var buffer=DensityBuffer.createUnpooled(volume.size());
+		w.fine.sampleVolume(buffer,volume);
+		float[] col=new float[ny];
+		short[] ceilings=new short[t.cells()];
+		java.util.Arrays.fill(ceilings,Short.MIN_VALUE);
+		boolean[] lava=new boolean[t.cells()];
+		for(int z=0;z<t.size;z++) for(int x=0;x<t.size;x++) {
+			float gx=(x*cell+cell*0.5F-0.5F)/stride, gz=(z*cell+cell*0.5F-0.5F)/stride;
+			int ix=Math.min(n-1,(int)gx), iz=Math.min(n-1,(int)gz);
+			float fx=gx-ix,fz=gz-iz;
+			for(int k=0;k<ny;k++) {
+				int a=(ix+iz*grid)*ny+k,b=a+ny,c=a+grid*ny,d=c+ny;
+				float lo=buffer.get(a)+(buffer.get(b)-buffer.get(a))*fx;
+				float hi=buffer.get(c)+(buffer.get(d)-buffer.get(c))*fx;
+				col[k]=lo+(hi-lo)*fz;
+			}
+			var layer=LodCaverns.find(this.minY,this.maxY,this.cavernY,y -> y>=this.seaLevel && cavernDensity(col,y,y0)<=0);
+			int i=z*t.size+x;
+			t.height[i]=(short)(layer==null?this.maxY+1:layer.floor()+1);
+			if(layer!=null) {
+				if(layer.ceiling()<=this.maxY) ceilings[i]=(short)layer.ceiling();
+				lava[i]=layer.floor()<this.seaLevel && cavernDensity(col,layer.floor(),y0)<=0;
+			}
+		}
+		return new CavernGeometry(ceilings,lava);
+	}
+
+	private static float cavernDensity(float[] col,int y,int y0) {
+		float at=(y-y0)/4.0F;
+		int k=Math.clamp((int)Math.floor(at),0,col.length-2);
+		return col[k]+(col[k+1]-col[k])*Math.clamp(at-k,0,1);
 	}
 
 	/** Biomes per column from the climate noise, sampled as a volume (two planes: depth is linear in y). */
@@ -585,6 +794,11 @@ final class LodNoise {
 		for (int z = 0; z < size; z++) {
 			for (int x = 0; x < size; x++) {
 				int i = z * size + x;
+				if (h[i] == LodIslands.EMPTY) {
+					t.state[i] = Blocks.AIR.defaultBlockState();
+					t.water[i] = LodTile.DRY;
+					continue;
+				}
 				int bx = x0 + x * c + c / 2, bz = z0 + z * c + c / 2;
 				int top = ground[i] - 1;
 				// water: what the game's aquifers put over the ground (levels 0-1: the sea, a local level, or nothing in cave
@@ -627,10 +841,10 @@ final class LodNoise {
 					} else {
 						texTop = null;
 						int waterColor = LodColors.top(this.water, b, bx, bz);
-						float f = Math.min(1.0F, 0.55F + depth / 24.0F);
-						topColor = LodColors.mix(topColor, waterColor, f);
+						topColor = LodWaterColor.surface(topColor, waterColor, depth);
 					}
 					t.water[i] = (short) waterTop;
+					sideColor = topColor;
 				} else {
 					t.water[i] = LodTile.DRY;
 					pos.set(bx, ground[i], bz);

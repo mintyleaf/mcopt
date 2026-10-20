@@ -37,6 +37,8 @@ final class LodTaa {
 	private boolean valid, prevDrawn;
 	private int lastW = -1, lastH = -1;
 
+	void reset() { this.valid = false; this.prevDrawn = false; }
+
 	LodTaa(long ctx) {
 		this.ctx = ctx;
 		System.out.printf("mcopt-lod: far terrain temporal filter on (alpha %.2f, box growth %.2f)%n", ALPHA, GROW);

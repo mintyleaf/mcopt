@@ -13,7 +13,7 @@ import org.spongepowered.asm.mixin.injection.Redirect;
 abstract class OwnIntVisibleMixin {
 	@Redirect(method = "lambda$addSectionsInFrustum$0", at = @At(value = "INVOKE", target = "Ljava/util/List;add(Ljava/lang/Object;)Z", ordinal = 0))
 	private static boolean mcopt$stampVisible(List<Object> list, Object section) {
-		if (OwnVisible.ON || OwnVisible.VERIFY) OwnVisible.added((SectionRenderDispatcher.RenderSection) section, list.size());
+		if (OwnVisible.TRACK) OwnVisible.added((SectionRenderDispatcher.RenderSection) section, list.size());
 		return list.add(section);
 	}
 }

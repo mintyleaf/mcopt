@@ -54,6 +54,17 @@ sourceSets {
 	}
 }
 
+['checkLodExplicitOff': false, 'checkLodImplicitOn': true].each { taskName, enabled ->
+	tasks.register(taskName, JavaExec) {
+		dependsOn 'metalChecksClasses'
+		classpath = sourceSets.metalChecks.runtimeClasspath
+		mainClass = 'mcopt.metal.lod.LodEnableChecks'
+		jvmArgs '-Dmcopt.lod.radius=512'
+		if (!enabled) jvmArgs '-Dmcopt.lod=false'
+		args enabled.toString()
+	}
+}
+
 tasks.register('checkMetalPipelines', JavaExec) {
 	dependsOn 'metalChecksClasses'
 	classpath = sourceSets.metalChecks.runtimeClasspath
@@ -62,6 +73,88 @@ tasks.register('checkMetalPipelines', JavaExec) {
 	if (project.hasProperty('verifyMslCache')) args 'verify-cache'
 	if (project.hasProperty('pipelineTimingOutput')) jvmArgs '-Dmcopt.metal.jfr=true',
 		'-XX:StartFlightRecording=filename=' + rootProject.file(project.property('pipelineTimingOutput')).absolutePath
+}
+
+tasks.register('checkLodProjection', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.lod.LodProjectionChecks'
+	jvmArgs '--enable-native-access=ALL-UNNAMED'
+}
+
+tasks.register('checkLodHandoff', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.own.OwnSeamCoverageChecks'
+}
+
+tasks.register('checkLodFog', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.lod.LodFogChecks'
+}
+
+tasks.register('checkLodHandoffFullHeight', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.own.OwnSeamCoverageChecks'
+	jvmArgs '-Dmcopt.lod=true'
+}
+
+tasks.register('checkLodWaterEdges', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.lod.LodWaterEdgesChecks'
+}
+
+tasks.register('checkLodSoftHandoff', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.lod.LodHandoffChecks'
+}
+
+tasks.register('checkLodCaptures', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.lod.LodCaptureChecks'
+	jvmArgs '--enable-native-access=ALL-UNNAMED'
+}
+
+tasks.register('checkLodCaptureIo', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.lod.LodCaptureIoChecks'
+	jvmArgs '--enable-native-access=ALL-UNNAMED'
+}
+
+tasks.register('checkLodStaging', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.lod.LodStagingChecks'
+	jvmArgs '--enable-native-access=ALL-UNNAMED', '-Dmcopt.lod.publish=pair'
+}
+
+tasks.register('checkLodStagingGpu', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.lod.LodStagingChecks'
+	jvmArgs '--enable-native-access=ALL-UNNAMED', '-Dmcopt.lod.publish=gpu'
+}
+
+tasks.register('checkLodSnapshotPool', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.lod.LodSnapshotPoolChecks'
+	jvmArgs '--enable-native-access=ALL-UNNAMED', '-Xmx256M'
+}
+
+['checkLodSnapshotMesh': 'pair', 'checkLodSnapshotMeshGpu': 'gpu'].each { taskName, mode ->
+	tasks.register(taskName, JavaExec) {
+		dependsOn 'metalChecksClasses'
+		classpath = sourceSets.metalChecks.runtimeClasspath
+		mainClass = 'mcopt.metal.lod.LodSnapshotMeshChecks'
+		jvmArgs '--enable-native-access=ALL-UNNAMED', '-Xmx256M', '-Dmcopt.lod.publish=' + mode
+	}
 }
 
 tasks.register('checkOwnArenaSizing', JavaExec) {
@@ -86,6 +179,13 @@ tasks.register('checkOwnAlloc', JavaExec) {
 	if (project.hasProperty('allocationOutput')) args rootProject.file(project.property('allocationOutput')).absolutePath
 }
 
+tasks.register('checkLodCaptureFreshness', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.lod.LodCaptureFreshnessChecks'
+	if (project.hasProperty('captureSpanOutput')) args rootProject.file(project.property('captureSpanOutput')).absolutePath
+}
+
 tasks.register('checkOwnQuadOrder', JavaExec) {
 	dependsOn 'metalChecksClasses'
 	classpath = sourceSets.metalChecks.runtimeClasspath
@@ -93,3 +193,87 @@ tasks.register('checkOwnQuadOrder', JavaExec) {
 	jvmArgs '--enable-native-access=ALL-UNNAMED', '-Dmcopt.own.compact=true', '-Dmcopt.own.mesh.order=cell', '-Dmcopt.own.mesh.qrec=true'
 }
 
+tasks.register('checkLodChorus', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.lod.LodChorusChecks'
+	jvmArgs '--enable-native-access=ALL-UNNAMED'
+}
+
+tasks.register('checkLodDimensions', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.lod.LodDimensionChecks'
+	jvmArgs '--enable-native-access=ALL-UNNAMED'
+}
+
+tasks.register('checkLodSurfaces', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.lod.LodSurfaceChecks'
+	jvmArgs '--enable-native-access=ALL-UNNAMED'
+}
+
+tasks.register('checkLodSurfaceCache', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.lod.LodCacheChecks'
+	jvmArgs '--enable-native-access=ALL-UNNAMED'
+}
+
+tasks.register('checkLodSavedChunks', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.lod.LodSavedChunkChecks'
+	jvmArgs '--enable-native-access=ALL-UNNAMED', '-Dmcopt.lod=true', '-Dmcopt.metal.jfr=true'
+	if (project.hasProperty('captureQueueOutput')) jvmArgs '-Dmcopt.check.captureQueueOutput=' + rootProject.file(project.property('captureQueueOutput')).absolutePath
+}
+
+tasks.register('sweepLodSnapshots', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.lod.LodSnapshotSweep'
+	jvmArgs '--enable-native-access=ALL-UNNAMED', '-Xmx768M', '-Dmcopt.lod=true'
+	def profile = providers.gradleProperty('snapshotProfile').getOrElse('full')
+	if (profile == 'no_lighting') jvmArgs '-Dmcopt.lod.lighting=false'
+	else if (profile == 'no_vertical') jvmArgs '-Dmcopt.lod.structureDetail=false', '-Dmcopt.lod.overhangs=false'
+	else if (profile != 'full' && profile != 'client_copy') throw new GradleException('snapshotProfile must be full, no_lighting, no_vertical, or client_copy')
+	args rootProject.file(providers.gradleProperty('snapshotFixtures').getOrElse('out/cpu-sweep-20261019/fixtures')).absolutePath,
+		rootProject.file(providers.gradleProperty('snapshotOutput').getOrElse("out/cpu-sweep-20261019/snapshots-${profile}.csv")).absolutePath, profile
+}
+
+tasks.register('checkLodWorldCache', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.lod.LodWorldCacheChecks'
+}
+
+tasks.register('checkLodIce', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.lod.LodIceChecks'
+	jvmArgs '--enable-native-access=ALL-UNNAMED'
+}
+
+tasks.register('checkLodMaterials', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.lod.LodMaterialChecks'
+}
+
+tasks.register('checkLodWaterColors', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.lod.LodWaterColorChecks'
+	jvmArgs '--enable-native-access=ALL-UNNAMED'
+}
+
+['checkLodSurfaceBuffers': '', 'checkLodSurfacePair': 'pair', 'checkLodSurfaceGpu': 'gpu'].each { taskName, mode ->
+	tasks.register(taskName, JavaExec) {
+		dependsOn 'metalChecksClasses'
+		classpath = sourceSets.metalChecks.runtimeClasspath
+		mainClass = 'mcopt.metal.lod.LodBufferChecks'
+		jvmArgs '--enable-native-access=ALL-UNNAMED'
+		if (mode) jvmArgs "-Dmcopt.lod.publish=${mode}"
+	}
+}

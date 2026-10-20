@@ -1,5 +1,6 @@
 package mcopt.metal.mixin.own;
 
+import mcopt.metal.own.OwnSeam;
 import mcopt.metal.own.OwnVisible;
 import net.minecraft.client.renderer.LevelRenderer;
 import org.spongepowered.asm.mixin.Mixin;
@@ -12,12 +13,13 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 abstract class OwnIntVisibleClearMixin {
 	@Inject(method = "clearVisibleSections", at = @At("HEAD"))
 	private void mcopt$visibleCleared(org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci) {
-		if (OwnVisible.ON || OwnVisible.VERIFY) OwnVisible.cleared();
+		if (OwnVisible.TRACK) OwnVisible.cleared();
 	}
 
 	/** Every RenderSection is dropped with the ViewArea (joining or reloading: invalidateCompiledGeometry; leaving: resetLevelRenderData). */
 	@Inject(method = {"invalidateCompiledGeometry", "resetLevelRenderData"}, at = @At("RETURN"))
 	private void mcopt$visibleLevelReset(CallbackInfo ci) {
-		if (OwnVisible.ON || OwnVisible.VERIFY) OwnVisible.levelReset();
+		OwnSeam.invalidate();
+		if (OwnVisible.TRACK) OwnVisible.levelReset();
 	}
 }

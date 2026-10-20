@@ -31,8 +31,8 @@ enum {
 
 // Faces as columns.metal numbers them.
 enum { LM_F_TOP = 0, LM_F_XP = 1, LM_F_XN = 2, LM_F_ZP = 3, LM_F_ZN = 4, LM_F_BOTTOM = 5, LM_F_PLANT = 6 };
-// What a face is of: the ground (or the whole column), a crown's leaves, the ground under a crown.
-enum { LM_K_GROUND = 0, LM_K_CROWN = 1, LM_K_UNDER = 2 };
+// What a face is of: the ground, a crown's leaves, the ground under a crown, or water (1/9 block + vanilla's 0.001 inset below its integer top).
+enum { LM_K_GROUND = 0, LM_K_CROWN = 1, LM_K_UNDER = 2, LM_K_WATER = 3 };
 
 // A quad, two words:
 //   w0: x (7 bits, cells from the tile's corner) | z (7) << 7 | (e1 - 1) (6) << 14 | (e2 - 1) (6) << 20 | face (3) << 26 | kind (2) << 29
@@ -42,6 +42,7 @@ enum { LM_K_GROUND = 0, LM_K_CROWN = 1, LM_K_UNDER = 2 };
 // y1; facing +-z: the plane z, cells [x, x + e1). Plants: cell (x, z); e1 - 1 = quad (bit 0: 0 along x = z, 1 along x + z = 1)
 // | (blocks - 1) << 1; e2 - 1 = the offset's x nibble; extra = the offset's z nibble | y nibble << 4 (columns.metal's plant word
 // B nibbles); y0 the ground's top.
+// Non-water walls: extra bit 0 lowers only their bottom edge by 1/9 block to close the bank against adjacent water.
 
 typedef struct {
 	const uint32_t *geom;     // the level's N x N geometry words (toroidal: cell (x, z) at (z mod N) * N + x mod N)

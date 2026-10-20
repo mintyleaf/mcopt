@@ -47,6 +47,8 @@ final class LodTaaTile {
 	private boolean affineWarned;
 	private double px, py, pz;
 	private boolean valid, warned;
+
+	void reset() { this.valid = false; }
 	private int skipped, frameNo;
 
 	LodTaaTile(long ctx) {

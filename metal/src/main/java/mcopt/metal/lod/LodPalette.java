@@ -16,11 +16,13 @@ import org.lwjgl.system.MemoryUtil;
  */
 final class LodPalette {
 	static final int MAX = 1024;
-	/** Floats per entry: top u0 v0 u1 v1, side u0 v0 u1 v1, top average rgb, side average rgb (0..1, sRGB), a plant's profile (4 ints). */
+	/** Floats per entry: top/side UV, top/side average RGB, plant profile. Mushrooms reuse the profile for underside UV,
+	 * topAvg.w marks that layout and sideAvg.w stores the underside's packed RGB, keeping the buffer size unchanged. */
 	static final int STRIDE = 20;
 	private static final ConcurrentHashMap<BlockState, Integer> IDS = new ConcurrentHashMap<>();
 	private static final AtomicInteger NEXT = new AtomicInteger(1);
 	private static long table;
+	private static long revision = Long.MIN_VALUE;
 
 	private LodPalette() {
 	}
@@ -30,6 +32,14 @@ final class LodPalette {
 		table = address;
 		MemoryUtil.memSet(address, 0, (long) MAX * STRIDE * 4);
 		IDS.forEach(LodPalette::write);
+	}
+
+	/** Keep material IDs used by resident tiles, but resolve their sprites against the newly baked models. */
+	static synchronized void reload(long atlasRevision) {
+		if (revision == atlasRevision) return;
+		LodColors.reload();
+		IDS.forEach(LodPalette::write);
+		revision = atlasRevision;
 	}
 
 	/** The block's number (0 when the table is full, or for air and fluids: they keep the flat color). */
@@ -60,7 +70,13 @@ final class LodPalette {
 		}
 		putRgb(at + 32, l.top());
 		putRgb(at + 48, l.side());
-		for (int i = 0; i < 4; i++) MemoryUtil.memPutInt(at + 64 + i * 4L, l.profile()[i]);
+		if (l.mushroom()) {
+			MemoryUtil.memPutFloat(at + 44, 1);
+			MemoryUtil.memPutFloat(at + 60, l.bottom());
+			for (int i = 0; i < 4; i++) MemoryUtil.memPutFloat(at + 64 + i * 4L, l.bottomUv()[i]);
+		} else {
+			for (int i = 0; i < 4; i++) MemoryUtil.memPutInt(at + 64 + i * 4L, l.profile()[i]);
+		}
 	}
 
 	private static void putRgb(long at, int rgb) {
@@ -71,6 +87,7 @@ final class LodPalette {
 	}
 
 	private static final ConcurrentHashMap<Integer, BlockState> STATES = new ConcurrentHashMap<>();
+	private static final java.util.concurrent.atomic.AtomicReferenceArray<String> NAMES = new java.util.concurrent.atomic.AtomicReferenceArray<>(MAX);
 
 	/** The block state of a number (null for 0 or unknown). */
 	static @org.jspecify.annotations.Nullable BlockState stateOf(int id) {
@@ -79,9 +96,15 @@ final class LodPalette {
 
 	/** The block state's name for the disk cache ("" for 0). */
 	static String nameOf(int id) {
+		if (id <= 0 || id >= MAX) return "";
+		String cached = NAMES.get(id);
+		if (cached != null) return cached;
 		BlockState s = STATES.get(id);
-		return s == null ? "" : net.minecraft.world.level.block.state.BlockState.CODEC.encodeStart(com.mojang.serialization.JsonOps.INSTANCE, s).result()
+		if (s == null) return "";
+		String name = net.minecraft.world.level.block.state.BlockState.CODEC.encodeStart(com.mojang.serialization.JsonOps.INSTANCE, s).result()
 			.map(Object::toString).orElse("");
+		NAMES.compareAndSet(id, null, name);
+		return NAMES.get(id);
 	}
 
 	/** A cached block state name back to this session's number (0 when unknown). */

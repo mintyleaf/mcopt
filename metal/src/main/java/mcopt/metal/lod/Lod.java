@@ -1,6 +1,7 @@
 package mcopt.metal.lod;
 
 import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.renderpearl.api.buffers.GpuBufferSlice;
 import com.mojang.renderpearl.frontend.FrontendCommandEncoder;
 import java.io.IOException;
 import java.io.InputStream;
@@ -15,6 +16,7 @@ import net.minecraft.client.renderer.fog.FogData;
 import net.minecraft.client.renderer.state.level.CameraRenderState;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.attribute.EnvironmentAttributes;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.material.FogType;
@@ -37,14 +39,35 @@ import org.lwjgl.system.MemoryUtil;
  */
 public final class Lod {
 	private static @Nullable Lod instance;
+	private long nextDebug;
+	private java.util.List<String> debug = java.util.List.of();
+
+	/** Render-thread counters plus an immutable server snapshot, refreshed at most twice a second. */
+	public static java.util.List<String> debugLines() {
+		if (!LodConfig.ENABLED || !Boolean.parseBoolean(System.getProperty("mcopt.lod.debugHud", "true"))) return java.util.List.of();
+		Lod l = instance;
+		if (l == null || l.field == null) return java.util.List.of("LOD: " + (failed ? "initialization failed (see log)" : "waiting for terrain"));
+		long now = System.nanoTime();
+		if (now >= l.nextDebug) {
+			l.nextDebug = now + 500_000_000L;
+			var lines = new java.util.ArrayList<String>();
+			lines.add("mcopt LOD: " + (int)Math.ceil(l.reach / 16.0) + "c reach");
+			lines.addAll(l.field.debugLines());
+			lines.add("LOD capture input: " + l.captureLoads.size() + " loads, " + l.edited.size() + " edits/light updates");
+			if (l.mesh != null) lines.add(String.format(java.util.Locale.ROOT, "LOD mesh: %d pending, %.0f/%.0f MiB arena", l.mesh.pending(), l.mesh.usedMb(), l.mesh.arenaMb()));
+			l.debug = java.util.List.copyOf(lines);
+		}
+		return l.debug;
+	}
 	private static boolean failed;
 	private static final boolean SODIUM = FabricLoader.getInstance().isModLoaded("sodium");
 	private static final int MAX_LEVELS = 12;
 	/** ColFrame in columns.metal: A, B, C, cam, origin, cols, lines, screen, mask, maskDist (10 x 16) + 12 levels x 32. */
 	static final int COL_FRAME_BYTES = 10 * 16 + MAX_LEVELS * 32;
-	/** CompFrame: float4x4 + A, B, C, screen, fogColor, fog, skyLight, faceShade, quadDepth, origin, camFrac, tex (12 x 16). */
-	static final int COMP_FRAME_BYTES = 64 + 12 * 16;
+	/** CompFrame: the original 256 bytes, lightmap flags/LUT (2064), and soft-handoff window/band (32). */
+	static final int COMP_FRAME_BYTES = LodLightmap.FRAME_BYTES + 32;
 	private static final int MASK_MAX = 128;
+	private static final int MASK_BYTES = MASK_MAX * MASK_MAX / 8;
 	private static final int RING = 4;
 
 	private final Object encoder;
@@ -52,6 +75,11 @@ public final class Lod {
 	private final long colFrame = MemoryUtil.nmemCalloc(1, COL_FRAME_BYTES), compFrame = MemoryUtil.nmemCalloc(1, COMP_FRAME_BYTES);
 	private final long err = MemoryUtil.nmemCalloc(1, 4096);
 	private final long[] maskBufs = new long[RING], maskAddrs = new long[RING];
+	private final long[] waterEdgeBufs = new long[RING], waterEdgeAddrs = new long[RING];
+	private final LodWaterEdges waterEdges = new LodWaterEdges();
+	private final LodHandoff handoff = new LodHandoff(MASK_MAX, LodConfig.HANDOFF_MS);
+	private boolean handoffOn;
+	private boolean waterReady;
 	/** The walk's guard trips (a column that walked far too long) and the first one's state, for the log. */
 	private final long dbgBuf, dbgAddr;
 	/** The block palette's table (LodPalette) for the composite's textures. */
@@ -65,7 +93,10 @@ public final class Lod {
 	private @Nullable LodMesh mesh;
 	/** The mesh's position-keyed lists (-Dmcopt.lod.pk), else null. */
 	private @Nullable LodPk pk;
-	private @Nullable Object worldOwner;
+	private volatile @Nullable Object worldOwner;
+	private int cavernY = LodCaverns.NONE;
+	private final LodCaverns.Selection cavernSelection = new LodCaverns.Selection();
+	private double reach;
 	/** -Dmcopt.lod.seam=DIR: the transition probe (LodSeam), else null. */
 	private final @Nullable LodSeam seam;
 	/** -Dmcopt.lod.taa: the far terrain's temporal filter (LodTaa), else null. */
@@ -86,6 +117,7 @@ public final class Lod {
 	private final FrustumIntersection frustum = new FrustumIntersection();
 	private float fogR, fogG, fogB, fogStart, fogEnd, envStart, envEnd;
 	private boolean fogOn, haveFrame;
+	private float waterFog;
 	private long frames;
 	private final int[] mask = new int[MASK_MAX * MASK_MAX / 32];
 	private int maskX, maskZ, maskSize, maskWords;
@@ -112,8 +144,12 @@ public final class Lod {
 		this.dbgAddr = LodNative.contents(this.dbgBuf);
 		MemoryUtil.memSet(this.dbgAddr, 0, 64);
 		for (int i = 0; i < RING; i++) {
-			this.maskBufs[i] = LodNative.buffer(this.ctx, MASK_MAX * MASK_MAX / 8);
+			this.maskBufs[i] = LodNative.buffer(this.ctx, MASK_BYTES + MASK_MAX * MASK_MAX * 4L);
 			this.maskAddrs[i] = LodNative.contents(this.maskBufs[i]);
+			if (LodConfig.WATER_TRANSITION) {
+				this.waterEdgeBufs[i] = LodNative.buffer(this.ctx, MASK_MAX * MASK_MAX * 4L);
+				this.waterEdgeAddrs[i] = LodNative.contents(this.waterEdgeBufs[i]);
+			}
 			MemoryUtil.memSet(this.maskAddrs[i], 0, MASK_MAX * MASK_MAX / 8);
 		}
 		this.seam = LodSeam.ON ? new LodSeam(this.ctx) : null;
@@ -125,6 +161,8 @@ public final class Lod {
 		try (InputStream in = Lod.class.getResourceAsStream("/mcopt/lod/columns.metal")) {
 			if (in == null) throw new IllegalStateException("columns.metal missing");
 			String src = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+			if (Boolean.getBoolean("mcopt.metal.passJfr")) src = "#define LOD_PROFILE_SPLIT 1\n" + src;
+			if (LodConfig.HANDOFF_MS > 0 && mcopt.metal.own.OwnSeam.ON) src = "#define SEAM_HANDOFF 1\n" + src;
 			// -Dmcopt.lod.dissolve: compiled in only with the flag (the default library is the file as it is)
 			if (LodMesh.DISSOLVE_MS > 0) src = "#define SEAM_DISSOLVE_MS " + LodMesh.DISSOLVE_MS + "\n" + src;
 			// -Dmcopt.lod.thin=true: steps shaded by pixel coverage (columns.metal seamThin): less shimmer under motion
@@ -163,7 +201,8 @@ public final class Lod {
 
 	/** Reach in blocks while far terrain draws in the current level, else 0 (the camera's far plane and the fog follow it). */
 	public static float activeReach() {
-		return activeReach;
+		Lod l = instance;
+		return l != null && l.worldOwner == Minecraft.getInstance().level ? activeReach : 0;
 	}
 
 	/**
@@ -172,17 +211,9 @@ public final class Lod {
 	 * terrain fades into the game's own fog color at its edge as the real terrain did at the render distance.
 	 */
 	public static void adjustFog(FogData fog, FogType type) {
-		float reach = activeReach;
-		if (reach <= 0 || type != FogType.ATMOSPHERIC) return;
-		// as the game sets it for a render distance of the reach: a fade over its last tenth (4..64 blocks)
-		fog.renderDistanceStart = LodConfig.FOG_START >= 0 ? (float) (reach * LodConfig.FOG_START) : reach - Math.clamp(reach / 10.0F, 4.0F, 64.0F);
-		fog.renderDistanceEnd = reach;
-		if (fog.environmentalEnd >= 512) {
-			// the haze stretched with the reach (unchanged up to 1024 / haze blocks, so a short reach looks exactly like the game)
-			float scale = Math.max(1.0F, (float) (LodConfig.HAZE * reach) / 1024.0F);
-			fog.environmentalStart *= scale;
-			fog.environmentalEnd *= scale;
-		}
+		ClientLevel level = Minecraft.getInstance().level;
+		LodFog.adjust(fog, type, activeReach(), LodConfig.FOG_START, LodConfig.HAZE, false,
+			level != null && (level.dimensionType().hasCeiling() || level.dimension() == net.minecraft.world.level.Level.END));
 	}
 
 	/** Top of the level's frame: the camera and fog this frame draws with. */
@@ -211,6 +242,37 @@ public final class Lod {
 	/** Whether Sodium's sections should appear without their fade-in (-Dmcopt.lod.fade=instant while far terrain draws). */
 	public static boolean noSectionFade() {
 		return activeReach > 0;
+	}
+
+	/** WaterFrame (80 bytes) followed by three borrowed Metal buffer handles, for our near translucent draw. */
+	public static void waterTransition(long data) {
+		Lod l = instance;
+		if (!LodConfig.WATER_TRANSITION || l == null || !l.waterReady || l.clip == null || !l.maskOn || activeReach <= 0) return;
+		var texture = Minecraft.getInstance().getTextureManager().getTexture(net.minecraft.client.renderer.texture.TextureAtlas.LOCATION_BLOCKS);
+		if (!(texture instanceof net.minecraft.client.renderer.texture.TextureAtlas atlas)) return;
+		var still = atlas.getSprite(net.minecraft.resources.Identifier.withDefaultNamespace("block/water_still"));
+		var flow = atlas.getSprite(net.minecraft.resources.Identifier.withDefaultNamespace("block/water_flow"));
+		if (still == atlas.missingSprite() || flow == atlas.missingSprite()) return;
+		for (int i = 0; i < 2; i++) {
+			var sprite = i == 0 ? still : flow;
+			long p = data + i * 16L;
+			MemoryUtil.memPutFloat(p, sprite.getU0());
+			MemoryUtil.memPutFloat(p + 4, sprite.getV0());
+			MemoryUtil.memPutFloat(p + 8, sprite.getU1());
+			MemoryUtil.memPutFloat(p + 12, sprite.getV1());
+		}
+		MemoryUtil.memPutInt(data + 32, l.maskX);
+		MemoryUtil.memPutInt(data + 36, l.maskZ);
+		MemoryUtil.memPutInt(data + 40, l.maskSize);
+		MemoryUtil.memPutInt(data + 48, l.clip.logN);
+		MemoryUtil.memPutInt(data + 52, l.clip.winTx[0] * LodTile.SIZE);
+		MemoryUtil.memPutInt(data + 56, l.clip.winTz[0] * LodTile.SIZE);
+		MemoryUtil.memPutInt(data + 60, l.clip.n);
+		MemoryUtil.memCopy(l.compFrame + 160, data + 64, 12);
+		MemoryUtil.memPutFloat(data + 76, LodWaterEdges.WIDTH);
+		MemoryUtil.memPutLong(data + 80, l.clip.geomBuf);
+		MemoryUtil.memPutLong(data + 88, l.clip.colorBuf);
+		MemoryUtil.memPutLong(data + 96, l.waterEdgeBufs[(int) (l.frames % RING)]);
 	}
 
 	/** End of the level (everything but the GUI drawn): the transition probe's frame (-Dmcopt.lod.seam only). */
@@ -296,20 +358,26 @@ public final class Lod {
 	}
 
 	private void begin(CameraRenderState camera) {
+		this.haveFrame = false;
+		this.waterReady = false;
 		Minecraft mc = Minecraft.getInstance();
-		this.ensureWorld(mc);
+		this.ensureWorld(mc, camera.pos.y);
 		if (this.field == null) {
 			activeReach = 0;
 			shadeReach(0);
 			return;
 		}
-		activeReach = (float) LodConfig.reachBlocks();
+		activeReach = (float) this.reach;
 		shadeReach(activeReach);
 		this.camX = camera.pos.x;
 		this.camY = camera.pos.y;
 		this.camZ = camera.pos.z;
-		Matrix4f proj = new Matrix4f(camera.projectionMatrix);
-		this.viewProj.set(proj).mul(camera.viewRotationMatrix);
+		// GameRenderer's uploaded level projection includes bobbing, hurt tilt and nausea; the camera's base matrix does not.
+		// Capture it at the start of LevelRenderer.render, before another pass can replace the active projection.
+		GpuBufferSlice projection = RenderSystem.getProjectionMatrixBuffer();
+		long address = projection == null ? 0 : MetalBridge.bufferAddress(projection.buffer());
+		LodProjection.viewProjection(this.viewProj, camera.projectionMatrix, camera.viewRotationMatrix,
+			address == 0 ? 0 : address + projection.offset());
 		camera.viewRotationMatrix.positiveZ(this.forward).negate();
 		this.frustum.set(this.viewProj, false);
 		FogData fog = camera.fogData;
@@ -321,6 +389,12 @@ public final class Lod {
 		this.envStart = fog.environmentalStart;
 		this.envEnd = fog.environmentalEnd;
 		this.fogOn = camera.fogType != FogType.LAVA;
+		var waterColor = mc.gameRenderer.mainCamera().attributeProbe().getValue(EnvironmentAttributes.WATER_FOG_COLOR,
+			mc.getDeltaTracker().getGameTimeDeltaPartialTick(false));
+		int waterRgb = Math.round(Math.clamp(waterColor.x(), 0, 1) * 255) << 16
+			| Math.round(Math.clamp(waterColor.y(), 0, 1) * 255) << 8 | Math.round(Math.clamp(waterColor.z(), 0, 1) * 255);
+		// RGB+1 fits exactly in a float, including black; its sign records whether the active fog is already water's.
+		this.waterFog = (waterRgb + 1) * (camera.fogType == FogType.WATER ? -1.0F : 1.0F);
 		this.haveFrame = true;
 		LodTaa taa = this.taa;
 		if (taa != null && this.mesh != null) {
@@ -330,11 +404,22 @@ public final class Lod {
 		}
 	}
 
-	private void ensureWorld(Minecraft mc) {
+	private void ensureWorld(Minecraft mc, double cameraY) {
 		ClientLevel level = mc.level;
 		MinecraftServer server = mc.getSingleplayerServer();
 		Object owner = level == null || server == null ? null : level;
-		if (owner == this.worldOwner) return;
+		if (owner != this.worldOwner) this.cavernSelection.reset();
+		int view = level != null && level.dimensionType().hasCeiling()
+			? this.cavernSelection.select(cameraY, owner == this.worldOwner ? this.cavernY : LodCaverns.NONE,
+				level.getMinY(), level.getMinY() + level.dimensionType().logicalHeight() - 1, System.nanoTime()) : LodCaverns.NONE;
+		if (owner == this.worldOwner && view == this.cavernY) return;
+		activeReach = 0;
+		this.haveFrame = false;
+		this.waterReady = false;
+		this.nextDebug = 0;
+		this.debug = java.util.List.of();
+		if (this.taa != null) this.taa.reset();
+		if (this.taaTile != null) this.taaTile.reset();
 		if (this.field != null) {
 			this.field.close();
 			this.field = null;
@@ -349,27 +434,38 @@ public final class Lod {
 			this.pk = null;
 		}
 		if (this.clip != null) {
+			this.clip.closeSnapshots();
 			this.releaseLater.add(new long[] {this.frames, this.clip.geomBuf});
 			this.releaseLater.add(new long[] {this.frames, this.clip.colorBuf});
 			this.releaseLater.add(new long[] {this.frames, this.clip.mipBuf});
 			this.releaseLater.add(new long[] {this.frames, this.clip.crownBuf});
+			this.releaseLater.add(new long[] {this.frames, this.clip.texBuf});
 			this.clip = null;
 		}
+		this.edited.clear();
+		this.captureLoads.clear();
+		this.captureFreshness.clear();
+		this.handoff.reset();
+		this.handoffOn = false;
 		this.worldOwner = owner;
+		this.cavernY = view;
 		if (owner == null) return;
 		ServerLevel sl = server.getLevel(level.dimension());
 		if (sl == null) return;
-		LodNoise noise = LodNoise.of(sl);
+		LodNoise noise = LodNoise.of(sl, view);
 		if (noise == null) {
-			System.out.println("mcopt-lod: no far terrain in " + level.dimension().identifier() + " (not noise-generated, or a ceiling)");
+			System.out.println("mcopt-lod: no far terrain in " + level.dimension().identifier() + " (not noise-generated)");
 			return;
 		}
 		Path root = LodConfig.CACHE_DIR != null ? Path.of(LodConfig.CACHE_DIR) : mc.gameDirectory.toPath().resolve("mcopt-lod");
-		String save = server.getWorldPath(LevelResource.ROOT).toAbsolutePath().normalize().getFileName().toString();
-		Path cache = root.resolve(save).resolve(level.dimension().identifier().getNamespace() + "_" + level.dimension().identifier().getPath());
+		Path cache = LodWorldCache.directory(root, server.getWorldPath(LevelResource.ROOT), noise);
+		if (sl.dimensionType().hasCeiling()) cache = cache.resolve(view == LodCaverns.NONE ? "ceiling-surface-v1" : "caverns-v1-y" + view);
+		if (noise.islands != null) cache = cache.resolve("islands-v1");
 		// tiles cached under other crown or tree levels lack (or carry) data these levels need: their own directory
 		if (LodConfig.CROWN_LEVELS != 1 || LodConfig.TREE_LEVELS != 1) cache = cache.resolve("c" + LodConfig.CROWN_LEVELS + "t" + LodConfig.TREE_LEVELS);
-		this.clip = new LodClip(this.ctx, LodConfig.N, LodConfig.reachBlocks());
+		// Ceiling geometry is kept at every level. Bound its reach so this remains affordable on small unified-memory Macs.
+		this.reach = sl.dimensionType().hasCeiling() ? Math.min(LodConfig.reachBlocks(), 1024) : LodConfig.reachBlocks();
+		this.clip = new LodClip(this.ctx, LodConfig.N, this.reach, view != LodCaverns.NONE || noise.islands != null);
 		if (LodConfig.MESH) this.mesh = new LodMesh(this.ctx, this.clip);
 		if (this.mesh != null && LodPk.ENABLED) {
 			// (its passes order their outputs by hazard tracking, not -Dmcopt.lod.meshFences' fences)
@@ -383,6 +479,18 @@ public final class Lod {
 			this.clip.publisher = this.publish;
 		}
 		this.field = new LodField(noise, this.clip, cache);
+		if (LodConfig.CHUNKS) {
+			// The first world frame can arrive after its initial chunks. Their load hooks had no field to write to;
+			// queue those chunks too, otherwise old solid mushroom/build approximations survive a close visit.
+			var center = mc.player == null ? new net.minecraft.world.level.ChunkPos(0, 0) : mc.player.chunkPosition();
+			int radius = mc.options.getEffectiveRenderDistance() + 3;
+			long now = System.nanoTime();
+			for (int z = center.z() - radius; z <= center.z() + radius; z++) {
+				for (int x = center.x() - radius; x <= center.x() + radius; x++) {
+					if (level.getChunkSource().getChunk(x, z, false) != null) this.edited.put(net.minecraft.world.level.ChunkPos.pack(x, z), now);
+				}
+			}
+		}
 		if (LodGenBench.ENABLED) LodGenBench.start(noise, this.field);
 		if (LodYield.ON) LodYield.top = this.clip.levels - 1;
 	}
@@ -390,15 +498,16 @@ public final class Lod {
 	private void draw() {
 		LodField w = this.field;
 		LodClip clip = this.clip;
-		if (w == null || clip == null) return;
+		if (w == null || clip == null || this.worldOwner != Minecraft.getInstance().level) return;
 		long start = System.nanoTime();
 		Minecraft mc = Minecraft.getInstance();
 		this.frames++;
+		clip.retireGpu(this.frames);
 		this.seamArmed = this.seam != null || this.taaTile != null;
 		w.frame = this.frames;
 		while (!this.releaseLater.isEmpty() && this.frames - this.releaseLater.peek()[0] >= RING) LodNative.release(this.releaseLater.poll()[1]);
 		w.integrate();
-		if (LodMesh.REAL_OCC && !this.edited.isEmpty()) this.resnapshot(mc, start);
+		if (!this.edited.isEmpty() || !this.captureLoads.isEmpty()) this.resnapshot(mc, start);
 		long t1 = System.nanoTime();
 		this.partNanos[0] += t1 - start;
 		w.rdBlocks = mc.options.getEffectiveRenderDistance() * 16.0;
@@ -408,8 +517,10 @@ public final class Lod {
 		long t2 = System.nanoTime();
 		this.partNanos[1] += t2 - t1;
 		int rd = mc.options.getEffectiveRenderDistance();
+		if (LodYield.ON) LodYield.frame(mc, this.camX, this.camY, this.camZ, rd, w);
+		w.refine(this.camX, this.camZ, this.forward.x, this.forward.z, rd, mc.isPaused());
+		this.handoffOn = false;
 		if (LodGenStats.ON) LodGenStats.frame(mc.level, w, this.camX, this.camZ, rd);
-		if (LodYield.ON) LodYield.frame(mc, this.camX, this.camZ, rd);
 		// (three standalone statements, no else: the indie export removes the first one)
 		if (!(HANDOFF_DRAWN && SODIUM) && (!mcopt.metal.own.OwnSeam.ON || !this.updateMaskOwn())) this.updateMask(mc, rd, this.frames % 8 == 1);
 		if (HANDOFF_DRAWN && SODIUM && CHUNK_HOLD) {
@@ -434,7 +545,17 @@ public final class Lod {
 			long maskBuf = this.maskBufs[(int) (this.frames % RING)];
 			MemoryUtil.memSet(this.maskAddrs[(int) (this.frames % RING)], 0, MASK_MAX * MASK_MAX / 8);
 			if (this.maskOn) {
-				for (int i = 0; i < this.maskSize * this.maskWords; i++) MemoryUtil.memPutInt(this.maskAddrs[(int) (this.frames % RING)] + i * 4L, this.mask[i]);
+				int[] drawMask = this.handoffOn ? this.handoff.mask : this.mask;
+				for (int i = 0; i < this.maskSize * this.maskWords; i++) MemoryUtil.memPutInt(this.maskAddrs[(int) (this.frames % RING)] + i * 4L, drawMask[i]);
+				if (this.handoffOn) {
+					long dst = this.maskAddrs[(int) (this.frames % RING)] + MASK_BYTES;
+					for (int i = 0; i < this.maskSize * this.maskSize; i++) MemoryUtil.memPutFloat(dst + i * 4L, this.handoff.arrivals[i]);
+				}
+			}
+			if (LodConfig.WATER_TRANSITION && this.maskOn && this.mesh != null) {
+				float[] edges = this.waterEdges.update(this.handoffOn ? this.handoff.mask : this.mask, this.maskX, this.maskZ, this.maskSize, this.maskWords);
+				long dst = this.waterEdgeAddrs[(int) (this.frames % RING)];
+				for (int i = 0; i < edges.length; i++) MemoryUtil.memPutFloat(dst + i * 4L, edges[i]);
 			}
 			if (this.mesh != null) {
 				LodPublish pub = clip.publisher;
@@ -450,7 +571,7 @@ public final class Lod {
 			if (columns > 0 && mesh != null) {
 				boolean gbuffer = false;
 				if (this.dumpNow(w)) this.dump(clip, this.maskAddrs[(int) (this.frames % RING)], width, height);
-				mesh.pack(this.viewProj, this.camX, this.camY, this.camZ, LodConfig.reachBlocks(), this.maskOn, this.maskX, this.maskZ, this.maskSize, this.maskWords,
+				mesh.pack(this.viewProj, this.camX, this.camY, this.camZ, this.reach, this.maskOn, this.maskX, this.maskZ, this.maskSize, this.maskWords,
 					rd * 16.0F + 48.0F);
 				long table = mesh.table(this.frames);
 				LodPk pk = this.pk;
@@ -459,11 +580,11 @@ public final class Lod {
 				int slot = (int) ((this.frames / LodPk.TIME_EVERY) & 15);
 				boolean timed = pk != null && LodPk.LOAD && this.cullTimes && sample && LodNative.cullTimeSlot(this.lod, slot);
 				if (pk != null && LodPk.LOAD && sample && !timed) this.cullTimes = false;
-				boolean listsRan = pk != null && pk.lists(this.camX, this.camY, this.camZ, this.viewProj, LodConfig.reachBlocks(), LodPk.LOAD && this.cullTimes,
+				boolean listsRan = pk != null && pk.lists(this.camX, this.camY, this.camZ, this.viewProj, this.reach, LodPk.LOAD && this.cullTimes,
 					timed);
 				if (listsRan) {
 					// the position-keyed lists: this frame's rebuilds, the live cull (the live ring, stale sectors), the lists' per-frame pass
-					pk.prepare(this.viewProj, this.camX, this.camY, this.camZ, LodConfig.reachBlocks(), this.forward.x, this.forward.z,
+					pk.prepare(this.viewProj, this.camX, this.camY, this.camZ, this.reach, this.forward.x, this.forward.z,
 						this.maskOn ? rd * 16.0F + 48.0F : 0);
 					pk.frameFields(mesh.frame, this.camX, this.camZ);
 					long pkBufs = pk.bufs(table, mesh.arena(), maskBuf, mesh, clip);
@@ -482,11 +603,13 @@ public final class Lod {
 				}
 				long atlas = this.atlasHandle();
 				if (this.taa != null) this.taa.beforeDraw(this.camX, this.camY, this.camZ, rd * 16.0F + 48.0F);
-				LodNative.meshDraw(this.lod, enc, gbuffer, this.compFrame, COMP_FRAME_BYTES, mesh.arena(), mesh.argsBuf, mesh.instBuf, mesh.plantBuf, mesh.survBuf,
+				boolean split = LodNative.meshDraw(this.lod, enc, gbuffer, this.compFrame, COMP_FRAME_BYTES, mesh.arena(), mesh.argsBuf, mesh.instBuf, mesh.plantBuf, mesh.survBuf,
 					clip.geomBuf, clip.colorBuf, clip.crownBuf, clip.texBuf, this.paletteBuf, atlas, mesh.currentTable(), mesh.frame, LodMesh.FRAME_BYTES,
-					LodMesh.FENCES && pk == null, this.err, 4096);
+					LodMesh.FENCES && pk == null, maskBuf, this.err, 4096);
 				if (this.taa != null) this.taa.afterDraw(this.viewProj, this.camX, this.camY, this.camZ);
-				MetalBridge.reapplyPipeline(this.encoder);
+				if (split) MetalBridge.restorePass(this.encoder);
+				else MetalBridge.reapplyPipeline(this.encoder);
+				this.waterReady = LodConfig.WATER_TRANSITION && this.fogOn && Minecraft.getInstance().gameRenderer.mainCamera().getFluidInCamera() == FogType.NONE;
 			} else if (columns > 0) {
 				boolean gbuffer = false;
 				if (this.dumpNow(w)) this.dump(clip, this.maskAddrs[(int) (this.frames % RING)], width, height);
@@ -550,11 +673,21 @@ public final class Lod {
 	}
 
 	private int atlasMips = -1;
+	private static volatile long atlasRevision;
+	private long paletteRevision = -1;
+
+	/** Called after the blocks atlas is stitched; defer model lookups until the first resumed world frame. */
+	public static void atlasReloaded() { atlasRevision++; }
 	private boolean atlasLogged;
 
 	/** The block atlas's Metal texture (0 when the game has none yet); its mip count is noted for the composite. */
 	private long atlasHandle() {
 		try {
+			if (this.paletteRevision != atlasRevision) {
+				LodPalette.reload(atlasRevision);
+				this.paletteRevision = atlasRevision;
+				this.atlasLogged = false;
+			}
 			var atlas = Minecraft.getInstance().getTextureManager().getTexture(net.minecraft.client.renderer.texture.TextureAtlas.LOCATION_BLOCKS);
 			var tex = atlas.getTexture();
 			this.atlasMips = Math.max(0, tex.getMipLevels() - 1);
@@ -732,7 +865,7 @@ public final class Lod {
 		MemoryUtil.memPutFloat(f + 48, (float) (this.camX - bx));
 		MemoryUtil.memPutFloat(f + 52, (float) this.camY);
 		MemoryUtil.memPutFloat(f + 56, (float) (this.camZ - bz));
-		MemoryUtil.memPutFloat(f + 60, (float) LodConfig.reachBlocks());
+		MemoryUtil.memPutFloat(f + 60, (float) this.reach);
 		MemoryUtil.memPutInt(f + 64, bx);
 		MemoryUtil.memPutInt(f + 68, by);
 		MemoryUtil.memPutInt(f + 72, bz);
@@ -791,7 +924,7 @@ public final class Lod {
 		MemoryUtil.memPutFloat(c + 160, sky[0]);
 		MemoryUtil.memPutFloat(c + 164, sky[1]);
 		MemoryUtil.memPutFloat(c + 168, sky[2]);
-		MemoryUtil.memPutFloat(c + 172, 1);
+		MemoryUtil.memPutFloat(c + 172, clip.runsOffset());
 		MemoryUtil.memPutFloat(c + 176, 1.0F);
 		MemoryUtil.memPutFloat(c + 180, 0.5F);
 		MemoryUtil.memPutFloat(c + 184, 0.8F);
@@ -817,6 +950,17 @@ public final class Lod {
 		MemoryUtil.memPutFloat(c + 244, this.atlasMips);
 		MemoryUtil.memPutFloat(c + 248, LodConfig.TEXTURES && this.atlasMips >= 0 ? 1 : 0);
 		MemoryUtil.memPutFloat(c + 252, Integer.getInteger("mcopt.lod.debugView", 0));
+		LodLightmap.write(c, Minecraft.getInstance().gameRenderer.gameRenderState().lightmapRenderState);
+		ClientLevel lightLevel = Minecraft.getInstance().level;
+		MemoryUtil.memPutFloat(c + 264, lightLevel != null && lightLevel.dimensionType().hasSkyLight() ? 1 : 0);
+		MemoryUtil.memPutFloat(c + 268, this.waterFog);
+		long hf = c + LodLightmap.FRAME_BYTES;
+		MemoryUtil.memPutInt(hf, this.maskX);
+		MemoryUtil.memPutInt(hf + 4, this.maskZ);
+		MemoryUtil.memPutInt(hf + 8, this.handoffOn ? this.maskSize : 0);
+		MemoryUtil.memPutInt(hf + 12, 0);
+		MemoryUtil.memPutFloat(hf + 16, this.handoff.inner);
+		MemoryUtil.memPutFloat(hf + 20, this.handoff.outer);
 		return columns;
 	}
 
@@ -976,6 +1120,12 @@ public final class Lod {
 		this.maskWords = w.words;
 		this.maskOn = true;
 		this.nearestFar = w.nearestFar;
+		if (LodConfig.HANDOFF_MS > 0 && this.mesh != null) {
+			this.handoff.update(this.mask, w.x0, w.z0, w.size, w.words, this.camX, this.camZ,
+				Minecraft.getInstance().options.getEffectiveRenderDistance(), System.nanoTime());
+			this.handoffOn = true;
+			this.nearestFar = this.handoff.nearestFar;
+		}
 		return true;
 	}
 
@@ -1031,8 +1181,8 @@ public final class Lod {
 			(float) (ox + 16 - this.camX) + g, (float) (level.getMaxY() - this.camY), (float) (oz + 16 - this.camZ) + g);
 	}
 
-	/** -Dmcopt.lod.handoffPush=K: far terrain's clip depth times K (see source()); 0: off. */
-	static final float HANDOFF_PUSH = Float.parseFloat(System.getProperty("mcopt.lod.handoffPush", LodConfig.SMALL ? "0.9995" : "0"));
+	/** -Dmcopt.lod.handoffPush=K: far terrain's clip depth times K; real terrain wins overlaps during rebuilds. 0: off. */
+	static final float HANDOFF_PUSH = Float.parseFloat(System.getProperty("mcopt.lod.handoffPush", "0.9995"));
 	/**
 	 * -Dmcopt.lod.maskSpread (default true; =false: all in one frame as before): the deep chunks' "still built" re-check (every
 	 * 64 frames) spread over the 64 frames by position instead of all in one frame (~700 Sodium lookups at once: a 0.2-0.9 ms
@@ -1240,15 +1390,43 @@ public final class Lod {
 	public static void chunk(net.minecraft.world.level.chunk.LevelChunk chunk) {
 		Lod l = instance;
 		if (l == null || l.field == null || !LodConfig.CHUNKS || chunk == null) return;
-		l.field.chunk(chunk);
+		if (!LodWorldScope.accepts(l.worldOwner, Minecraft.getInstance().level, chunk.getLevel())) return;
+		l.captureLoads.add(net.minecraft.world.level.ChunkPos.pack(chunk.getPos().x(), chunk.getPos().z()));
+		l.captureFreshness.invalidate(net.minecraft.world.level.ChunkPos.pack(chunk.getPos().x(), chunk.getPos().z()));
+		l.invalidateCaptureNeighbors(chunk.getPos().x(), chunk.getPos().z());
+	}
+
+	private final java.util.LinkedHashSet<Long> captureLoads = new java.util.LinkedHashSet<>();
+	private final LodCaptureFreshness captureFreshness = new LodCaptureFreshness();
+	private void invalidateCaptureNeighbors(int x, int z) {
+		for (int d = 0; d < 4; d++) this.captureFreshness.invalidate(net.minecraft.world.level.ChunkPos.pack(
+			x + (d == 0 ? 1 : d == 1 ? -1 : 0), z + (d == 2 ? 1 : d == 3 ? -1 : 0)));
+	}
+
+	/** Copy light and blocks before vanilla removes the column's light data. The expensive column scan runs on a worker. */
+	public static void unloading(LevelChunk chunk) {
+		Lod l = instance;
+		if (l == null || l.field == null || !LodConfig.CHUNKS || chunk == null
+			|| !LodWorldScope.accepts(l.worldOwner, Minecraft.getInstance().level, chunk.getLevel())) return;
+		long key = net.minecraft.world.level.ChunkPos.pack(chunk.getPos().x(), chunk.getPos().z());
+		boolean dirty = l.captureLoads.remove(key);
+		dirty |= l.edited.remove(key) != null;
+		if (!l.captureFreshness.takeReady(key) || dirty) {
+			try { l.captureChunk(chunk, key, "unload"); }
+			finally { l.captureFreshness.invalidate(key); }
+		} else l.field.reusedUnloads++;
+	}
+
+	private void captureChunk(LevelChunk chunk, long key, String reason) {
+		var token = this.captureFreshness.begin(key);
+		this.field.chunk(chunk, () -> this.edited.putIfAbsent(key, System.nanoTime()), () -> token.ready = true, reason);
 	}
 
 	/**
-	 * With the real terrain as an occluder (-Dmcopt.lod.realOcc): chunks whose blocks changed since they loaded (a hole dug, a
-	 * fixture built), by the time of their last change. A chunk is snapshotted again once it has been still for EDIT_QUIET_NS:
-	 * its occluders (its columns' tops and solid runs) have to follow what the player sees.
+	 * Chunks whose blocks or light changed, by their latest update. Capture again after EDIT_QUIET_NS, so surface layers,
+	 * materials, light samples and optional real-terrain occluders follow edits. Light-engine notifications may be off-thread.
 	 */
-	private final it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap edited = new it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap();
+	private final java.util.concurrent.ConcurrentHashMap<Long, Long> edited = new java.util.concurrent.ConcurrentHashMap<>();
 	private static final long EDIT_QUIET_NS = 150_000_000L;
 
 	/** -Dmcopt.lod.editLog=N: log the first N block changes the real terrain's occluders follow (what changes blocks). */
@@ -1257,11 +1435,19 @@ public final class Lod {
 	long statEdits, statResnapshots;
 
 	/** Render thread: the client changed a block (ClientLevel.sendBlockUpdated). */
-	public static void blockChanged(net.minecraft.core.BlockPos pos, net.minecraft.world.level.block.state.BlockState from,
+	public static void blockChanged(ClientLevel level, net.minecraft.core.BlockPos pos, net.minecraft.world.level.block.state.BlockState from,
 		net.minecraft.world.level.block.state.BlockState to) {
 		Lod l = instance;
-		if (l == null || l.field == null || !LodMesh.REAL_OCC || !LodConfig.CHUNKS) return;
+		if (l == null || l.field == null || !LodConfig.CHUNKS) return;
+		if (!LodWorldScope.accepts(l.worldOwner, Minecraft.getInstance().level, level)) return;
 		l.statEdits++;
+		int cx = pos.getX() >> 4, cz = pos.getZ() >> 4;
+		l.captureFreshness.invalidate(net.minecraft.world.level.ChunkPos.pack(cx, cz));
+		// Side-light capture includes the adjacent chunk's boundary emitters, even before light propagation finishes.
+		if ((pos.getX() & 15) == 0) l.captureFreshness.invalidate(net.minecraft.world.level.ChunkPos.pack(cx - 1, cz));
+		if ((pos.getX() & 15) == 15) l.captureFreshness.invalidate(net.minecraft.world.level.ChunkPos.pack(cx + 1, cz));
+		if ((pos.getZ() & 15) == 0) l.captureFreshness.invalidate(net.minecraft.world.level.ChunkPos.pack(cx, cz - 1));
+		if ((pos.getZ() & 15) == 15) l.captureFreshness.invalidate(net.minecraft.world.level.ChunkPos.pack(cx, cz + 1));
 		if (editLog > 0) {
 			editLog--;
 			System.out.println("mcopt-lod: block changed at " + pos.toShortString() + ": " + from + " -> " + to);
@@ -1269,29 +1455,50 @@ public final class Lod {
 		l.edited.put(net.minecraft.world.level.ChunkPos.pack(pos.getX() >> 4, pos.getZ() >> 4), System.nanoTime());
 	}
 
+	/** Any light-engine thread: only queue coordinates; world reads and snapshots remain on the render thread. */
+	public static void lightChanged(ClientLevel level, net.minecraft.core.SectionPos pos) {
+		Lod l = instance;
+		if (!LodConfig.LIGHTING || !LodConfig.CHUNKS || l == null || l.field == null || !LodWorldScope.accepts(l.worldOwner, Minecraft.getInstance().level, level)) return;
+		l.captureFreshness.invalidate(net.minecraft.world.level.ChunkPos.pack(pos.x(), pos.z()));
+		l.invalidateCaptureNeighbors(pos.x(), pos.z());
+		l.edited.put(net.minecraft.world.level.ChunkPos.pack(pos.x(), pos.z()), System.nanoTime());
+	}
+
 	private void resnapshot(Minecraft mc, long now) {
-		if (mc.level == null) {
+		if (mc.level == null || this.worldOwner != mc.level) {
 			this.edited.clear();
+			this.captureFreshness.clear();
 			return;
 		}
-		var it = this.edited.long2LongEntrySet().fastIterator();
-		while (it.hasNext()) {
-			var e = it.next();
-			if (now - e.getLongValue() < EDIT_QUIET_NS) continue;
-			long k = e.getLongKey();
-			LevelChunk c = mc.level.getChunkSource().getChunk(net.minecraft.world.level.ChunkPos.getX(k), net.minecraft.world.level.ChunkPos.getZ(k), false);
-			if (c != null) {
-				this.field.chunk(c);
-				this.statResnapshots++;
+		// Only coordinates wait here, never live chunks. Bound both count and render-thread copy time during packet bursts.
+		long deadline = System.nanoTime() + 750_000L;
+		for (int n = 0; n < 4; n++) {
+			Long k = null;
+			if ((n & 1) == 0 && !this.captureLoads.isEmpty()) {
+				var it = this.captureLoads.iterator(); k = it.next(); it.remove();
+			} else k = this.pollEdited(now);
+			if (k == null && !this.captureLoads.isEmpty()) {
+				var it = this.captureLoads.iterator(); k = it.next(); it.remove();
 			}
-			it.remove();
+			if (k == null) break;
+			LevelChunk c = mc.level.getChunkSource().getChunk(net.minecraft.world.level.ChunkPos.getX(k), net.minecraft.world.level.ChunkPos.getZ(k), false);
+			if (c != null) { this.captureChunk(c, k, "loadOrEdit"); this.statResnapshots++; }
+			if (System.nanoTime() >= deadline) break;
 		}
+	}
+
+	private Long pollEdited(long now) {
+		long before = this.captureFreshness.reusedEdits;
+		Long key = this.captureFreshness.pollEdited(this.edited, now, EDIT_QUIET_NS);
+		this.field.reusedEdits += this.captureFreshness.reusedEdits - before;
+		return key;
 	}
 
 	/** The client is unloading a chunk: with -Dmcopt.lod.handoff=drawn the far terrain takes it back this frame. */
 	public static void unloaded(net.minecraft.world.level.chunk.LevelChunk chunk) {
 		Lod l = instance;
 		if (l == null || !HANDOFF_DRAWN || chunk == null) return;
+		if (!LodWorldScope.accepts(l.worldOwner, Minecraft.getInstance().level, chunk.getLevel())) return;
 		int mx = chunk.getPos().x() - l.readyX, mz = chunk.getPos().z() - l.readyZ;
 		if (l.readyX == Integer.MIN_VALUE || mx < 0 || mz < 0 || mx >= l.readySize || mz >= l.readySize) return;
 		l.handed[mz * MASK_MAX + mx] = false;

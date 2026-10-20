@@ -1,5 +1,6 @@
 package mcopt.metal.own;
 
+
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.renderpearl.api.buffers.GpuBuffer;
 import com.mojang.renderpearl.api.buffers.GpuBufferSlice;
@@ -241,7 +242,7 @@ public final class OwnTerrain {
 	/** Bytes of one quad in the arena. */
 	static final int ARENA_QUAD = COMPACT ? 64 : QUAD_BYTES;
 	private static final int CULL_FRAME_BYTES = 144, BUCKETS = 7;
-	static final int DRAW_FRAME_BYTES = 80;
+	static final int DRAW_FRAME_BYTES = 192;
 
 	private static @Nullable OwnTerrain instance;
 	private static boolean failed;
@@ -483,7 +484,7 @@ public final class OwnTerrain {
 		this.encoder = encoder;
 		this.ctx = MetalBridge.ctx(encoder);
 		this.enc = MetalBridge.enc(encoder);
-		this.own = OwnNative.create(this.ctx, (OwnPosTable.ON ? "#define OWN_EXACT_POS 1\n" : "") + (OwnQrec.ON ? "#define OWN_QREC 1\n" : "") + (VCOUNT ? "#define OWN_VCOUNT 1\n" : "") + (TFLAT ? "#define OWN_TFLAT 1\n" : "") + (RGSS_EARLY ? "" : "#define OWN_RGSS_VANILLA 1\n") + (RGSS_TRI ? "#define OWN_RGSS_TRI 1\n" : "") + (RGSS_ONE ? "#define OWN_RGSS_ONE 1\n" : "") + (TPROBE > 0 ? "#define OWN_TPROBE " + TPROBE + "\n" : "") + (OwnFrag.EXACT_SHIFT != 2 ? "#define A1_SH " + OwnFrag.EXACT_SHIFT + "\n" : "") + resource("/mcopt/own/terrain.metal"), COMPACT, FAT, CPU_CLIP);
+		this.own = OwnNative.create(this.ctx, (mcopt.metal.lod.LodConfig.WATER_TRANSITION ? "#define OWN_WATER_TRANSITION 1\n" : "") + (OwnPosTable.ON ? "#define OWN_EXACT_POS 1\n" : "") + (OwnQrec.ON ? "#define OWN_QREC 1\n" : "") + (VCOUNT ? "#define OWN_VCOUNT 1\n" : "") + (TFLAT ? "#define OWN_TFLAT 1\n" : "") + (RGSS_EARLY ? "" : "#define OWN_RGSS_VANILLA 1\n") + (RGSS_TRI ? "#define OWN_RGSS_TRI 1\n" : "") + (RGSS_ONE ? "#define OWN_RGSS_ONE 1\n" : "") + (TPROBE > 0 ? "#define OWN_TPROBE " + TPROBE + "\n" : "") + (OwnFrag.EXACT_SHIFT != 2 ? "#define A1_SH " + OwnFrag.EXACT_SHIFT + "\n" : "") + resource("/mcopt/own/terrain.metal"), COMPACT, FAT, CPU_CLIP);
 		// -Dmcopt.own.hizTile=true: the per-quad path's pyramid in one tiled pass for its first five levels (padded to 32 texels)
 		applyNativeFlags();
 		// -Dmcopt.own.gputime=true: GPU timestamps of our compute encoders (cull, list build, pyramid + test), logged per 500 frames
@@ -1131,6 +1132,8 @@ public final class OwnTerrain {
 		MetalBridge.waitIdle(this.encoder);
 		this.processEvents();
 		for (Object m : new java.util.ArrayList<>(this.meshes.keySet())) this.release(m);
+		Arrays.fill(this.compiled, (byte) 0);
+		OwnSeam.invalidate();
 		this.runDeferredNow();
 		// (the lists back to their first size: a level's high-water mark isn't kept for the next; they grow again as needed)
 		if (this.listCap > 1 << 15) this.growLists(1 << 15);
@@ -2214,6 +2217,7 @@ public final class OwnTerrain {
 			MemoryUtil.memPutInt(f + 96, bx >> 4);
 			MemoryUtil.memPutInt(f + 100, by >> 4);
 			MemoryUtil.memPutInt(f + 104, bz >> 4);
+			MemoryUtil.memPutInt(f + 108, OwnViewDistance.verticalDistance(renderDistance));
 			MemoryUtil.memPutInt(f + 112, renderDistance);
 			MemoryUtil.memPutInt(f + 116, this.maxSlot + 1);
 			MemoryUtil.memPutInt(f + 120, this.listCap);
@@ -2413,6 +2417,7 @@ public final class OwnTerrain {
 			MemoryUtil.memPutInt(f + 96, bx >> 4);
 			MemoryUtil.memPutInt(f + 100, by >> 4);
 			MemoryUtil.memPutInt(f + 104, bz >> 4);
+			MemoryUtil.memPutInt(f + 108, OwnViewDistance.verticalDistance(va.getViewDistance()));
 			MemoryUtil.memPutInt(f + 112, va.getViewDistance());
 			MemoryUtil.memPutInt(f + 116, this.maxSlot + 1);
 			MemoryUtil.memPutInt(f + 120, this.shCap);
@@ -2984,6 +2989,7 @@ public final class OwnTerrain {
 			GpuSampler lightSampler = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.LINEAR);
 			long d = stack.ncalloc(16, 1, DRAW_FRAME_BYTES);
 			MemoryUtil.memPutInt(d + 4, (int) (Util.getMillis() - this.baseMs));
+			if (mcopt.metal.lod.LodConfig.WATER_TRANSITION) mcopt.metal.lod.Lod.waterTransition(d + 80);
 			MemoryUtil.memPutInt(d + 8, (int) fadeMs);
 			if (CPU_CLIP) {
 				MemoryUtil.memPutInt(d + 12, 1);

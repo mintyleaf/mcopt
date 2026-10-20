@@ -35,6 +35,8 @@ abstract class LodFogMixin {
 		CallbackInfoReturnable<FogData> cir) {
 		FogType fluid = camera.getFluidInCamera();
 		FogData fog = cir.getReturnValue();
+		if (camera.entity() instanceof net.minecraft.world.entity.LivingEntity entity
+			&& (entity.hasEffect(net.minecraft.world.effect.MobEffects.BLINDNESS) || entity.hasEffect(net.minecraft.world.effect.MobEffects.DARKNESS))) return;
 		float reach = Lod.activeReach();
 		if (reach > 0 && fluid == FogType.NONE) {
 			float skyFogEnd = camera.attributeProbe().getValue(EnvironmentAttributes.SKY_FOG_END_DISTANCE, deltaTracker.getGameTimeDeltaPartialTick(false));

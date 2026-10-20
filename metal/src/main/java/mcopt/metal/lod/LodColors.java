@@ -18,11 +18,15 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.packs.resources.Resource;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.CardinalLighting;
 import net.minecraft.world.level.ColorResolver;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.HugeMushroomBlock;
+import net.minecraft.world.level.block.LeavesBlock;
+import net.minecraft.world.level.block.RotatedPillarBlock;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.lighting.LevelLightEngine;
@@ -43,28 +47,70 @@ final class LodColors {
 	 * block atlas (u0, v0, u1, v1; zeros when unknown), for drawing the near far terrain with the real textures. cross: the
 	 * model is a plant's crossed quads (grass, ferns, flowers; side is their sprite); profile: per sixteenth of the side
 	 * sprite's width, how high (sixteenths) its opaque texels reach, a byte each, four to an int.
+	 * Mushroom caps also keep their actual underside sprite/color, separately from the representative exposed side.
 	 */
-	record Look(int top, int side, int topTint, int sideTint, int constant, float[] topUv, float[] sideUv, boolean cross, int[] profile) {
+	record Look(int top, int side, int topTint, int sideTint, int constant, float[] topUv, float[] sideUv, boolean cross, int[] profile,
+		boolean mushroom, int bottom, float[] bottomUv) {
 	}
 
 	private static final ConcurrentHashMap<BlockState, Look> LOOKS = new ConcurrentHashMap<>();
 	private static final ConcurrentHashMap<Identifier, Integer> TEXTURES = new ConcurrentHashMap<>();
-	private static final Look FALLBACK = new Look(0x7F7F7F, 0x6F6F6F, TINT_NONE, TINT_NONE, 0, new float[4], new float[4], false, new int[4]);
+	private static final Look FALLBACK = new Look(0x7F7F7F, 0x6F6F6F, TINT_NONE, TINT_NONE, 0, new float[4], new float[4], false, new int[4], false, 0, new float[4]);
 	private static final ConcurrentHashMap<Identifier, int[]> PROFILES = new ConcurrentHashMap<>();
 
 	private LodColors() {
 	}
 
+	static boolean mushroomCap(BlockState state) {
+		return state.is(Blocks.RED_MUSHROOM_BLOCK) || state.is(Blocks.BROWN_MUSHROOM_BLOCK);
+	}
+
+	static boolean leafColumn(int geom, @Nullable BlockState top, @Nullable BlockState side) {
+		return (geom & LodClip.GEOM_CROWN) == 0 && top != null
+			&& (leaves(top) || top.is(Blocks.SNOW) && side != null && leaves(side));
+	}
+
+	private static boolean leaves(BlockState state) {
+		return state.is(BlockTags.LEAVES) || state.getBlock() instanceof LeavesBlock;
+	}
+
+	/** A collapsed tree column uses foliage or an upright trunk beneath its crown, never a sampled ground block.
+	 * Horizontal branches otherwise repeat their end-grain texture down the entire heightfield wall. */
+	static BlockState treeBase(BlockState leaf, @Nullable BlockState trunk) {
+		return trunk == null ? leaf : trunk.hasProperty(RotatedPillarBlock.AXIS) ? trunk.setValue(RotatedPillarBlock.AXIS, Direction.Axis.Y) : trunk;
+	}
+
+	/** A mushroom's north face is often hidden interior. Its representative wall needs the skin of an exposed face. */
+	static Direction sideFace(BlockState state) {
+		if (mushroomCap(state)) {
+			if (state.getValue(HugeMushroomBlock.NORTH)) return Direction.NORTH;
+			if (state.getValue(HugeMushroomBlock.EAST)) return Direction.EAST;
+			if (state.getValue(HugeMushroomBlock.SOUTH)) return Direction.SOUTH;
+			if (state.getValue(HugeMushroomBlock.WEST)) return Direction.WEST;
+			if (state.getValue(HugeMushroomBlock.UP)) return Direction.UP;
+		}
+		return Direction.NORTH;
+	}
+
 	static Look look(BlockState state) {
 		Look l = LOOKS.get(state);
 		if (l != null) return l;
-		try {
-			l = compute(state);
-		} catch (RuntimeException e) {
-			l = FALLBACK;
+		synchronized (LodColors.class) {
+			l = LOOKS.get(state);
+			if (l != null) return l;
+			try {
+				l = compute(state);
+			} catch (RuntimeException e) {
+				l = FALLBACK;
+			}
+			LOOKS.put(state, l);
+			return l;
 		}
-		LOOKS.put(state, l);
-		return l;
+	}
+
+	/** Sprite locations change when mipmaps or resource packs restitch the block atlas. */
+	static synchronized void reload() {
+		LOOKS.clear(); TEXTURES.clear(); PROFILES.clear();
 	}
 
 	/** The color of a block's top seen at a column in biome b. */
@@ -114,7 +160,7 @@ final class LodColors {
 		BlockStateModel model = mc.getModelManager().getBlockStateModelSet().get(state);
 		List<BlockStateModelPart> parts = new ArrayList<>();
 		model.collectParts(RandomSource.create(42L), parts);
-		BakedQuad up = first(parts, Direction.UP), side = first(parts, Direction.NORTH);
+		BakedQuad up = first(parts, Direction.UP), side = first(parts, sideFace(state));
 		if (side == null) side = first(parts, Direction.EAST);
 		// a plant's crossed quads (diagonal, upright): their sprite and tint are the plant's
 		BakedQuad diagonal = diagonal(parts);
@@ -122,6 +168,9 @@ final class LodColors {
 		TextureAtlasSprite particle = model.particleMaterial().sprite();
 		TextureAtlasSprite topSprite = up != null ? up.materialInfo().sprite() : particle;
 		TextureAtlasSprite sideSprite = side != null ? side.materialInfo().sprite() : topSprite;
+		boolean mushroom = mushroomCap(state);
+		BakedQuad down = mushroom ? first(parts, Direction.DOWN) : null;
+		TextureAtlasSprite bottomSprite = down != null ? down.materialInfo().sprite() : sideSprite;
 		int topRgb = average(topSprite), sideRgb = average(sideSprite);
 		int[] topTint = tintOf(state, up), sideTint = tintOf(state, side);
 		if (state.getBlock() == Blocks.WATER) {
@@ -131,7 +180,7 @@ final class LodColors {
 		// The grass block's side is dirt under a tinted overlay: from afar mostly dirt, so it stays untinted.
 		int[] profile = diagonal != null ? profile(sideSprite) : new int[4];
 		return new Look(topRgb, sideRgb, topTint[0], sideTint[0], topTint[0] == TINT_CONSTANT ? topTint[1] : sideTint[1], uv(topSprite), uv(sideSprite),
-			diagonal != null, profile);
+			diagonal != null, profile, mushroom, mushroom ? average(bottomSprite) : 0, mushroom ? uv(bottomSprite) : new float[0]);
 	}
 
 	private static @Nullable BakedQuad diagonal(List<BlockStateModelPart> parts) {

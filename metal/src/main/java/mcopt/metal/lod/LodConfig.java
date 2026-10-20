@@ -6,7 +6,26 @@ package mcopt.metal.lod;
  */
 public final class LodConfig {
 	/** -Dmcopt.lod=true: far terrain on. A radius alone turns it on too. */
-	public static final boolean ENABLED = Boolean.getBoolean("mcopt.lod") || System.getProperty("mcopt.lod.radius") != null;
+	public static final boolean ENABLED = Boolean.parseBoolean(System.getProperty("mcopt.lod", System.getProperty("mcopt.lod.radius") != null ? "true" : "false"));
+	/** Blend our near water into the opaque far-water approximation over the last two chunks. */
+	public static final boolean WATER_TRANSITION = ENABLED && !"false".equals(System.getProperty("mcopt.lod.waterTransition"));
+	/** -Dmcopt.lod.handoffMs=200: dissolve LOD overlaps after near coverage arrives; 0 restores the instant handoff. */
+	public static final int HANDOFF_MS = Math.clamp(Integer.getInteger("mcopt.lod.handoffMs", 200), 0, 2000);
+	/** A lower surface and one floating solid layer in real chunks, using the existing crown buffers. */
+	public static final boolean OVERHANGS = !"false".equals(System.getProperty("mcopt.lod.overhangs"));
+	/** Per-surface sky/block light on level 0. One extra four-byte word per level-0 cell. */
+	public static final boolean LIGHTING = !"false".equals(System.getProperty("mcopt.lod.lighting"));
+	/** Real distant terrain, singleplayer only: import saved chunks and refine unexplored chunks through vanilla FULL. */
+	public static final boolean REFINE = ENABLED && !"false".equals(System.getProperty("mcopt.lod.refine"));
+	public static final boolean IMPORT_SAVED = REFINE && !"false".equals(System.getProperty("mcopt.lod.importSaved"));
+	public static final int REFINE_RADIUS = Math.clamp(Integer.getInteger("mcopt.lod.refineRadius", 32), 0, 64);
+	/** Structure candidates and confirmed footprints use separate bounded request lanes. */
+	public static final int SCOUT_RADIUS = Math.clamp(Integer.getInteger("mcopt.lod.scoutRadius", 256), 0, 512);
+	public static final boolean STRUCTURE_DETAIL = REFINE && !"false".equals(System.getProperty("mcopt.lod.structureDetail"));
+	/** Optional minimum spacing between FULL starts; zero uses adaptive concurrency without a completion delay. */
+	public static final int REFINE_INTERVAL_MS = Math.clamp(Integer.getInteger("mcopt.lod.refineIntervalMs", 0), 0, 60_000);
+	static final LodWorkload WORKLOAD = LodWorkload.parse(System.getProperty("mcopt.lod.workload", "balanced"));
+	public static final int IMPORT_RADIUS = Math.clamp(Integer.getInteger("mcopt.lod.importRadius", 128), 0, 512);
 	/**
 	 * -Dmcopt.lod.small=true: far terrain for small GPUs (a MacBook Neo's 5 cores). Its cost there is
 	 * geometry (the GPU cull and its survivors' quads), not pixels, so this mode culls and draws fewer cells: a quarter-size
@@ -52,6 +71,7 @@ public final class LodConfig {
 	 * distance calls for, so they fade into their average color as the blocks shrink to a pixel).
 	 */
 	public static final boolean TEXTURES = Boolean.parseBoolean(System.getProperty("mcopt.lod.textures", "true"));
+	static final boolean SURFACE_DATA = TEXTURES || LIGHTING || OVERHANGS;
 	/**
 	 * -Dmcopt.lod.plants=false: no grass, ferns or flowers on level 0. With them (needs textures), the game's own plant features
 	 * run with its trees, and the walk draws each plant's crossed quads where the real chunks will have them.
@@ -90,7 +110,7 @@ public final class LodConfig {
 	public static final double FOG_START = Double.parseDouble(System.getProperty("mcopt.lod.fogStart", "-1"));
 	/**
 	 * -Dmcopt.lod.haze=H: the game's environmental (linear) fog range is stretched to H x the reach when that is longer than
-	 * the game's 1024 blocks: far terrain fades into the fog color with distance. Default 1.
+	 * the game's 1024 blocks, with haze concentrated in the outer quarter. Default 1.
 	 */
 	public static final double HAZE = Double.parseDouble(System.getProperty("mcopt.lod.haze", "1.0"));
 	/**

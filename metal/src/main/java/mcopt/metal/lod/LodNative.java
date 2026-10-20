@@ -30,7 +30,7 @@ final class LodNative {
 		JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT);
 	private static final MethodHandle MESH_DRAW = fn("mcl_mesh_draw", false, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_LONG,
 		JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT,
-		JAVA_LONG, JAVA_INT);
+		JAVA_LONG, JAVA_LONG, JAVA_INT);
 	private static final MethodHandle PK_CULL = fn("mcl_pk_cull", false, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_LONG,
 		JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT);
 	private static final MethodHandle PK_VIS = fn("mcl_pk_vis", false, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_LONG,
@@ -136,17 +136,18 @@ final class LodNative {
 	}
 
 	/** Returns normally, or throws with the pipeline error. */
-	static void meshDraw(long lod, long enc, boolean gbuffer, long comp, int compLength, long arena, long args, long inst, long plantInst, long survivors,
-		long geom, long color, long crowns, long texWords, long palette, long atlas, long table, long meshFrame, int meshFrameLength, boolean fences, long err,
+	static boolean meshDraw(long lod, long enc, boolean gbuffer, long comp, int compLength, long arena, long args, long inst, long plantInst, long survivors,
+		long geom, long color, long crowns, long texWords, long palette, long atlas, long table, long meshFrame, int meshFrameLength, boolean fences, long mask, long err,
 		int errCap) {
 		int r;
 		try {
 			r = (int) MESH_DRAW.invokeExact(lod, enc, gbuffer ? 1 : 0, comp, compLength, arena, args, inst, plantInst, survivors, geom, color, crowns, texWords,
-				palette, atlas, table, meshFrame, meshFrameLength, fences ? 1 : 0, err, errCap);
+				palette, atlas, table, meshFrame, meshFrameLength, fences ? 1 : 0, mask, err, errCap);
 		} catch (Throwable t) {
 			throw rethrow(t);
 		}
-		if (r != 0) throw new IllegalStateException(MemoryUtil.memUTF8(err));
+		if (r < 0) throw new IllegalStateException(MemoryUtil.memUTF8(err));
+		return r > 0;
 	}
 
 	/**

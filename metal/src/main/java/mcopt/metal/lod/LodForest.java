@@ -37,13 +37,15 @@ import org.jspecify.annotations.Nullable;
  * The game's own trees on terrain that was never generated: for a chunk, the vegetal decoration's tree features run exactly
  * as ChunkGenerator.applyBiomeDecoration runs them (the same decoration and feature seeds, the same placement modifiers and
  * tree shapes), against a stand-in level whose ground is the far terrain's own block-exact surface (LodNoise at level 0) and
- * which records every block the trees set. So a far forest has the trees the real chunks will have, where they will be.
+ * which records every block the trees set. This predicts unvisited forests; matching feature seeds alone does not make
+ * the result identical to a fully populated chunk.
  *
  * Each feature has a seed of its own (decoration seed, its index in the step, the step), so running only the tree features
  * leaves their randomness exactly the game's; within a feature the trees are placed in the game's order, which matters (each
  * consumes randomness). What differs from the real chunk: the ground ignores caves breaking the surface and earlier features
- * (lakes, rocks), and trees of neighboring chunks don't see each other. Per chunk the result is cached (tiles share border
- * chunks); a tile asks for its own chunks and the ring around them (trees reach across chunk edges).
+ * (lakes, rocks, structures), and trees of neighboring chunks don't see each other. Per chunk the result is cached (tiles
+ * share border chunks); a tile asks for its own chunks and the ring around them (trees reach across chunk edges).
+ * Captured real columns override these estimates when a tile is installed, including after eviction and disk reload.
  */
 final class LodForest {
 	/** A chunk's tree blocks: x, y, z (absolute) and the block state id, four ints each. */
@@ -62,6 +64,12 @@ final class LodForest {
 	private final long seed;
 	private final long biomeSeed;
 	private final FeatureSorter.@Nullable StepFeatureData step;
+	record IceFeature(int stage, int index, PlacedFeature feature) { }
+	private final List<IceFeature> iceFeatures;
+	private final ConcurrentHashMap<Holder<Biome>, List<IceFeature>> iceBiomes = new ConcurrentHashMap<>();
+	/** Iceberg features need a scratch volume while carving, but only their exposed columns are retained. Five ints each:
+	 * world x, world z, top face y, top state, wall state. Keep this cache much smaller than the tree/ground caches. */
+	private final ConcurrentHashMap<Long, int[]> iceColumns = new ConcurrentHashMap<>();
 	/** Per global feature index of the vegetal step: whether it grows trees (big plants seen from afar). */
 	private final boolean[] tree;
 	/** Per global feature index: whether it grows plants (grass, ferns, flowers, bushes, cane, cacti, pumpkins). */
@@ -81,6 +89,16 @@ final class LodForest {
 		this.seed = this.level.getSeed();
 		this.biomeSeed = BiomeManager.obfuscateSeed(this.seed);
 		this.step = stepData(this.generator);
+		this.iceFeatures = new ArrayList<>();
+		var placedRegistry = this.level.registryAccess().lookupOrThrow(Registries.PLACED_FEATURE);
+		List<FeatureSorter.StepFeatureData> allSteps = steps(this.generator);
+		for (int stage = 0; stage < allSteps.size(); stage++) {
+			var features = allSteps.get(stage).features();
+			for (int index = 0; index < features.size(); index++) {
+				Identifier id = placedRegistry.getKey(features.get(index));
+				if (id != null && iceFeature(id.getPath())) this.iceFeatures.add(new IceFeature(stage, index, features.get(index)));
+			}
+		}
 		boolean[] t = new boolean[0], p = new boolean[0];
 		if (this.step != null) {
 			var registry = this.level.registryAccess().lookupOrThrow(Registries.PLACED_FEATURE);
@@ -102,9 +120,9 @@ final class LodForest {
 		this.stands = ThreadLocal.withInitial(Stand::new);
 	}
 
-	private static boolean isTree(String path) {
+	static boolean isTree(String path) {
 		return path.startsWith("trees_") || path.equals("birch_tall") || path.equals("dark_forest_vegetation") || path.equals("pale_garden_vegetation")
-			|| path.equals("mushroom_island_vegetation") || path.equals("bamboo_vegetation");
+			|| path.equals("mushroom_island_vegetation") || path.equals("bamboo_vegetation") || path.equals("chorus_plant");
 	}
 
 	/** Features that grow small plants on the surface (not under water, not in caves, not on trees). */
@@ -119,20 +137,161 @@ final class LodForest {
 	}
 
 	@SuppressWarnings("unchecked")
-	private static FeatureSorter.@Nullable StepFeatureData stepData(ChunkGenerator generator) {
+	static List<FeatureSorter.StepFeatureData> steps(ChunkGenerator generator) {
 		try {
 			java.lang.reflect.Field f = ChunkGenerator.class.getDeclaredField("featuresPerStep");
 			f.setAccessible(true);
-			List<FeatureSorter.StepFeatureData> steps = ((Supplier<List<FeatureSorter.StepFeatureData>>) f.get(generator)).get();
-			return VEG < steps.size() ? steps.get(VEG) : null;
+			return ((Supplier<List<FeatureSorter.StepFeatureData>>) f.get(generator)).get();
 		} catch (ReflectiveOperationException | RuntimeException e) {
 			System.out.println("mcopt-lod: no feature list (" + e + "): far trees are impostors");
-			return null;
+			return List.of();
 		}
 	}
 
+	private static FeatureSorter.@Nullable StepFeatureData stepData(ChunkGenerator generator) {
+		var steps = steps(generator);
+		return VEG < steps.size() ? steps.get(VEG) : null;
+	}
+
+	static boolean iceFeature(String path) {
+		return path.equals("iceberg_packed") || path.equals("iceberg_blue") || path.equals("ice_spike");
+	}
+
 	boolean available() {
-		return this.step != null;
+		return LodConfig.TREES && this.step != null;
+	}
+
+	/** Raised ice is a decoration feature, not terrain density or a floating tree crown. Apply its solid silhouette on
+	 * every LOD level; coarse cells retain the tallest ice column in their footprint so narrow peaks do not disappear. */
+	void ice(LodTile tile) {
+		boolean cold = false;
+		for (Holder<Biome> biome : tile.biome) if (!this.wantedIce(biome).isEmpty()) { cold = true; break; }
+		if (cold) this.iceColumns(tile.level, tile.x0, tile.z0, tile.size, tile, columns -> applyIce(tile, columns));
+	}
+
+	static void applyIce(LodTile tile, int[] columns) {
+		for (int k = 0; k < columns.length; k += 5) {
+			int x = columns[k] - tile.x0, z = columns[k+1] - tile.z0;
+			if (x < 0 || z < 0 || x >= tile.size << tile.level || z >= tile.size << tile.level) continue;
+			int i = (z >> tile.level) * tile.size + (x >> tile.level), top = columns[k+2];
+			if (top <= Math.max(tile.height[i], tile.water[i])) continue;
+			BlockState state = Block.stateById(columns[k+3]), side = Block.stateById(columns[k+4]);
+			Biome biome = tile.biome[i].value();
+			tile.height[i] = tile.ground[i] = (short) top;
+			tile.water[i] = LodTile.DRY;
+			tile.state[i] = state;
+			tile.top[i] = LodColors.top(state, biome, columns[k], columns[k+1]);
+			tile.side[i] = tile.below[i] = LodColors.side(side, biome, columns[k], columns[k+1]);
+			tile.fringe[i] = false;
+			if (tile.level == 0) tile.tex[i] = LodPalette.word(LodPalette.id(state), LodPalette.id(side), LodPalette.id(side));
+		}
+	}
+
+	private List<IceFeature> wantedIce(Holder<Biome> biome) {
+		return this.iceBiomes.computeIfAbsent(biome, b -> {
+			var stages = this.generator.getBiomeGenerationSettings(b).features();
+			return this.iceFeatures.stream().filter(f -> f.stage() < stages.size()
+				&& stages.get(f.stage()).stream().anyMatch(p -> p.value() == f.feature())).toList();
+		});
+	}
+
+	private void iceColumns(int level, int x0, int z0, int size, @Nullable LodTile tile, java.util.function.Consumer<int[]> consumer) {
+		if (this.iceFeatures.isEmpty()) return;
+		int span = size << level;
+		// Very coarse small-GPU rings sample feature origins too: never expand a tile into tens of thousands of chunks.
+		int stride = 1 << Math.max(0, level - 4);
+		var resolver = this.noise.resolver();
+		for (int cz = Math.floorDiv((z0 >> 4) - 1, stride) * stride; cz <= (z0 + span - 1 >> 4) + 1; cz += stride) {
+			for (int cx = Math.floorDiv((x0 >> 4) - 1, stride) * stride; cx <= (x0 + span - 1 >> 4) + 1; cx += stride) {
+				if (tile != null) {
+					int tx = Math.clamp((cx * 16 + 8 - x0) >> level, 0, size-1), tz = Math.clamp((cz * 16 + 8 - z0) >> level, 0, size-1);
+					if (this.wantedIce(tile.biome[tz * size + tx]).isEmpty()) continue;
+				}
+				Holder<Biome> biome = resolver.getNoiseBiome((cx * 16 + 8) >> 2, this.noise.seaLevel >> 2, (cz * 16 + 8) >> 2);
+				List<IceFeature> wanted = this.wantedIce(biome);
+				if (wanted.isEmpty()) continue;
+				long key = chunkKey(cx, cz);
+				int[] columns = this.iceColumns.get(key);
+				if (columns == null) {
+					columns = this.runIce(cx, cz, wanted);
+					if (this.iceColumns.size() > 4096) this.iceColumns.clear();
+					this.iceColumns.put(key, columns);
+				}
+				consumer.accept(columns);
+			}
+		}
+	}
+
+	private int[] runIce(int cx, int cz, List<IceFeature> wanted) {
+		Stand stand = this.stands.get(); stand.reset(); stand.treeFeature = false;
+		placeIce(stand.proxy, this.generator, this.seed, cx, cz, wanted);
+		return iceTops(stand.placed, this.noise.seaLevel);
+	}
+
+	static void placeIce(WorldGenLevel world, ChunkGenerator generator, long seed, int cx, int cz, List<IceFeature> wanted) {
+		WorldgenRandom random = new WorldgenRandom(new XoroshiroRandomSource(0L));
+		BlockPos origin = new BlockPos(cx * 16, world.getMinY(), cz * 16);
+		long decoration = random.setDecorationSeed(seed, origin.getX(), origin.getZ());
+		FeaturePlacer placer = new FeaturePlacer(world, generator);
+		for (IceFeature feature : wanted) {
+			random.setFeatureSeed(decoration, feature.index(), feature.stage());
+			placer.placeWithBiomeCheck(feature.feature(), random, origin);
+		}
+	}
+
+	/** Summarize the final carved shape, not the highest historical setBlock call (carving can remove that block). */
+	static int[] iceTops(java.util.Map<Long, BlockState> placed, int seaLevel) {
+		var tops = new HashMap<Long, BlockPos>();
+		placed.forEach((key, state) -> {
+			int y = BlockPos.getY(key);
+			if (y < seaLevel || !(state.is(Blocks.PACKED_ICE) || state.is(Blocks.BLUE_ICE) || state.is(Blocks.SNOW_BLOCK))) return;
+			long column = BlockPos.asLong(BlockPos.getX(key), 0, BlockPos.getZ(key));
+			BlockPos previous = tops.get(column);
+			if (previous == null || y > previous.getY()) tops.put(column, BlockPos.of(key));
+		});
+		int[] result = new int[tops.size() * 5]; int i = 0;
+		for (BlockPos pos : tops.values()) {
+			BlockState top = placed.get(pos.asLong()), below = placed.get(pos.below().asLong());
+			if (below == null || below.isAir() || below.is(Blocks.WATER) || below.is(Blocks.SNOW_BLOCK))
+				below = top.is(Blocks.SNOW_BLOCK) ? Blocks.PACKED_ICE.defaultBlockState() : top;
+			result[i++] = pos.getX(); result[i++] = pos.getZ(); result[i++] = pos.getY() + 1;
+			result[i++] = Block.getId(top); result[i++] = Block.getId(below);
+		}
+		return result;
+	}
+
+	/** Upgrade only generated flat frozen-water cells. Captured chunks/builds retain their own geometry and lighting. */
+	boolean repairIce(long key, int[] g, int[] c, int[] cr, int[] tw, int[] runs) {
+		int icy = LodClip.rgb565(LodColors.look(Blocks.ICE.defaultBlockState()).top());
+		java.util.BitSet eligible = new java.util.BitSet(LodTile.CELLS);
+		for (int i = 0; i < LodTile.CELLS; i++) if (generatedIceBase(g[i], c[i], tw == null ? 0 : tw[i], icy)) eligible.set(i);
+		if (eligible.isEmpty()) return false;
+		boolean surface = LodFrozenOcean.repair(this.noise, key, eligible, g, c, cr, tw, runs);
+		int level = LodTile.levelOf(key), x0 = LodTile.txOf(key) * (64 << level), z0 = LodTile.tzOf(key) * (64 << level);
+		java.util.BitSet changed = new java.util.BitSet(LodTile.CELLS);
+		this.iceColumns(level, x0, z0, 64, null, columns -> {
+			for (int k = 0; k < columns.length; k += 5) {
+				int x = columns[k] - x0, z = columns[k+1] - z0;
+				if (x < 0 || z < 0 || x >= 64 << level || z >= 64 << level) continue;
+				int i = (z >> level) * 64 + (x >> level), top = columns[k+2];
+				// Later columns in this same coarse footprint may be taller than an earlier iceberg column.
+				if (!eligible.get(i)) continue;
+				if (top <= (g[i] & 4095) - 512) continue;
+				BlockState state = Block.stateById(columns[k+3]), side = Block.stateById(columns[k+4]);
+				g[i] = LodClip.geomWord(top, false);
+				c[i] = LodClip.colorWord(LodColors.look(state).top(), LodColors.look(side).side());
+				if (cr != null) cr[i] = LodClip.belowWord(LodColors.look(side).side());
+				if (runs != null) runs[i] = 0;
+				if (tw != null) { tw[i] = LodPalette.word(LodPalette.id(state), LodPalette.id(side), LodPalette.id(side)); if (tw.length > LodTile.CELLS) tw[LodTile.CELLS+i] = 0; }
+				changed.set(i);
+			}
+		});
+		return surface || !changed.isEmpty();
+	}
+
+	static boolean generatedIceBase(int geom, int color, int material, int icy) {
+		return (geom & (LodClip.GEOM_VALID | LodClip.GEOM_WET | LodClip.GEOM_CLEAR | LodClip.GEOM_CROWN)) == (LodClip.GEOM_VALID | LodClip.GEOM_WET)
+			&& (material & (LodClip.TEX_LIGHT | LodClip.TEX_OVERHANG)) == 0 && (color & 65535) == icy;
 	}
 
 	/** The chunk's ground at block resolution (cached). */
@@ -276,6 +435,8 @@ final class LodForest {
 					BlockState st = Block.stateById(b[k + 3] & ~FROM_TREE);
 					boolean fromTree = (b[k + 3] & FROM_TREE) != 0;
 					if (st.isAir()) continue;
+					// Vines placed by a tree decorate its faces; they do not make a solid trunk/canopy column of their own.
+					if (LodChunks.hangingDecoration(st)) continue;
 					int g = t.ground[i];
 					if (L == 0 && y < g) {
 						// the ground itself changed (podzol, rooted dirt, mud under mangroves)

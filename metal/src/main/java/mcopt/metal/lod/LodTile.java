@@ -20,6 +20,8 @@ final class LodTile {
 	final int level, x0, z0, size;
 	/** World y of each column's top face (one above its highest block). */
 	final short[] height;
+	/** End-only lower face for each generated island column; null for ordinary heightfields. */
+	short[] islandBottom;
 	/** World y of the water surface's top face, or DRY. */
 	final short[] water;
 	/** RGB seen from above (water's own color, already mixed with the floor by depth, where wet). */

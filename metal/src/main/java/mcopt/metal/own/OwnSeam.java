@@ -1,6 +1,7 @@
 package mcopt.metal.own;
 
 import java.util.Arrays;
+import java.util.BitSet;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.ViewArea;
@@ -14,18 +15,19 @@ import org.jspecify.annotations.Nullable;
  * and draws it the same frame it doesn't.
  *
  * Our cull draws a section iff it has a compile result in our section table and passes vanilla's distance rule (own_cull in
- * own/terrain.metal: the horizontal chunk distance from the camera's section, then |dy| <= the view distance) and the frustum.
- * The frustum doesn't matter here (what is out of view is out of view for both), so a chunk is masked iff the distance rule
- * passes and every section of it that can show holds a compile result: the sections from its lowest surface block (the
- * WORLD_SURFACE heightmap's minimum over the chunk) to its highest, all-air ones excepted (they draw nothing either way).
- * Sections wholly below the surface are left out because vanilla never compiles a sealed one (its occlusion graph never
- * reaches it); sections the graph hasn't reached yet (out of view) keep the chunk on the far terrain until they compile.
+ * own/terrain.metal: the horizontal chunk distance from the camera's section, then OwnViewDistance's vertical range) and the frustum.
+ * A chunk is masked when the distance rule covers its entire surface and its visible sections hold compile results: from
+ * its lowest visible ground (including OCEAN_FLOOR under transparent water) to its highest surface, all-air ones excepted.
+ * A height interval can also include sealed or out-of-view sections. Once a column starts compiling, those must not keep
+ * LOD approximations over its visible terrain forever. Missing sections block the hand-off only while the graph needs them;
+ * changes to the visible set recheck this even if no meshes changed (for example, looking up at an unbuilt bamboo canopy).
  * The table is the one this frame's cull read (events are applied at the top of drawOpaque, the far terrain runs at the end of
  * the same opaque phase), so there is no frame of lag and no hand-off delay to wait out.
  *
  * Incremental: a chunk column's readiness is recomputed only when one of its slots changed this frame (OwnTerrain.changed()),
  * all of them when the camera changes section vertically, the view distance changes or a frame was missed; the mask is
- * reassembled from the readiness (a bit test per chunk) only when a readiness changed or the camera changed section.
+ * reassembled from the readiness when a column, the visible set or the camera's section changed. Visibility-only changes
+ * examine cached missing-section bits, without rereading the heightmaps.
  *
  * The section fade-in: with -Dmcopt.lod.fade=instant as well, sections appear without vanilla's fog fade while far terrain
  * draws (the far terrain already shows the ground there; fading in from the fog colour would flash a pale chunk over it).
@@ -50,10 +52,24 @@ public final class OwnSeam {
 	/** Per grid column (z * g + x, as the view area's storage): the chunk it was computed for and whether our terrain draws it whole. */
 	private static int[] colCx = new int[0], colCz = new int[0];
 	private static boolean[] colReady = new boolean[0], colSeen = new boolean[0];
+	private static boolean[] colPartial = new boolean[0];
+	private static BitSet[] colMissing = new BitSet[0];
+	private static long visibleRevision = Long.MIN_VALUE;
 	private static long statNanos, statCalls, statCols, statMasks, statLast;
 	private static int statInRange, statMasked;
 
 	private OwnSeam() {
+	}
+
+	/** A renderer rebuild can replace every slot without changing the grid dimensions or camera section. */
+	public static void invalidate() {
+		g = -1;
+		frame = Long.MIN_VALUE;
+		nearCamX = Double.NaN;
+		Arrays.fill(colReady, false);
+		Arrays.fill(colSeen, false);
+		Arrays.fill(colPartial, false);
+		visibleRevision = Long.MIN_VALUE;
 	}
 
 	/** Vanilla's section fade time, or 0 while far terrain draws with -Dmcopt.lod.fade=instant. */
@@ -75,8 +91,9 @@ public final class OwnSeam {
 		int nvd = va.getViewDistance(), ng = 2 * nvd + 1, nh = va.sectionCount(), nminSy = va.minSectionY();
 		int sx = (int) Math.floor(camX) >> 4, sy = (int) Math.floor(camY) >> 4, sz = (int) Math.floor(camZ) >> 4;
 		long f = own.frameNumber();
+		long vr = OwnVisible.revision();
 		boolean full = ng != g || nh != h || nminSy != minSy || sy != camSy || f != frame && f != frame + 1;
-		boolean changed = full || sx != camSx || sz != camSz;
+		boolean changed = full || sx != camSx || sz != camSz || vr != visibleRevision;
 		int maxSy = va.maxSectionY();
 		if (full) {
 			g = ng;
@@ -89,6 +106,9 @@ public final class OwnSeam {
 				colCz = new int[g * g];
 				colReady = new boolean[g * g];
 				colSeen = new boolean[g * g];
+				colPartial = new boolean[g * g];
+				colMissing = new BitSet[g * g];
+				for (int col = 0; col < colMissing.length; col++) colMissing[col] = new BitSet(h);
 			}
 			for (int col = 0; col < g * g; col++) column(own, level, col, sx, sy, sz, maxSy);
 		} else if (f != frame) {
@@ -106,6 +126,7 @@ public final class OwnSeam {
 			}
 		}
 		frame = f;
+		visibleRevision = vr;
 		Window w = WINDOW;
 		if (changed) {
 			int size = Math.min(maskMax, 2 * vd + 5), words = (size + 31) / 32;
@@ -120,7 +141,9 @@ public final class OwnSeam {
 					if (dx * dx + dz * dz >= vd * vd) continue;
 					inRange++;
 					int col = zi + Math.floorMod(cx, g);
-					if (!colReady[col] || colCx[col] != cx || colCz[col] != cz) continue;
+					if (colCx[col] != cx || colCz[col] != cz) continue;
+					if (!colReady[col] && !OwnSeamCoverage.coversVisibleSections(colPartial[col], colMissing[col],
+						Math.floorMod(cz, g) * h * g + Math.floorMod(cx, g), g, OwnVisible::isVisible)) continue;
 					masked++;
 					int bit = mz * words * 32 + mx;
 					mask[bit >> 5] |= 1 << (bit & 31);
@@ -172,35 +195,45 @@ public final class OwnSeam {
 
 	/**
 	 * Recomputes grid column col (the chunk the view area keeps there for a camera in section sx, sz): whether every section of it
-	 * that can show holds a compile result. Returns whether its state changed.
+	 * that can show holds a compile result, and caches which required sections are missing. Requests a mask rebuild.
 	 */
 	private static boolean column(OwnTerrain own, ClientLevel level, int col, int sx, int sy, int sz, int maxSy) {
 		statCols++;
 		int xg = col % g, zg = col / g;
 		int cx = sx - vd + Math.floorMod(xg - (sx - vd), g), cz = sz - vd + Math.floorMod(zg - (sz - vd), g);
 		boolean ready = false;
+		boolean partial = false;
+		BitSet missing = colMissing[col];
+		missing.clear();
 		LevelChunk chunk = level.getChunkSource().getChunk(cx, cz, false);
 		if (chunk != null) {
 			int lo = Integer.MAX_VALUE, hi = Integer.MIN_VALUE;
 			for (int bz = 0; bz < 16; bz++) {
 				for (int bx = 0; bx < 16; bx++) {
 					int top = chunk.getHeight(Heightmap.Types.WORLD_SURFACE, bx, bz);
-					lo = Math.min(lo, top);
+					// A water surface can be compiled before the seabed. Handing it off then exposes sky through near water.
+					lo = Math.min(lo, Math.min(top, chunk.getHeight(Heightmap.Types.OCEAN_FLOOR, bx, bz)));
 					hi = Math.max(hi, top);
 				}
 			}
-			ready = true;
-			int ylo = Math.max(Math.max(minSy, sy - vd), lo >> 4), yhi = Math.min(Math.min(maxSy, sy + vd), hi >> 4);
-			for (int y = ylo; y <= yhi && ready; y++) {
+			int ylo = Math.max(minSy, lo >> 4), yhi = Math.min(maxSy, hi >> 4);
+			// The mask hides a whole column, so clipping this interval to the camera's vertical range would hide LODs for
+			// surface sections the near renderer cannot draw. An empty clipped interval used to count as ready, too.
+			ready = OwnSeamCoverage.coversSurface(ylo, yhi, sy, OwnViewDistance.verticalDistance(vd));
+			boolean inRange = ready;
+			for (int y = ylo; y <= yhi && inRange; y++) {
 				int index = y - minSy;
 				if (chunk.getSection(index).hasOnlyAir()) continue;
-				ready = own.compiledAt((zg * h + index) * g + xg, cx << 4, y << 4, cz << 4);
+				if (own.compiledAt((zg * h + index) * g + xg, cx << 4, y << 4, cz << 4)) partial = true;
+				else missing.set(index);
 			}
+			ready &= missing.isEmpty();
 		}
-		boolean was = colReady[col] && colCx[col] == cx && colCz[col] == cz;
 		colReady[col] = ready;
+		colPartial[col] = partial;
 		colCx[col] = cx;
 		colCz[col] = cz;
-		return was != ready;
+		// A still-incomplete column's missing slots may have changed even when its all-compiled state did not.
+		return true;
 	}
 }

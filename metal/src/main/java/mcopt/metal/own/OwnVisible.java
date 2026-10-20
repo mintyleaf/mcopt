@@ -15,6 +15,9 @@ import net.minecraft.client.renderer.chunk.SectionRenderDispatcher;
 public final class OwnVisible {
 	public static final String MODE = System.getProperty("mcopt.own.int.visible", "false");
 	public static final boolean ON = "true".equals(MODE), VERIFY = "verify".equals(MODE);
+	/** The LOD hand-off also needs the graph's visible set when the list optimizations are disabled. */
+	public static final boolean TRACK = ON || VERIFY || OwnSeam.ON;
+	private static long revision;
 
 	/** Bumped whenever vanilla clears its visible list; a section is visible iff its stamp equals it. */
 	private static int generation = 1;
@@ -31,11 +34,15 @@ public final class OwnVisible {
 	/** Render thread: vanilla cleared its visible list. */
 	public static void cleared() {
 		generation++;
+		revision++;
 	}
 
 	/** Render thread: vanilla is adding section at position (the list's size before the add). */
 	public static void added(SectionRenderDispatcher.RenderSection section, int at) {
-		int i = section.index;
+		added(section.index, at);
+	}
+
+	static void added(int i, int at) {
 		if (i >= stamp.length) {
 			int cap = Math.max(1024, Integer.highestOneBit(i) * 2);
 			stamp = Arrays.copyOf(stamp, cap);
@@ -43,6 +50,16 @@ public final class OwnVisible {
 		}
 		stamp[i] = generation;
 		position[i] = at;
+		revision++;
+	}
+
+	public static long revision() {
+		return revision;
+	}
+
+	/** Render thread: the graph currently needs this slot, including sections still waiting to compile. */
+	public static boolean isVisible(int slot) {
+		return slot >= 0 && slot < stamp.length && stamp[slot] == generation;
 	}
 
 	/** Any thread: a section's mesh was set; remember it if the new mesh renders block entities. */
@@ -88,6 +105,7 @@ public final class OwnVisible {
 	 * keeping the old sections, and through them the old level, alive.
 	 */
 	public static void levelReset() {
+		cleared();
 		WITH_BE.clear();
 		scratch = new SectionRenderDispatcher.RenderSection[64];
 		filled = 0;

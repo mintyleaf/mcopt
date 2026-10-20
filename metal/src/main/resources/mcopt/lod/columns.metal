@@ -61,14 +61,25 @@ struct ColFrame {
 #define GEOM_Y(g) (int((g) & 0xFFFu) - 512)
 #define GEOM_WET 0x1000u
 #define GEOM_VALID 0x2000u
+// FluidRenderer subtracts 0.001 from its 8/9 source-water height before emitting the surface vertices.
+#define WATER_SURFACE_DROP (1.0 / 9.0 + 0.001)
 
 // Crowns (trees on level 0, -Dmcopt.lod.crownLevels): a cell whose geometry word has GEOM_CROWN has a crown of leaves
-// floating over its ground: the geometry word's top is the crown's top face, its thickness in bits 15-20; the crown word
+// floating over its ground: the geometry word's top is the crown's top face, its thickness in bits 15-20 (bit 21 scales it
+// by four for extended vertical spans); the crown word
 // (same index, levels below crownLevels) holds the ground under it: y + 512 (bits 0-11) and its top color (RGB565, bits 12-27).
 // The color word's top and side are the crown's.
 #define GEOM_CROWN 0x4000u
-#define GEOM_THICK(g) int(((g) >> 15) & 63u)
-#define GEOM_FRINGE (1u << 21)   // the top block's side has a band of its top's color (grass, podzol, mycelium)
+#define CROWN_BOUNDED (1u << 29)
+#define CROWN_SEGMENTED (1u << 30)
+#define CROWN_LIT (1u << 31)
+static inline uint crownColor565(uint cr) {
+    if ((cr & CROWN_LIT) == 0u) return (cr >> 12) & 65535u;
+    uint c = (cr >> 12) & 4095u;
+    return (((c >> 8) & 15u) * 31u / 15u) << 11 | (((c >> 4) & 15u) * 63u / 15u) << 5 | (c & 15u) * 31u / 15u;
+}
+#define GEOM_THICK(g) (int(((g) >> 15) & 63u) * (((g) & (GEOM_CROWN | (1u<<21))) == (GEOM_CROWN | (1u<<21)) ? 4 : 1))
+#define GEOM_FRINGE (1u << 21)   // ground: grass-side band; crown: four-block thickness units
 #define REC_WET (1u << 19)
 #define REC_CROWN (1u << 24)
 #define REC_UNDER_CROWN (1u << 25)
@@ -88,7 +99,7 @@ struct ColFrame {
 struct PaletteEntry {
     float4 topUv, sideUv;   // u0 v0 u1 v1
     float4 topAvg, sideAvg; // rgb
-    uint4 profile;
+    uint4 profile; // plants: height profile; mushroom (topAvg.w=1): underside float4 UV, sideAvg.w=packed underside RGB
 };
 
 static inline int plantProfile(device const PaletteEntry* palette, uint id, int k) {
@@ -553,6 +564,7 @@ struct CellSpans {
     bool wall;
     float yLo;      // the crown's lowest block, relative to the eye
     uint spans;     // its runs of leaves (crownSpans), 0: one run from yLo to the top
+    bool segmented;
     int plants;     // where the plane crosses a plant's quads in the cell (0-2), nearest first
     float pd[2];    // their distances
     float pTop[2];  // the plant's top there (the opaque texels' highest), relative to the eye
@@ -563,6 +575,23 @@ struct CellSpans {
 // A crown's runs of leaves (a spruce's tiers): up to 4, each a gap (3 bits) then a length (5 bits) in blocks, counted up from
 // the crown's lowest block; a zero length ends the list.
 #define CROWN_RUNS 4
+
+// Segmented words: three exact intervals, or a 30-bit occupancy mask when the high count bits are zero.
+static inline uint2 verticalRun(uint word, int thickness, uint k) {
+    uint count=word>>30;
+    if(count!=0u) {
+        if(k>=count) return uint2(0u);
+        uint r=(word>>(10u*k))&1023u,lo=r&63u;
+        return uint2(lo,lo+(r>>6)+1u);
+    }
+    uint unit=uint((thickness+29)/30),at=0u;
+    for(uint b=0u;b<30u;) {
+        if((word&(1u<<b))==0u) {b++;continue;}
+        uint start=b;while(b<30u && (word&(1u<<b))!=0u) b++;
+        if(at++==k) return uint2(start*unit,min(b*unit,uint(thickness)));
+    }
+    return uint2(0u);
+}
 
 // Run k of a crown as a span: its underside (seen from below), its wall where the plane entered the cell, its top.
 static inline ColSpan crownRun(thread const CellSpans& cs, float yb, float ye) {
@@ -649,17 +678,24 @@ static inline int walkCell(thread const Walk& w, constant ColFrame& f, device co
         }
         if ((g & GEOM_VALID) == 0u) return 0;
     }
+    if (GEOM_Y(g) == -512 && (g & GEOM_CROWN) == 0u) return 0; // known void must not fall back to coarser terrain
     // chunks the real terrain draws are left to it
     if (w.dIn < f.maskDist.x && L <= 4) {
         int mx = ((ax << L) >> 4) - f.mask.x, mz = ((az << L) >> 4) - f.mask.y;
         if (mx >= 0 && mz >= 0 && mx < f.mask.z && mz < f.mask.z && (mask[mz * f.mask.w + (mx >> 5)] >> (mx & 31) & 1u) != 0u) return 0;
     }
     float dOut = min(w.tMaxX, w.tMaxZ);
-    float yTop = float(GEOM_Y(g)) - f.cam.y;
+    float yTop = float(GEOM_Y(g)) - f.cam.y - ((g & GEOM_WET) != 0u ? WATER_SURFACE_DROP : 0.0);
     float din = max(w.dIn, 1e-3), dout = max(dOut, 1e-3);
     float tGround = max(yTop / din, yTop / dout);
     cs.tTop = tGround;
-    bool crown = (g & GEOM_CROWN) != 0u && dataLevel == L && L < int(f.maskDist.y);
+    int dataShift = dataLevel - L, dataLog = f.levels[dataLevel].info.x, dataMask = (1 << dataLog) - 1;
+    int crownIdx = f.levels[dataLevel].info.y + (((az >> dataShift) & dataMask) << dataLog) + ((ax >> dataShift) & dataMask);
+    uint bound = dataLevel < int(f.maskDist.y) ? crowns[crownIdx] : 0u;
+    bool bounded = (bound & CROWN_BOUNDED) != 0u;
+    bool segmented = (bound & CROWN_SEGMENTED) != 0u;
+    bool crown = (g & GEOM_CROWN) != 0u && (dataLevel == L || bounded || segmented) && dataLevel < int(f.maskDist.y);
+    cs.segmented = segmented;
     cs.plants = 0;
     int blocks = GEOM_PLANT_BLOCKS(g);
     if (blocks > 0 && !crown && L == 0 && dataLevel == 0 && f.maskDist.w > 0.0) {
@@ -679,22 +715,32 @@ static inline int walkCell(thread const Walk& w, constant ColFrame& f, device co
     cs.ground.face = w.face;
     cs.ground.flags = flags;
     if (crown) {
-        uint cr = crowns[w.gOff + idx];
-        float yGround = float(int(cr & 0xFFFu) - 512) - f.cam.y;
+        uint cr = bound;
+        bool lowerWet = (cr & (1u << 28)) != 0u;
+        float yGround = float(int(cr & 0xFFFu) - 512) - f.cam.y - (lowerWet ? WATER_SURFACE_DROP : 0.0);
         float yBottom = yTop - float(GEOM_THICK(g));
+        uint bounds = crowns[int(f.maskDist.z) + crownIdx];
+        float lowerBottom = float(int(bounds & 4095u) - 512) - f.cam.y;
+        if (bounded && segmented) lowerBottom = yGround - float(max(1u, (g >> 25) & 127u));
+        else if (bounded) yBottom = float(int((bounds >> 12) & 4095u) - 512) - f.cam.y;
         // the crown's lowest row: its underside's far edge when seen from below, else its wall's foot
         float tcLo = yBottom > 0.0 ? yBottom / dout : yBottom / din;
         // the ground under it, up to where the crown's rows begin (only where seen: a wall, or a top from above)
         cs.ground.tLo = -1e30;
         cs.ground.tHi = (yGround < 0.0 || wall) ? min(max(yGround / din, yGround / dout), tcLo - 1e-7) : -1e30;
         cs.ground.tWall = -1e30;
+        if (bounded) {
+            cs.ground.tLo = lowerBottom > 0.0 ? lowerBottom / dout : lowerBottom / din;
+            cs.ground.tWall = lowerBottom > 0.0 ? lowerBottom / din : -1e30;
+            if (yGround <= lowerBottom) cs.ground.tHi = -1e30;
+        }
         cs.ground.tWallTop = wall ? yGround / din : -1e30;
-        cs.ground.yBottom = yGround;
+        cs.ground.yBottom = bounded ? lowerBottom : yGround;
         cs.ground.yTop = yGround;
-        uint gc = (cr >> 12) & 0xFFFFu;
+        uint gc = crownColor565(cr);
         cs.ground.topColor = gc;
         cs.ground.sideColor = gc;
-        cs.ground.flags = flags | REC_UNDER_CROWN;
+        cs.ground.flags = flags | REC_UNDER_CROWN | (lowerWet ? REC_WET : 0u);
         cs.crown = cs.ground;
         cs.crown.flags = flags | REC_CROWN;
         cs.crown.tLo = tcLo;
@@ -709,7 +755,7 @@ static inline int walkCell(thread const Walk& w, constant ColFrame& f, device co
         cs.dout = dout;
         cs.wall = wall;
         cs.yLo = yBottom;
-        cs.spans = crowns[int(f.maskDist.z) + w.gOff + idx];
+        cs.spans = bounded && !segmented ? 0u : bounds;
         return 2;
     }
     // the wall where the plane entered the cell (if any), then the top seen from above
@@ -720,7 +766,15 @@ static inline int walkCell(thread const Walk& w, constant ColFrame& f, device co
     cs.ground.yBottom = yTop;
     cs.ground.yTop = yTop;
     cs.ground.topColor = cw & 0xFFFFu;
-    cs.ground.sideColor = cw >> 16;
+    cs.ground.sideColor = (g & GEOM_WET) != 0u ? cw & 0xFFFFu : cw >> 16;
+    if (bounded) {
+            float bottom = float(int(bound & 4095u) - 512) - f.cam.y;
+            cs.ground.tLo = bottom > 0.0 ? bottom / dout : bottom / din;
+            cs.ground.tWall = bottom > 0.0 ? bottom / din : -1e30;
+            cs.ground.tWallTop = wall ? yTop / din : (bottom > 0.0 ? bottom / din : -1e30);
+            cs.ground.yBottom = bottom;
+            cs.ground.tHi = cs.tTop;
+    }
     return 1;
 }
 
@@ -825,6 +879,13 @@ static inline void walkFill(thread Walk& w, thread ColRows& r, constant ColFrame
             if (n == 2) {
                 if (cs.spans == 0u) {
                     colFill(r, cs.crown, f, out, cf, w.h, first);
+                } else if (cs.segmented) {
+                    for (uint k = 0u; k < 4u; k++) {
+                        uint2 run=verticalRun(cs.spans,int(round(cs.crown.yTop-cs.yLo)),k);
+                        if(run.y==0u) break;
+                        ColSpan sp = crownRun(cs, cs.yLo+float(run.x), cs.yLo+float(run.y));
+                        colFill(r, sp, f, out, cf, w.h, first);
+                    }
                 } else {
                     // the crown's tiers, bottom up: the gaps between them stay open for what is behind
                     float y = cs.yLo;
@@ -1052,7 +1113,7 @@ struct CompFrame {
     float4 screen;       // x W, y H, z R0, w R1
     float4 fogColor;     // rgb: the game's fog color; a: 1 (0: no fog)
     float4 fog;          // x start, y end (cylindrical, blocks), z environmental start, w environmental end (spherical)
-    float4 skyLight;     // rgb: the game's lightmap at sky 15 / block 0
+    float4 skyLight;     // rgb: the game's lightmap at sky 15 / block 0; w: crown-run word offset
     float4 faceShade;    // x up, y down, z north/south, w east/west
     float4 quadDepth;    // x: the depth the quad is drawn at (the nearest far terrain could be): early depth test; y: 1 = near detail
                          // (smooth-lighting AO, fringes, under-top colors) on level-0 hits; z: sky light factor under crowns;
@@ -1060,6 +1121,13 @@ struct CompFrame {
     int4 origin;         // floor(camera) xyz, w: log2 N
     float4 camFrac;      // camera - origin
     float4 tex;          // x: radians a pixel spans, y: the block atlas's highest mip, z: 1 = textures on level 0
+    float4 lightInfo;    // x: sampled lighting enabled, y: level-0 metadata present, z: dimension has skylight;
+                         // w: abs(w)-1 = water fog RGB888, negative when submerged (0: unavailable)
+    half4 lightmap[256]; // index sky * 16 + block, computed from this frame's lightmap state
+#ifdef SEAM_HANDOFF
+    int4 handoff;        // chunk origin x/z, side length (0: instant handoff), reserved
+    float4 handoffBand;  // inner/outer radius in blocks; full near terrain remains solid throughout
+#endif
 };
 
 struct CompVOut {
@@ -1083,10 +1151,45 @@ struct CompSurface {
     uint face;
     bool wet;
     float ao;         // the game's smooth-lighting occlusion (near detail), 1 elsewhere
+    half2 levels;     // block / sky light, normalized for the native G-buffer
+    half3 light;      // current lightmap at the stored surface light levels, or generated terrain fallback
     float sky;        // sky light factor (darker under crowns)
+    float waterPath;  // submerged path to a water closure, -1 for ordinary surfaces
     uint debug;       // -Dmcopt.lod.debugView: what the near detail found (0 none, 1 level 0 textured, 2 level 0 without a texture,
                       // 3 crown textured, 4 crown without, 5 under a crown, 6 coarser level, 7 no cell data)
 };
+
+#ifdef SEAM_HANDOFF
+// Specialized into two pipelines: distant opaque faces contain no discard instruction. Only the near transition uses
+// the fading pipeline; a uniform branch in one fragment function still made every face an alpha-tested draw on Metal.
+constant bool lodHandoffPass [[function_constant(0)]];
+
+// Coverage belongs to the hit's chunk, including when a coarse quad spans both ready and missing chunks.
+// The near renderer is never discarded: missing LOD data cannot punch holes through complete real terrain.
+static inline float handoffCoverage(constant CompFrame& f, device const float* arrivals, float3 rel, uint face) {
+    if (f.handoff.z <= 0) return 1.0;
+    float2 p = rel.xz + f.camFrac.xz;
+    if (face == FACE_XP) p.x -= 0.001;
+    else if (face == FACE_XN) p.x += 0.001;
+    else if (face == FACE_ZP) p.y -= 0.001;
+    else if (face == FACE_ZN) p.y += 0.001;
+    int2 chunk = (int2(floor(p)) + f.origin.xz) >> 4;
+    int2 q = chunk - f.handoff.xy;
+    if (any(q < 0) || any(q >= f.handoff.z)) return 1.0;
+    float arrival = arrivals[q.y * f.handoff.z + q.x];
+    float near = 1.0 - smoothstep(f.handoffBand.x, f.handoffBand.y, length(rel.xz));
+    return 1.0 - arrival * near;
+}
+
+static inline bool handoffKeep(constant CompFrame& f, device const float* arrivals, float4 pixel, thread const CompSurface& s) {
+    float coverage = handoffCoverage(f, arrivals, s.rel, s.face);
+    // A fixed screen-space 8 x 8 Bayer pattern: no frame seed and no noise that flickers while standing still.
+    uint2 p = uint2(pixel.xy);
+    uint rank = 0u;
+    for (uint i = 0u; i < 3u; i++) rank = rank * 4u + (((p.x >> i) ^ (p.y >> i)) & 1u) * 2u + ((p.y >> i) & 1u);
+    return coverage > (float(rank) + 0.5) / 64.0;
+}
+#endif
 
 static inline half3 comp565(uint c) {
     return half3(float((c >> 11) & 31u) / 31.0, float((c >> 5) & 63u) / 63.0, float(c & 31u) / 31.0);
@@ -1097,6 +1200,62 @@ static inline int compTop(constant CompFrame& f, device const uint* geom, int x,
     int n = 1 << f.origin.w, m = n - 1;
     uint g = geom[((z & m) << f.origin.w) | (x & m)];
     return (g & GEOM_VALID) != 0u ? GEOM_Y(g) : -100000;
+}
+
+// Overhangs occlude their actual solid intervals, rather than an imaginary wall all the way to the ground.
+static inline bool compOccupied(constant CompFrame& f, device const uint* geom, device const uint* crowns, int x, int z, int y) {
+    uint m = (1u << uint(f.origin.w)) - 1u;
+    uint idx = (uint(z) & m) << uint(f.origin.w) | (uint(x) & m), g = geom[idx];
+    if ((g & GEOM_VALID) == 0u) return false;
+    int top = GEOM_Y(g);
+    // No interval reaches above the column's highest surface. Most top-face AO probes end here, without fetching layers.
+    if (y >= top) return false;
+    if (top == -512 && (g & GEOM_CROWN) == 0u) return false;
+    if ((g & GEOM_CROWN) != 0u && f.quadDepth.w > 0.0 && (crowns[idx] & CROWN_SEGMENTED) != 0u) {
+        uint cr = crowns[idx], runs = crowns[uint(f.skyLight.w) + idx];
+        int ground = int(cr & 4095u) - 512;
+        int bottom = (cr & CROWN_BOUNDED) != 0u ? ground - int(max(1u, (g >> 25) & 127u)) : -100000;
+        if (ground > -512 && y >= bottom && y < ground) return true;
+        int base = top - GEOM_THICK(g);
+        for (uint k = 0u; k < 4u; k++) {
+            uint2 run=verticalRun(runs,top-base,k);
+            if(run.y==0u) break;
+            if(y>=base+int(run.x) && y<base+int(run.y)) return true;
+        }
+        return false;
+    }
+    if (f.quadDepth.w > 0.0 && (crowns[idx] & CROWN_BOUNDED) != 0u) {
+        uint cr = crowns[idx];
+        int lower = int(cr & 4095u) - 512;
+        if ((g & GEOM_CROWN) == 0u) return y >= lower && y < top;
+        uint bounds = crowns[uint(f.skyLight.w) + idx];
+        return (y >= int(bounds & 4095u) - 512 && y < lower)
+            || (y >= int((bounds >> 12) & 4095u) - 512 && y < top);
+    }
+    if ((g & GEOM_CROWN) != 0u && f.quadDepth.w > 0.0)
+        return y < int(crowns[idx] & 4095u) - 512 || (y >= top - GEOM_THICK(g) && y < top);
+    return y < top;
+}
+
+// Light in the column outside a particular wall. An air gap under a roof uses the lower surface's light, never the
+// roof's sunlit top. Block light fades vertically from the sampled surface; open-sky light stays constant above it.
+static inline bool compAirLight(constant CompFrame& f, device const uint* geom, device const uint* crowns, device const uint* texWords,
+                                int x, int z, float y, thread uint& pair) {
+    uint n = 1u << uint(f.origin.w), m = n - 1u;
+    uint idx = (uint(z) & m) << uint(f.origin.w) | (uint(x) & m), g = geom[idx];
+    if ((g & GEOM_VALID) == 0u || (texWords[idx] & 0x80000000u) == 0u) return false;
+    int referenceY = GEOM_Y(g);
+    uint shift = 0u;
+    if ((g & GEOM_CROWN) != 0u && y < float(referenceY)) {
+        if (y >= float(referenceY - GEOM_THICK(g))) return false;
+        referenceY = int(crowns[idx] & 4095u) - 512;
+        shift = 24u;
+    }
+    bool water = shift == 24u ? (crowns[idx] & (1u << 28)) != 0u : (g & GEOM_WET) != 0u;
+    if (y + 0.001 < float(referenceY) - (water ? WATER_SURFACE_DROP : 0.0)) return false;
+    pair = (texWords[3u * n * n + idx] >> shift) & 255u;
+    pair = (pair & 240u) | uint(max(0, int(pair & 15u) - int(max(0.0, floor(y) - float(referenceY)))));
+    return true;
 }
 
 // The game's smooth-lighting occlusion at a face vertex: its two side neighbors and the corner in the layer in front of the
@@ -1113,22 +1272,34 @@ static inline half3 compTexture(constant CompFrame& f, device const PaletteEntry
     if (id == 0u) return albedo;
     PaletteEntry e = palette[id];
     float4 rect = top ? e.topUv : e.sideUv;
+    bool mushroomBottom = e.topAvg.w > 0.0 && n.y < -0.5;
+    float3 bottomAvg = float3(0.0);
+    if (mushroomBottom) {
+        rect = as_type<float4>(e.profile);
+        uint rgb = uint(e.sideAvg.w);
+        bottomAvg = float3((rgb >> 16) & 255u, (rgb >> 8) & 255u, rgb & 255u) / 255.0;
+        albedo = half3(bottomAvg);
+    }
     if (rect.z <= rect.x) return albedo;
-    float3 avg = max(top ? e.topAvg.rgb : e.sideAvg.rgb, float3(0.02));
+    float3 avg = max(mushroomBottom ? bottomAvg : top ? e.topAvg.rgb : e.sideAvg.rgb, float3(0.02));
     float dist = length(rel);
     float cosA = abs(dot(n, rel)) / max(dist, 1e-3);
     // texels a pixel covers: 16 a block, a pixel covers dist x angle blocks, stretched by the incidence
     float lod = clamp(log2(16.0 * dist * f.tex.x / max(cosA, 0.08)), 0.0, f.tex.y);
+    float2 spriteSize = max((rect.zw - rect.xy) * float2(atlas.get_width(), atlas.get_height()), float2(1.0));
 #ifdef SEAM_THIN_TEX
     // (-Dmcopt.lod.thinTex: textures minified with linear filtering and half a mip more, inset by half a texel of that mip so the
     // atlas's neighbouring sprites don't bleed in: far texels no longer crawl as faces slide under the pixel grid)
     constexpr sampler smpLin(mag_filter::nearest, min_filter::linear, mip_filter::linear, address::clamp_to_edge);
     lod = clamp(lod + 0.5, 0.0, f.tex.y);
-    float inset = min(0.49, 0.5 * exp2(floor(lod) + 1.0) / 16.0);
+    float2 inset = min(float2(0.5), 0.5 * exp2(ceil(lod)) / spriteSize);
     float2 auv = rect.xy + clamp(uv, inset, 1.0 - inset) * (rect.zw - rect.xy);
     half4 t = lod > 0.0 ? atlas.sample(smpLin, auv, level(lod)) : atlas.sample(smp, auv, level(lod));
 #else
-    float2 auv = rect.xy + clamp(uv, 0.001, 0.999) * (rect.zw - rect.xy);
+    // Linear/trilinear atlas sampling must stay inside this sprite at BOTH sampled mip levels.
+    // A constant UV inset is smaller than one mip texel and bleeds neighbouring block textures at distance.
+    float2 inset = min(float2(0.5), 0.5 * exp2(ceil(lod)) / spriteSize);
+    float2 auv = rect.xy + clamp(uv, inset, 1.0 - inset) * (rect.zw - rect.xy);
     half4 t = atlas.sample(smp, auv, level(lod));
 #endif
     if (f.tex.w == 2.0) return t.rgb;
@@ -1199,16 +1370,112 @@ static inline bool compShade(constant CompFrame& f, uint2 v, device const uint* 
     s.wet = (v.y & REC_WET) != 0u;
     s.ao = 1.0;
     s.sky = (v.y & (REC_UNDER_CROWN)) != 0u || ((v.y & REC_CROWN) != 0u && s.face == FACE_BOTTOM) ? f.quadDepth.z : 1.0;
+    s.light = half3(s.sky * f.skyLight.rgb);
+    s.levels = half2(0.0h, half(s.sky < 1.0 ? 13.0 / 15.0 : 1.0));
+    // Estimated terrain must use the same nonlinear, changing lightmap as captured terrain.
+    // Multiplying the sky-15 RGB by a shadow scalar also scales ambient light, so End flashes/night vision
+    // give different colours on otherwise equivalent generated and captured surfaces.
+    if (f.lightInfo.x > 0.0) s.light = f.lightmap[uint(round(float(s.levels.y) * 15.0)) * 16u].rgb;
     uint level = (v.y >> 20) & 15u;
     bool crownHit = (v.y & REC_CROWN) != 0u;
+    bool waterWall = s.wet && !crownHit && s.face >= FACE_XP && s.face <= FACE_ZN;
+    s.waterPath = -1.0;
+    if (waterWall) {
+        // A water skirt closes missing far seabed. Absorb only the ray's submerged part: from the surface when viewed
+        // from above, or the whole ray underwater. Its color must not depend on which cardinal wall was rasterized.
+        float3 hit = s.rel + f.camFrac.xyz;
+        int ax = s.face <= FACE_XN ? int(rint(hit.x)) - int(s.face == FACE_XP) : int(floor(hit.x));
+        int az = s.face >= FACE_ZP ? int(rint(hit.z)) - int(s.face == FACE_ZP) : int(floor(hit.z));
+        uint m = (1u << uint(f.origin.w)) - 1u;
+        uint idx = level * (1u << uint(2 * f.origin.w))
+            + ((uint((az + f.origin.z) >> level) & m) << uint(f.origin.w)) + (uint((ax + f.origin.x) >> level) & m);
+        int top = (v.y & REC_UNDER_CROWN) != 0u ? int(crowns[idx] & 4095u) - 512 : GEOM_Y(geom[idx]);
+        float surface = float(top - f.origin.y) - f.camFrac.y - WATER_SURFACE_DROP;
+        float portion = surface <= 0.0 ? 1.0 : saturate((surface - s.rel.y) / max(-s.rel.y, 1e-6));
+        int dx = s.face == FACE_XP ? 1 : s.face == FACE_XN ? -1 : 0;
+        int dz = s.face == FACE_ZP ? 1 : s.face == FACE_ZN ? -1 : 0;
+        int nx = ((ax + f.origin.x) >> level) + dx, nz = ((az + f.origin.z) >> level) + dz;
+        uint ni = level * (1u << uint(2 * f.origin.w)) + ((uint(nz) & m) << uint(f.origin.w)) + (uint(nx) & m);
+        uint neighbor = geom[ni];
+        bool exposed = false;
+        if ((neighbor & GEOM_VALID) != 0u) {
+            // A waterfall above the adjacent terrain/water is exposed to air. It is not the submerged handoff skirt
+            // that seals missing seabed; absorbing the entire view ray there turns ordinary falls into navy walls.
+            bool lower = (neighbor & GEOM_CROWN) != 0u;
+            int outsideTop = lower ? int(crowns[ni] & 4095u) - 512 : GEOM_Y(neighbor);
+            bool outsideWet = lower ? (crowns[ni] & (1u << 28)) != 0u : (neighbor & GEOM_WET) != 0u;
+            float outside = float(outsideTop - f.origin.y) - f.camFrac.y - (outsideWet ? WATER_SURFACE_DROP : 0.0);
+            exposed = s.rel.y >= outside;
+        }
+        if (!exposed) s.waterPath = length(s.rel) * portion;
+    }
     s.debug = level != 0u ? 6u : (v.y & REC_UNDER_CROWN) != 0u ? 5u : 0u;
+    if (level == 0u && f.lightInfo.y > 0.0) {
+        float3 hit = s.rel + f.camFrac.xyz;
+        int ax = s.face == FACE_XN || s.face == FACE_XP ? int(rint(hit.x)) - int(s.face == FACE_XP) : int(floor(hit.x));
+        int az = s.face == FACE_ZN || s.face == FACE_ZP ? int(rint(hit.z)) - int(s.face == FACE_ZP) : int(floor(hit.z));
+        uint n = 1u << uint(f.origin.w), m = n - 1u;
+        uint idx = ((uint(az + f.origin.z) & m) << uint(f.origin.w)) | (uint(ax + f.origin.x) & m);
+        uint meta = texWords[idx];
+        if ((meta & 0x40000000u) != 0u) {
+            s.sky = 1.0;
+            s.light = f.lightInfo.x > 0.0 ? f.lightmap[240].rgb : half3(f.skyLight.rgb);
+            s.levels = half2(0.0h,1.0h);
+        }
+        if (f.lightInfo.x > 0.0 && (meta & 0x80000000u) != 0u) {
+            uint packed = texWords[3u * n * n + idx];
+            uint shift = (v.y & REC_UNDER_CROWN) != 0u ? 24u : s.face == FACE_TOP || s.face == FACE_PLANT || waterWall ? 0u : s.face == FACE_BOTTOM ? 16u : 8u;
+            uint pair = (packed >> shift) & 255u;
+            uint surfaceGeom = geom[idx];
+            // The highest top always opens to the sky. Partial updates can leave only this byte zero; lower surfaces
+            // beneath roofs keep their sampled shadows. Raw sky 15 is still evaluated through the current night lightmap.
+            if (f.lightInfo.z > 0.0 && (v.y & REC_UNDER_CROWN) == 0u && (s.face == FACE_TOP || s.face == FACE_PLANT))
+                pair = (pair & 15u) | 240u;
+            // Bad cached/in-flight samples must not draw black strips across an open water surface. Raw skylight is
+            // independent of day/night; water below crowns/roofs retains its sampled shadow and all block light survives.
+            if (f.lightInfo.z > 0.0 && (surfaceGeom & (GEOM_WET | GEOM_CROWN)) == GEOM_WET) {
+                if (s.face == FACE_TOP) pair = (pair & 15u) | 240u;
+                else if (s.face >= FACE_XP && s.face <= FACE_ZN) pair = (pair & 15u) | max(pair & 240u, 224u);
+            }
+            // A torch near a column's top must not illuminate a whole cliff or tall wall beneath it.
+            if (s.face >= FACE_XP && s.face <= FACE_ZN) {
+                uint g = geom[idx];
+                int referenceY = (v.y & REC_UNDER_CROWN) != 0u ? int(crowns[idx] & 4095u) - 513
+                    : (g & GEOM_CROWN) != 0u ? GEOM_Y(g) - GEOM_THICK(g) : GEOM_Y(g) - 1;
+                int distance = abs(int(floor(hit.y + float(f.origin.y))) - referenceY);
+                pair = (pair & 240u) | uint(max(0, int(pair & 15u) - distance));
+                int dx = s.face == FACE_XP ? 1 : s.face == FACE_XN ? -1 : 0;
+                int dz = s.face == FACE_ZP ? 1 : s.face == FACE_ZN ? -1 : 0;
+                uint outside;
+                if (compAirLight(f, geom, crowns, texWords, ax + f.origin.x + dx, az + f.origin.z + dz,
+                    hit.y + float(f.origin.y), outside))
+                    pair = max(pair & 240u, outside & 240u) | max(pair & 15u, outside & 15u);
+            }
+            s.light = f.lightmap[pair].rgb;
+            s.levels = half2(half(pair & 15u), half(pair >> 4u)) / 15.0h;
+        }
+    }
+    if (level > 0u && f.lightInfo.x > 0.0 && level < uint(f.skyLight.w) / (1u << uint(2 * f.origin.w))) {
+        float3 hit = s.rel + f.camFrac.xyz;
+        int ax = f.origin.x + int(floor(hit.x)), az = f.origin.z + int(floor(hit.z));
+        if (s.face == FACE_XP || s.face == FACE_XN) ax = f.origin.x + int(rint(hit.x)) - int(s.face == FACE_XP);
+        if (s.face == FACE_ZP || s.face == FACE_ZN) az = f.origin.z + int(rint(hit.z)) - int(s.face == FACE_ZP);
+        uint m = (1u << uint(f.origin.w)) - 1u;
+        uint idx = level * (1u << uint(2 * f.origin.w)) + ((uint(az >> level) & m) << uint(f.origin.w)) + (uint(ax >> level) & m);
+        uint cr = crowns[idx];
+        if ((cr & CROWN_LIT) != 0u) {
+            uint block = (cr >> 24) & 15u, sky = uint(round(float(s.levels.y) * 15.0));
+            s.light = f.lightmap[sky * 16u + block].rgb;
+            s.levels = half2(half(block), half(sky)) / 15.0h;
+        }
+    }
     if (s.face == FACE_PLANT) {
         // the game draws plants unshaded and without occlusion
         if (f.quadDepth.y != 0.0 && f.tex.z > 0.0) compPlant(f, geom, texWords, palette, atlas, smp, s);
         return true;
     }
     bool underCrown = (v.y & REC_UNDER_CROWN) != 0u;
-    if (f.quadDepth.y == 0.0 || level != 0u || s.wet || underCrown && (s.face == FACE_TOP || f.tex.z == 0.0)) return true;
+    if (f.quadDepth.y == 0.0 || level != 0u || s.wet) return true;
     // near detail on level 0: the cell, from the hit's position (block coordinates relative to `origin`)
     float3 p = s.rel + f.camFrac.xyz;
     int ax, az;
@@ -1239,7 +1506,14 @@ static inline bool compShade(constant CompFrame& f, uint2 v, device const uint* 
     if (underCrown) {
         // the ground's walls under a crown: its block's side (the crown cell's word names it), in the crown's shade
         uint gid = (tw >> 20) & 1023u;
-        if (gid != 0u) s.albedo = half3(palette[gid].sideAvg.rgb);
+        if (gid != 0u) {
+            bool topFace = s.face == FACE_TOP;
+            float3 normal = topFace ? float3(0,1,0) : s.face == FACE_XP ? float3(1,0,0) : s.face == FACE_XN ? float3(-1,0,0)
+                : s.face == FACE_ZP ? float3(0,0,1) : float3(0,0,-1);
+            if (!topFace) s.albedo = half3(palette[gid].sideAvg.rgb);
+            float2 uv = topFace ? float2(fx,fz) : float2(s.face <= FACE_XN ? fz : fx, 1.0 - fract(y));
+            s.albedo = compTexture(f, palette, atlas, smp, gid, topFace, uv, s.rel, normal, s.albedo);
+        }
         return true;
     }
     s.debug = crownHit ? (tw != 0u ? 3u : 4u) : (tw != 0u ? 1u : 2u);
@@ -1257,10 +1531,10 @@ static inline bool compShade(constant CompFrame& f, uint2 v, device const uint* 
         return true;
 #endif
         // occluders: the neighbor columns rising above this top (the layer in front of the face)
-        bool w = compTop(f, geom, gx - 1, gz) > top, e = compTop(f, geom, gx + 1, gz) > top;
-        bool nn = compTop(f, geom, gx, gz - 1) > top, so = compTop(f, geom, gx, gz + 1) > top;
-        bool nw = compTop(f, geom, gx - 1, gz - 1) > top, ne = compTop(f, geom, gx + 1, gz - 1) > top;
-        bool sw = compTop(f, geom, gx - 1, gz + 1) > top, se = compTop(f, geom, gx + 1, gz + 1) > top;
+        bool w = compOccupied(f, geom, crowns, gx - 1, gz, top), e = compOccupied(f, geom, crowns, gx + 1, gz, top);
+        bool nn = compOccupied(f, geom, crowns, gx, gz - 1, top), so = compOccupied(f, geom, crowns, gx, gz + 1, top);
+        bool nw = compOccupied(f, geom, crowns, gx - 1, gz - 1, top), ne = compOccupied(f, geom, crowns, gx + 1, gz - 1, top);
+        bool sw = compOccupied(f, geom, crowns, gx - 1, gz + 1, top), se = compOccupied(f, geom, crowns, gx + 1, gz + 1, top);
         float a00 = compVertexAo(w, nn, nw), a10 = compVertexAo(e, nn, ne), a01 = compVertexAo(w, so, sw), a11 = compVertexAo(e, so, se);
         float u = clamp(fx, 0.0, 1.0), vv = clamp(fz, 0.0, 1.0);
         s.ao = mix(mix(a00, a10, u), mix(a01, a11, u), vv);
@@ -1276,13 +1550,13 @@ static inline bool compShade(constant CompFrame& f, uint2 v, device const uint* 
     int b = int(floor(y));
     float fy = y - float(b);
 #ifdef MESH_BENCH_NOAO
-    int t0 = -100000, tm = -100000, tp = -100000;
+    bool belowFront = false, aboveFront = false, sideM = false, sideP = false, cMb = false, cPb = false, cMt = false, cPt = false;
 #else
-    int t0 = compTop(f, geom, ox, oz), tm = compTop(f, geom, ox - ux, oz - uz), tp = compTop(f, geom, ox + ux, oz + uz);
+    bool belowFront = compOccupied(f, geom, crowns, ox, oz, b - 1), aboveFront = compOccupied(f, geom, crowns, ox, oz, b + 1);
+    bool sideM = compOccupied(f, geom, crowns, ox - ux, oz - uz, b), sideP = compOccupied(f, geom, crowns, ox + ux, oz + uz, b);
+    bool cMb = compOccupied(f, geom, crowns, ox - ux, oz - uz, b - 1), cPb = compOccupied(f, geom, crowns, ox + ux, oz + uz, b - 1);
+    bool cMt = compOccupied(f, geom, crowns, ox - ux, oz - uz, b + 1), cPt = compOccupied(f, geom, crowns, ox + ux, oz + uz, b + 1);
 #endif
-    // solid(y, side): the block at height y in the front column (side 0), or its neighbor along the wall (-1 / +1)
-    bool belowFront = b - 1 < t0, aboveFront = b + 1 < t0;
-    bool sideM = b < tm, sideP = b < tp, cMb = b - 1 < tm, cPb = b - 1 < tp, cMt = b + 1 < tm, cPt = b + 1 < tp;
     float a00 = compVertexAo(belowFront, sideM, cMb), a10 = compVertexAo(belowFront, sideP, cPb);
     float a01 = compVertexAo(aboveFront, sideM, cMt), a11 = compVertexAo(aboveFront, sideP, cPt);
     float u = clamp(along, 0.0, 1.0), vv = clamp(fy, 0.0, 1.0);
@@ -1293,7 +1567,7 @@ static inline bool compShade(constant CompFrame& f, uint2 v, device const uint* 
     if ((g & GEOM_FRINGE) != 0u && depth < 3.0 / 16.0) {
         s.albedo = comp565(color[idx] & 0xFFFFu);
     } else if (depth >= 1.0 && f.quadDepth.w > 0.0) {
-        s.albedo = compTexture(f, palette, atlas, smp, (tw >> 20) & 1023u, false, wuv, s.rel, nrm, comp565((crowns[idx] >> 12) & 0xFFFFu));
+        s.albedo = compTexture(f, palette, atlas, smp, (tw >> 20) & 1023u, false, wuv, s.rel, nrm, comp565(crownColor565(crowns[idx])));
     } else {
         s.albedo = compTexture(f, palette, atlas, smp, (tw >> 10) & 1023u, false, wuv, s.rel, nrm, s.albedo);
     }
@@ -1315,6 +1589,20 @@ static inline half3 compFog(constant CompFrame& f, float3 rel, half3 lit) {
     return mix(lit, half3(f.fogColor.rgb), half(max(fr, fe) * f.fogColor.a));
 }
 
+static inline half3 compSurfaceFog(constant CompFrame& f, thread const CompSurface& s, half3 lit) {
+    if (s.waterPath < 0.0) return compFog(f, s.rel, lit);
+    // Missing underwater terrain is water volume, not an opaque cliff lit by the air's haze. Near seabed remains in
+    // front by depth testing. Use the camera's water environment color, including biome transitions, without changing
+    // atmospheric fog on the water's top or on land. No directional face shade: it would draw a grid of dark stripes.
+    uint rgb = uint(max(abs(f.lightInfo.w) - 1.0, 0.0));
+    half3 waterFog = f.lightInfo.w == 0.0 ? s.albedo * 0.2h
+        : half3(float3((rgb >> 16) & 255u, (rgb >> 8) & 255u, rgb & 255u) / 255.0);
+    waterFog *= half3(f.skyLight.rgb);
+    if (f.lightInfo.w < 0.0) waterFog = half3(f.fogColor.rgb);
+    half3 fill = mix(s.albedo * s.light * half(f.faceShade.x), waterFog, half(1.0 - exp2(-s.waterPath / 12.0)));
+    return f.lightInfo.w < 0.0 ? compFog(f, s.rel, fill) : fill;
+}
+
 fragment CompVanillaOut lod_comp_vanilla(CompVOut in [[stage_in]], constant CompFrame& f [[buffer(22)]], device const uint2* img [[buffer(23)]],
                                          device const uint* geom [[buffer(24)]], device const uint* color [[buffer(25)]],
                                          device const uint* crowns [[buffer(26)]], device const uint* texWords [[buffer(27)]],
@@ -1324,7 +1612,7 @@ fragment CompVanillaOut lod_comp_vanilla(CompVOut in [[stage_in]], constant Comp
     if (!compSurface(f, in.position, img, geom, color, crowns, texWords, palette, atlas, smp, s)) discard_fragment();
     float shade = s.face == FACE_TOP || s.face == FACE_PLANT ? f.faceShade.x : s.face == FACE_BOTTOM ? f.faceShade.y : (s.face <= FACE_XN ? f.faceShade.w : f.faceShade.z);
     CompVanillaOut o;
-    o.color = half4(compFog(f, s.rel, s.albedo * half3(shade * s.ao * s.sky * f.skyLight.rgb)), 1.0h);
+    o.color = half4(compSurfaceFog(f, s, s.albedo * half(shade * s.ao) * s.light), 1.0h);
     if (f.tex.w == 1.0) {
         const half3 dc[8] = {half3(0.5h), half3(0, 1, 0), half3(1, 0, 0), half3(0, 0, 1), half3(1, 0, 1), half3(0, 1, 1), half3(1, 1, 0), half3(0)};
         o.color = half4(dc[s.debug & 7u] * half(0.5 + 0.5 * s.ao), 1.0h);
@@ -1363,7 +1651,7 @@ fragment CompGBufferOut lod_comp_gbuffer(CompVOut in [[stage_in]], constant Comp
     o.albedo = half4(s.albedo, 1.0h);
     uint mat = s.wet ? 5u : 0u;  // MAT_WATER / MAT_GENERIC
     o.normal = half4(compOctEncode(n), half(s.ao), half(float(mat) / 255.0));
-    o.light = half4(0.0h, half(s.sky < 1.0 ? 13.0 / 15.0 : 1.0), 0.0h, 0.0h);
+    o.light = half4(s.levels, 0.0h, 0.0h);
     o.gdepth = s.depth;
     o.depth = s.depth;
     return o;
@@ -2018,7 +2306,7 @@ static inline void meshCullBlock(constant MeshFrame& f, device const uint4* tabl
             for (int j = 0; j < 4; j++) {
                 int p = (pz + (j >> 1)) * 4 + px + (j & 1);
                 w = min(w, h[16 + (p >> 1)] >> ((p & 1) * 12) & 0xFFFu);
-                open = open || (occOnly && meshPartBottom(f, h, p) > -1e29);
+                open = open || meshPartBottom(f, h, p) > -1e29;
             }
             if (open) continue;
             float qx = x0 + float(k & 1) * hs, qz = z0 + float(k >> 1) * hs;
@@ -2033,13 +2321,18 @@ static inline void meshCullBlock(constant MeshFrame& f, device const uint4* tabl
         for (int k = 0; k < 16; k++) {
             uint w = h[16 + (k >> 1)] >> ((k & 1) * 12) & 0xFFFu;
             float qx = x0 + float(k & 3) * ps, qz = z0 + float(k >> 2) * ps;
-            float by = occOnly ? meshPartBottom(f, h, k) : -1e30;
+            // Generated floating islands have finite bottoms too. An infinite heightfield horizon hides terrain in
+            // the air underneath them, leaving moving columns of sky as the azimuth bins change.
+            float by = meshPartBottom(f, h, k);
             // (horizon bit 32, a control: the earlier rule, the camera at or over the bottom; an arch under it can be wrong)
-            if ((f.opts.z & 32) != 0 && by > -1e29) {
+            if (occOnly && (f.opts.z & 32) != 0 && by > -1e29) {
                 if (by > -(PK ? f.hz.z : 0.0)) continue;
                 by = -1e30;
             }
             if (by > -1e29) {
+                // The far-minimum prepass runs with real-terrain occlusion. Without it, finite columns cannot safely
+                // raise a max-only horizon: a single tangent cannot represent the open space below an island.
+                if ((f.opts.z & 16) == 0) continue;
                 hzOccluderRun(f, hz, qx, qx + ps, qz, qz + ps, float(int(w) - 512 - f.origin.y) - f.cam.y, by, PK ? f.hz.z : 0.0,
                               PK ? pk->needed : uint2(0xFFFFFFFFu));
                 continue;
@@ -2352,6 +2645,37 @@ static inline float4 meshClip(constant CompFrame& f, float3 rel) {
 // front faces), the index buffer {0, 1, 2, 2, 3, 0} per quad.
 static inline MeshVOut meshCorner(constant CompFrame& f, MeshInstance mi, device const uint* arena, uint vid);
 
+#ifdef SEAM_HANDOFF
+// Conservative footprint test shared by all four corners. Quads crossing the band belong wholly to the fade draw so
+// its per-pixel coverage remains exact, including coarse stand-ins. The extra block covers the hairline edge growth.
+static inline bool meshHandoffQuad(constant CompFrame& f, uint w0, int tx, int tz, int L, bool clipped, int4 clip) {
+    if (f.handoff.z <= 0) return false;
+    uint face = (w0 >> 26) & 7u;
+    float cell = float(1 << L);
+    int2 start = int2(((tx << 6) + int(w0 & 127u)) << L, ((tz << 6) + int((w0 >> 7) & 127u)) << L);
+    float2 lo = float2(start - f.origin.xz);
+    float e1 = float(((w0 >> 14) & 63u) + 1u) * cell, e2 = float(((w0 >> 20) & 63u) + 1u) * cell;
+    float2 hi = lo + (face == FACE_TOP || face == FACE_BOTTOM ? float2(e1, e2)
+        : face == FACE_XP || face == FACE_XN ? float2(0.0, e1) : float2(e1, 0.0));
+    if (clipped) {
+        lo = max(lo, float2(clip.xz));
+        hi = min(hi, float2(clip.yw));
+    }
+    lo -= f.camFrac.xz;
+    hi -= f.camFrac.xz;
+    float2 nearest = max(float2(0.0), max(lo, -hi));
+    float radius = f.handoffBand.y + 1.0;
+    return dot(nearest, nearest) <= radius * radius;
+}
+
+static inline MeshVOut meshHandoffHidden() {
+    MeshVOut o;
+    o.position = float4(0.0, 0.0, -2.0, 1.0);
+    o.info = 0u;
+    return o;
+}
+#endif
+
 vertex MeshVOut lod_mesh_vs(uint vid [[vertex_id]], uint iid [[instance_id]], constant CompFrame& f [[buffer(22)]],
                             device const MeshInstance* inst [[buffer(23)]], device const uint* arena [[buffer(24)]]) {
     return meshCorner(f, inst[iid], arena, vid);
@@ -2359,6 +2683,15 @@ vertex MeshVOut lod_mesh_vs(uint vid [[vertex_id]], uint iid [[instance_id]], co
 
 // Corner vid & 3 of quad vid >> 2 of the instance.
 static inline MeshVOut meshQuadCorner(constant CompFrame& f, uint w0, uint w1, int tx, int tz, int L, bool clipped, int4 clip, uint corner, uint id);
+
+// Water's whole quad is lowered; the bank meeting it lowers only its wall's foot, including 1/9-high shoreline strips.
+static inline float2 meshQuadHeights(uint w0, uint w1) {
+    uint face = (w0 >> 26) & 7u, kind = (w0 >> 29) & 3u;
+    float2 y = float2(int(w1 & 0xFFFu) - 512, int((w1 >> 12) & 0xFFFu) - 512);
+    if (kind == 3u) y -= WATER_SURFACE_DROP;
+    else if (face >= FACE_XP && face <= FACE_ZN && (w1 & (1u << 24)) != 0u) y.x -= WATER_SURFACE_DROP;
+    return y;
+}
 
 static inline MeshVOut meshCorner(constant CompFrame& f, MeshInstance mi, device const uint* arena, uint vid) {
     uint4 in = mi.a;
@@ -2418,6 +2751,9 @@ static inline MeshVOut meshQuadCorner(constant CompFrame& f, uint w0, uint w1, i
         wz = clamp(wz, clip.z, clip.w);
     }
     float3 rel = float3(float(wx), float(cy - f.origin.y), float(wz)) - f.camFrac.xyz;
+    // Match both source-water height and FluidRenderer's inset; the bank's lower edge uses the same offset.
+    float2 heights = meshQuadHeights(w0, w1);
+    rel.y += face == FACE_TOP || face == FACE_BOTTOM || !up ? heights.x - float(int(w1 & 0xFFFu) - 512) : heights.y - float(y1);
     // Merged quads meet at T-junctions: their shared edges aren't the same vertex pairs, and a pixel center on such an edge
     // can fall through the hairline between them (seen from far off at grazing angles: a speck of what's behind). Each quad
     // grows a little in its own plane (0.0005 blocks + 3e-6 of its distance: ~0.005 px), so they overlap instead; where they
@@ -2472,7 +2808,9 @@ static inline void meshQuadClip(constant CompFrame& f, MeshInstance mi, device c
     // a skirt's foot: down to the surface across its seam (as the vertex stage finds it)
     if ((w0 >> 31) != 0u) y0 = min(y0, meshSkirtFloor(mf, table, geom, crowns, w0, int(mi.a.z), int(mi.a.w), L));
     int wx = (((int(mi.a.z) << 6) + x) << L) - f.origin.x, wz = (((int(mi.a.w) << 6) + z) << L) - f.origin.z;
-    float3 rel = float3(float(wx), float(y0 - f.origin.y), float(wz)) - f.camFrac.xyz;
+    float2 heights = meshQuadHeights(w0, w1);
+    heights.x += float(y0 - (int(w1 & 0xFFFu) - 512)); // A dynamic skirt may have lowered its integer foot.
+    float3 rel = float3(float(wx), heights.x - float(f.origin.y), float(wz)) - f.camFrac.xyz;
     float4x4 m = f.viewProj;
     float4 p = m * float4(rel, 1.0);
     float cell = float(1 << L);
@@ -2481,7 +2819,7 @@ static inline void meshQuadClip(constant CompFrame& f, MeshInstance mi, device c
     float ex = face == FACE_TOP || face == FACE_BOTTOM || face == FACE_ZP || face == FACE_ZN ? float(e1) * cell : 0.0;
     float ez = face == FACE_TOP || face == FACE_BOTTOM ? float(e2) * cell : (face == FACE_XP || face == FACE_XN ? float(e1) * cell : 0.0);
     lo = rel;
-    hi = float3(rel.x + ex, rel.y + float(face == FACE_TOP || face == FACE_BOTTOM ? 0 : y1 - y0), rel.z + ez);
+    hi = float3(rel.x + ex, rel.y + (face == FACE_TOP || face == FACE_BOTTOM ? 0.0 : heights.y - heights.x), rel.z + ez);
     if (face == FACE_TOP || face == FACE_BOTTOM) {
         float4 U = X * (float(e1) * cell), V = Z * (float(e2) * cell);
         if (face == FACE_TOP) {
@@ -2490,7 +2828,7 @@ static inline void meshQuadClip(constant CompFrame& f, MeshInstance mi, device c
             P[0] = p; P[1] = p + U; P[2] = p + U + V; P[3] = p + V;
         }
     } else {
-        float4 H = Y * float(y1 - y0);
+        float4 H = Y * (heights.y - heights.x);
         float4 W = (face == FACE_XP || face == FACE_XN ? Z : X) * (float(e1) * cell);
         if (face == FACE_XP || face == FACE_ZN) {
             P[0] = p + W; P[1] = p; P[2] = p + H; P[3] = p + W + H;
@@ -2685,9 +3023,18 @@ vertex MeshVOut lod_mesh_vs2(uint vid [[vertex_id]], uint iid [[instance_id]], c
             o.info = 0u;
             return o;
         }
+#ifdef SEAM_HANDOFF
+        if (r.x >= (mi.a.y & 255u)) return meshHandoffHidden();
+        uint w0 = arena[(mi.a.x + r.x) * 2u];
+        if (meshHandoffQuad(f, w0, int(mi.a.z), int(mi.a.w), int((mi.a.y >> 8) & 15u), true, mi.b) != lodHandoffPass)
+            return meshHandoffHidden();
+#endif
         return meshCorner(f, mi, arena, r.x * 4u + (vid & 3u));
     }
     int tz = int(r.w << 12) >> 12;
+#ifdef SEAM_HANDOFF
+    if (meshHandoffQuad(f, r.x, int(r.z), tz, L, false, int4(0)) != lodHandoffPass) return meshHandoffHidden();
+#endif
     uint w1 = r.y;
     if ((r.x >> 31) != 0u && (vid & 3u) < 2u) {
         // a skirt's foot: down to the surface across its seam
@@ -2714,6 +3061,7 @@ static inline void meshSurface(constant CompFrame& f, float4 pos, uint info, dev
     float3 D = meshRay(f, pos);
     bool flat = face == FACE_TOP || face == FACE_BOTTOM;
     float pc = float(plane) - (flat ? f.camFrac.y : face <= FACE_XN ? f.camFrac.x : f.camFrac.z);
+    if (kind == 3u && flat) pc -= WATER_SURFACE_DROP;
     float dc = flat ? D.y : face <= FACE_XN ? D.x : D.z;
     float t = pc / (abs(dc) < 1e-12 ? (dc < 0.0 ? -1e-12 : 1e-12) : dc);
     s.rel = D * max(t, 0.0);
@@ -2731,9 +3079,11 @@ static inline void meshSurface(constant CompFrame& f, float4 pos, uint info, dev
     int logN = f.origin.w, m = (1 << logN) - 1;
     uint idx = uint(L) * (1u << uint(2 * logN)) + uint(((az & m) << logN) | (ax & m));
     uint g = geom[idx], cw = color[idx];
-    uint c565 = face == FACE_TOP ? (cw & 0xFFFFu) : (cw >> 16);
-    if (kind == 2u) c565 = (crowns[idx] >> 12) & 0xFFFFu;
-    record = c565 | ((g & GEOM_WET) != 0u ? REC_WET : 0u) | uint(L) << 20 | (kind == 1u ? REC_CROWN : 0u) | (kind == 2u ? REC_UNDER_CROWN : 0u);
+    uint c565 = face == FACE_TOP || kind == 3u ? (cw & 0xFFFFu) : (cw >> 16);
+    bool lower = kind == 2u || (kind == 3u && (g & GEOM_CROWN) != 0u);
+    if (lower) c565 = crownColor565(crowns[idx]);
+    record = c565 | (((g & GEOM_WET) != 0u || kind == 3u) ? REC_WET : 0u) | uint(L) << 20
+        | (kind == 1u ? REC_CROWN : 0u) | (lower ? REC_UNDER_CROWN : 0u);
 }
 
 #ifdef SEAM_DISSOLVE_MS
@@ -2839,11 +3189,20 @@ static inline void seamThin(constant CompFrame& f, uint info, thread const CompS
             float t = seamCellPx(f, s.rel, c);
             if (t < 1.0) lit = mix(comp565(cw >> 16) * sideShade, lit, half(seamTopOverlap(f, s.rel, cx, cz, L, t)));
         } else {
-            float yTopAbs = float(int(g & 0xFFFu) - 512), thick = float((g >> 15) & 63u);
+            float yTopAbs = float(int(g & 0xFFFu) - 512), thick = float(GEOM_THICK(g));
             float yAbs = s.rel.y + f.camFrac.y + float(f.origin.y);
             uint runs = crowns[(1u << uint(2 * logN)) * uint(SEAM_CROWN_LEVELS) + idx];
             float yb = yTopAbs - thick, ye = yTopAbs;
-            if (runs != 0u) {
+            uint cr=crowns[idx];
+            if ((cr & CROWN_SEGMENTED)!=0u) {
+                for(uint k=0u;k<4u;k++) {
+                    uint2 run=verticalRun(runs,int(thick),k);if(run.y==0u) break;
+                    float lo=yTopAbs-thick+float(run.x),hi=yTopAbs-thick+float(run.y);
+                    if(yAbs>=lo-0.01 && yAbs<=hi+0.01) {yb=lo;ye=hi;break;}
+                }
+            } else if((cr & CROWN_BOUNDED)!=0u) {
+                yb=float(int((runs>>12)&4095u)-512);
+            } else if (runs != 0u) {
                 float y = yTopAbs - thick;
                 for (int k = 0; k < 4; k++) {
                     uint run = (runs >> (8 * k)) & 255u, len = run >> 3;
@@ -2946,7 +3305,7 @@ static inline half3 seamTaa(constant CompFrame& f, constant SeamTaaFrame& tf, te
     else if (face == FACE_ZN) az = f.origin.z + plane;
     int logN = f.origin.w, m = (1 << logN) - 1;
     uint cw = color[uint(L) * (1u << uint(2 * logN)) + uint((((az >> L) & m) << logN) | ((ax >> L) & m))];
-    half3 light = half3(s.ao * s.sky * f.skyLight.rgb);
+    half3 light = half(s.ao) * s.light;
     half sideShade = half(abs(s.rel.x) > abs(s.rel.z) ? f.faceShade.w : f.faceShade.z);
     half3 top = compFog(f, s.rel, comp565(cw & 0xFFFFu) * half(f.faceShade.x) * light);
     half3 side = compFog(f, s.rel, comp565(cw >> 16) * sideShade * light);
@@ -2961,6 +3320,9 @@ fragment half4 lod_mesh_vanilla(MeshVOut in [[stage_in]], constant CompFrame& f 
                                 device const uint* color [[buffer(25)]], device const uint* crowns [[buffer(26)]],
                                 device const uint* texWords [[buffer(27)]], device const PaletteEntry* palette [[buffer(28)]],
                                 texture2d<half> atlas [[texture(20)]], sampler smp [[sampler(14)]]
+#ifdef SEAM_HANDOFF
+                                , device const float* arrivals [[buffer(23)]]
+#endif
 #ifdef SEAM_DISSOLVE_MS
                                 , device const uint4* table [[buffer(29)]]
 #endif
@@ -2976,6 +3338,9 @@ fragment half4 lod_mesh_vanilla(MeshVOut in [[stage_in]], constant CompFrame& f 
     CompSurface s;
     uint record;
     meshSurface(f, in.position, in.info, geom, color, crowns, s, record);
+#ifdef SEAM_HANDOFF
+    if (lodHandoffPass && !handoffKeep(f, arrivals, in.position, s)) discard_fragment();
+#endif
 #ifdef SEAM_DISSOLVE_MS
     seamDissolve(f, in.info, table, geom, color, s, record);
 #endif
@@ -2984,9 +3349,9 @@ fragment half4 lod_mesh_vanilla(MeshVOut in [[stage_in]], constant CompFrame& f 
 #ifdef SEAM_THIN
     half3 lit = s.albedo * half(shade);
     seamThin(f, in.info, s, geom, color, crowns, lit);
-    half4 o = half4(compFog(f, s.rel, lit * half3(s.ao * s.sky * f.skyLight.rgb)), 1.0h);
+    half4 o = half4(compSurfaceFog(f, s, lit * half(s.ao) * s.light), 1.0h);
 #else
-    half4 o = half4(compFog(f, s.rel, s.albedo * half3(shade * s.ao * s.sky * f.skyLight.rgb)), 1.0h);
+    half4 o = half4(compSurfaceFog(f, s, s.albedo * half(shade * s.ao) * s.light), 1.0h);
 #endif
 #ifdef SEAM_TAA
     o.rgb = seamTaa(f, tf, hist, in.info, s, color, o.rgb);
@@ -3016,7 +3381,7 @@ static inline MeshGBufferOut meshGBuffer(thread const CompSurface& s) {
     o.albedo = half4(s.albedo, 1.0h);
     uint mat = s.wet ? 5u : 0u;  // MAT_WATER / MAT_GENERIC
     o.normal = half4(compOctEncode(n), half(s.ao), half(float(mat) / 255.0));
-    o.light = half4(0.0h, half(s.sky < 1.0 ? 13.0 / 15.0 : 1.0), 0.0h, 0.0h);
+    o.light = half4(s.levels, 0.0h, 0.0h);
     o.gdepth = s.depth;
     return o;
 }
@@ -3025,6 +3390,9 @@ fragment MeshGBufferOut lod_mesh_gbuffer(MeshVOut in [[stage_in]], constant Comp
                                          device const uint* color [[buffer(25)]], device const uint* crowns [[buffer(26)]],
                                          device const uint* texWords [[buffer(27)]], device const PaletteEntry* palette [[buffer(28)]],
                                          texture2d<half> atlas [[texture(20)]], sampler smp [[sampler(14)]]
+#ifdef SEAM_HANDOFF
+                                         , device const float* arrivals [[buffer(23)]]
+#endif
 #ifdef SEAM_DISSOLVE_MS
                                          , device const uint4* table [[buffer(29)]]
 #endif
@@ -3032,6 +3400,9 @@ fragment MeshGBufferOut lod_mesh_gbuffer(MeshVOut in [[stage_in]], constant Comp
     CompSurface s;
     uint record;
     meshSurface(f, in.position, in.info, geom, color, crowns, s, record);
+#ifdef SEAM_HANDOFF
+    if (lodHandoffPass && !handoffKeep(f, arrivals, in.position, s)) discard_fragment();
+#endif
 #ifdef SEAM_DISSOLVE_MS
     seamDissolve(f, in.info, table, geom, color, s, record);
 #endif
@@ -3192,12 +3563,19 @@ static inline bool meshPlantSurface(constant CompFrame& f, float4 pos, uint info
 fragment half4 lod_mesh_plant_vanilla(MeshPlantVOut in [[stage_in]], constant CompFrame& f [[buffer(22)]], device const uint* geom [[buffer(24)]],
                                       device const uint* color [[buffer(25)]], device const uint* crowns [[buffer(26)]],
                                       device const uint* texWords [[buffer(27)]], device const PaletteEntry* palette [[buffer(28)]],
-                                      texture2d<half> atlas [[texture(20)]], sampler smp [[sampler(14)]]) {
+                                      texture2d<half> atlas [[texture(20)]], sampler smp [[sampler(14)]]
+#ifdef SEAM_HANDOFF
+                                      , device const float* arrivals [[buffer(23)]]
+#endif
+                                      ) {
     CompSurface s;
     uint record;
     if (!meshPlantSurface(f, in.position, in.info, geom, texWords, palette, s, record)) discard_fragment();
+#ifdef SEAM_HANDOFF
+    if (!handoffKeep(f, arrivals, in.position, s)) discard_fragment();
+#endif
     compShade(f, uint2(1u, record), geom, color, crowns, texWords, palette, atlas, smp, s);
-    half4 o = half4(compFog(f, s.rel, s.albedo * half3(f.faceShade.x * s.ao * s.sky * f.skyLight.rgb)), 1.0h);
+    half4 o = half4(compFog(f, s.rel, s.albedo * half(f.faceShade.x * s.ao) * s.light), 1.0h);
     if (f.tex.w == 1.0) {
         const half3 dc[8] = {half3(0.5h), half3(0, 1, 0), half3(1, 0, 0), half3(0, 0, 1), half3(1, 0, 1), half3(0, 1, 1), half3(1, 1, 0), half3(0)};
         o = half4(dc[s.debug & 7u] * half(0.5 + 0.5 * s.ao), 1.0h);
@@ -3208,10 +3586,17 @@ fragment half4 lod_mesh_plant_vanilla(MeshPlantVOut in [[stage_in]], constant Co
 fragment MeshGBufferOut lod_mesh_plant_gbuffer(MeshPlantVOut in [[stage_in]], constant CompFrame& f [[buffer(22)]], device const uint* geom [[buffer(24)]],
                                                device const uint* color [[buffer(25)]], device const uint* crowns [[buffer(26)]],
                                                device const uint* texWords [[buffer(27)]], device const PaletteEntry* palette [[buffer(28)]],
-                                               texture2d<half> atlas [[texture(20)]], sampler smp [[sampler(14)]]) {
+                                               texture2d<half> atlas [[texture(20)]], sampler smp [[sampler(14)]]
+#ifdef SEAM_HANDOFF
+                                               , device const float* arrivals [[buffer(23)]]
+#endif
+                                               ) {
     CompSurface s;
     uint record;
     if (!meshPlantSurface(f, in.position, in.info, geom, texWords, palette, s, record)) discard_fragment();
+#ifdef SEAM_HANDOFF
+    if (!handoffKeep(f, arrivals, in.position, s)) discard_fragment();
+#endif
     compShade(f, uint2(1u, record), geom, color, crowns, texWords, palette, atlas, smp, s);
     return meshGBuffer(s);
 }
@@ -3294,15 +3679,15 @@ kernel void lod_pk_hz_prefix(device uint* hz [[buffer(8)]], constant PkParams& p
 static inline void pkWordsBox(constant MeshFrame& f, uint w0, uint w1, int tx, int tz, int L, thread float3& lo, thread float3& hi) {
     int x = int(w0 & 127u), z = int((w0 >> 7) & 127u), e1 = int((w0 >> 14) & 63u) + 1, e2 = int((w0 >> 20) & 63u) + 1;
     uint face = (w0 >> 26) & 7u;
-    int y0 = int(w1 & 0xFFFu) - 512, y1 = int((w1 >> 12) & 0xFFFu) - 512;
     int wx = (((tx << 6) + x) << L) - f.origin.x, wz = (((tz << 6) + z) << L) - f.origin.z;
-    float3 rel = float3(float(wx), float(y0 - f.origin.y), float(wz)) - f.cam.xyz;
+    float2 heights = meshQuadHeights(w0, w1);
+    float3 rel = float3(float(wx), heights.x - float(f.origin.y), float(wz)) - f.cam.xyz;
     float cell = float(1 << L);
     bool flat = face == FACE_TOP || face == FACE_BOTTOM;
     float ex = flat || face == FACE_ZP || face == FACE_ZN ? float(e1) * cell : 0.0;
     float ez = flat ? float(e2) * cell : (face == FACE_XP || face == FACE_XN ? float(e1) * cell : 0.0);
     lo = rel;
-    hi = float3(rel.x + ex, rel.y + (flat ? 0.0 : float(y1 - y0)), rel.z + ez);
+    hi = float3(rel.x + ex, rel.y + (flat ? 0.0 : heights.y - heights.x), rel.z + ez);
 }
 
 // The position pass's per-quad step: a thread per candidate quad (lod_mesh_finish's dispatch). A SIMD group is one candidate
@@ -3523,9 +3908,9 @@ static inline bool pkViewKeep(constant CompFrame& f, constant MeshFrame& mf, dev
         int L = int((r.w >> 20) & 15u), tx = int(r.z), tz = int(r.w << 12) >> 12;
         int x = int(w0 & 127u), z = int((w0 >> 7) & 127u), e1 = int((w0 >> 14) & 63u) + 1, e2 = int((w0 >> 20) & 63u) + 1;
         uint face = (w0 >> 26) & 7u;
-        int y0 = int(w1 & 0xFFFu) - 512, y1 = int((w1 >> 12) & 0xFFFu) - 512;
         int wx = (((tx << 6) + x) << L) - f.origin.x, wz = (((tz << 6) + z) << L) - f.origin.z;
-        float3 rel = float3(float(wx), float(y0 - f.origin.y), float(wz)) - f.camFrac.xyz;
+        float2 heights = meshQuadHeights(w0, w1);
+        float3 rel = float3(float(wx), heights.x - float(f.origin.y), float(wz)) - f.camFrac.xyz;
         float4x4 m = f.viewProj;
         float4 p = m * float4(rel, 1.0);
         float cell = float(1 << L);
@@ -3538,7 +3923,7 @@ static inline bool pkViewKeep(constant CompFrame& f, constant MeshFrame& mf, dev
                 P[0] = p; P[1] = p + U; P[2] = p + U + V; P[3] = p + V;
             }
         } else {
-            float4 H = Y * float(y1 - y0);
+            float4 H = Y * (heights.y - heights.x);
             float4 W = (face == FACE_XP || face == FACE_XN ? Z : X) * (float(e1) * cell);
             if (face == FACE_XP || face == FACE_ZN) {
                 P[0] = p + W; P[1] = p; P[2] = p + H; P[3] = p + W + H;

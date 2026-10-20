@@ -9,6 +9,9 @@
 #define GEOM_VALID 0x2000u
 #define GEOM_CROWN 0x4000u
 #define GEOM_CLEAR (1u << 24)   // (a real chunk's top that doesn't hide what's behind it: no occluder)
+#define CROWN_BOUNDED (1u << 29)
+#define CROWN_SEGMENTED (1u << 30)
+#define GEOM_THICK(g) ((int)(((g)>>15)&63u)*(((g)&(GEOM_CROWN|(1u<<21)))==(GEOM_CROWN|(1u<<21))?4:1))
 #define GEOM_DEPTH(g) ((int) (((g) >> 25) & 127u))   // (a real chunk's: how deep its top solid run reaches; 0 all the way)
 #define NEG_INF (-100000)
 #define MAX_IV 5
@@ -31,7 +34,7 @@ typedef struct {
 static void addIv(Col *c, int lo, int hi, int kind) {
 	if (hi <= lo) return;
 	// runs never reach below the one before them; overlaps (malformed words) are joined
-	if (c->n > 0 && lo <= c->hi[c->n - 1]) {
+	if (c->n > 0 && (lo < c->hi[c->n - 1] || (lo == c->hi[c->n - 1] && kind == c->kind[c->n - 1]))) {
 		if (hi > c->hi[c->n - 1]) c->hi[c->n - 1] = hi;
 		return;
 	}
@@ -48,7 +51,8 @@ static void column(const LmIn *in, int ax, int az, Col *c) {
 	column0(in, ax, az, c);
 	int m = (1 << in->logN) - 1;
 	int depth = GEOM_DEPTH(in->geom[((size_t) (az & m) << in->logN) | (size_t) (ax & m)]);
-	c->bot = depth > 0 && c->n > 0 ? c->hi[0] - depth : NEG_INF;
+	c->bot = c->n > 0 && c->lo[0] != NEG_INF ? c->lo[0]
+		: depth > 0 && c->n > 0 ? c->hi[0] - depth : NEG_INF;
 }
 
 static void column0(const LmIn *in, int ax, int az, Col *c) {
@@ -63,12 +67,46 @@ static void column0(const LmIn *in, int ax, int az, Col *c) {
 		return;
 	}
 	int top = (int) (g & 0xFFFu) - 512;
+	if (top == LM_DEEP && !(g & GEOM_CROWN)) return; // known empty, distinct from an unavailable neighbor
+	if ((g & GEOM_CROWN) && in->crown && (in->crown[idx] & CROWN_SEGMENTED)) {
+		uint32_t cr=in->crown[idx],runs=in->runs?in->runs[idx]:0;
+		c->wet=(cr&(1u<<28))!=0;
+		int ground=(int)(cr&4095u)-512,base=top-GEOM_THICK(g);
+		int bottom=(cr&CROWN_BOUNDED)?ground-(GEOM_DEPTH(g)>0?GEOM_DEPTH(g):1):NEG_INF;
+		if(ground>LM_DEEP) addIv(c,bottom,ground,c->wet?LM_K_WATER:LM_K_UNDER);
+		for(unsigned k=0;k<(runs>>30);k++) {
+			uint32_t r=(runs>>(10*k))&1023u;int lo=base+(int)(r&63u),length=(int)(r>>6)+1;
+			addIv(c,lo,lo+length,LM_K_CROWN);
+		}
+		if((runs>>30)==0 && runs!=0) {
+			int unit=(top-base+29)/30;
+			for(int b=0;b<30;) {
+				if(!(runs&(1u<<b))) {b++;continue;}
+				int start=b;while(b<30 && (runs&(1u<<b))) b++;
+				int lo=base+start*unit;if(ground>LM_DEEP && lo<ground) lo=ground;
+				int end=base+b*unit;
+				addIv(c,lo,end<top?end:top,LM_K_CROWN);
+			}
+		}
+		return;
+	}
+	if (in->crown && (in->crown[idx] & CROWN_BOUNDED)) {
+		uint32_t cr = in->crown[idx];
+		int lower = (int)(cr & 0xFFFu) - 512;
+		if (g & GEOM_CROWN) {
+			uint32_t bounds = in->runs ? in->runs[idx] : 0;
+			addIv(c, (int)(bounds & 0xFFFu) - 512, lower, LM_K_UNDER);
+			addIv(c, (int)((bounds >> 12) & 0xFFFu) - 512, top, LM_K_CROWN);
+		} else addIv(c, lower, top, c->wet ? LM_K_WATER : LM_K_GROUND);
+		return;
+	}
 	if ((g & GEOM_CROWN) && in->crown) {
 		uint32_t cr = in->crown[idx];
 		int ground = (int) (cr & 0xFFFu) - 512;
-		int thick = (int) ((g >> 15) & 63u);
+		c->wet = (cr & (1u << 28)) != 0;
+		int thick = GEOM_THICK(g);
 		int y = top - thick;
-		addIv(c, NEG_INF, ground, LM_K_UNDER);
+		addIv(c, NEG_INF, ground, c->wet ? LM_K_WATER : LM_K_UNDER);
 		uint32_t runs = in->runs ? in->runs[idx] : 0;
 		if (runs == 0) {
 			addIv(c, y, top, LM_K_CROWN);
@@ -83,7 +121,7 @@ static void column0(const LmIn *in, int ax, int az, Col *c) {
 		}
 		return;
 	}
-	addIv(c, NEG_INF, top, LM_K_GROUND);
+	addIv(c, NEG_INF, top, c->wet ? LM_K_WATER : LM_K_GROUND);
 }
 
 // a's intervals where b has none (b unknown: all of a's, the ground's from LM_DEEP). Returns the pieces.
@@ -196,6 +234,8 @@ static void flats(Out *o, const Col *cols, int b, int x0, int z0, int bottoms) {
 			const Col *c = &cols[(z0 + z + 1) * REGION + (x0 + x + 1)];
 			for (int k = 0; k < c->n; k++) {
 				if (bottoms && c->lo[k] == NEG_INF) continue;
+				if(bottoms && k>0 && c->lo[k]==c->hi[k-1]) continue;
+				if(!bottoms && k+1<c->n && c->hi[k]==c->lo[k+1]) continue;
 				int y = bottoms ? c->lo[k] : c->hi[k];
 				items[n].key = (int) c->kind[k] << 16 | (y + 512);
 				items[n].x = x;
@@ -214,7 +254,7 @@ static void flats(Out *o, const Col *cols, int b, int x0, int z0, int bottoms) {
 			j++;
 		}
 		int y = (items[i].key & 0xFFFF) - 512, kind = items[i].key >> 16;
-		range(o, y, y);
+		range(o, y - (kind == LM_K_WATER), y);
 		rects(o, rows, b, x0, z0, bottoms ? LM_F_BOTTOM : LM_F_TOP, kind, y);
 		i = j;
 	}
@@ -224,8 +264,30 @@ typedef struct {
 	int n;
 	int lo[MAX_IV * 2], hi[MAX_IV * 2];
 	unsigned char kind[MAX_IV * 2];
+	unsigned char shore[MAX_IV * 2];
 	unsigned char used[MAX_IV * 2];
 } Pieces;
+
+// The water GPU plane is 1/9 below its stored integer height. Integer interval subtraction otherwise removes the bank's
+// last 1/9 block too, exposing sky through the shoreline. Keep that strip in the bank's own material (including a bank
+// whose stored top equals the water's), encoded as a fractional lower edge in the quad's unused wall-extra byte.
+static void shorePieces(const Col *a, const Col *b, Pieces *p) {
+	memset(p->shore, 0, sizeof p->shore);
+	if (b->n <= 0 || !b->wet) return;
+	int water = b->hi[0];
+	for (int k = 0; k < a->n; k++) {
+		if (a->kind[k] == LM_K_WATER || a->lo[k] >= water || a->hi[k] < water) continue;
+		if (a->hi[k] == water) {
+			if (p->n >= MAX_IV * 2) continue;
+			int j = p->n++;
+			p->lo[j] = p->hi[j] = water;
+			p->kind[j] = a->kind[k];
+			p->shore[j] = 1;
+		} else {
+			for (int j = 0; j < p->n; j++) if (p->lo[j] == water && p->kind[j] == a->kind[k]) p->shore[j] = 1;
+		}
+	}
+}
 
 // The floor a skirt on cell (cx, cz) (tile cells) facing (dx, dz) reaches down to: under its own ground and the ground of
 // the cells across the seam (this level's own estimate of what another level, or the real terrain, has there: a coarser
@@ -235,12 +297,9 @@ static int skirtFloor(const Col *cols, int cx, int cz, int dx, int dz) {
 	const Col *a = &cols[(cz + 1) * REGION + (cx + 1)];
 	if (a->n <= 0) return LM_DEEP;  // (invalid cell: hi[0] and wet were never written)
 	int lo = a->hi[0], hi = a->hi[0];
-	// Water meeting water at the same surface across the seam: no gap to hide, so no skirt. Under the surface it showed through
-	// the real terrain's water as pale columns hanging from the seam (noahdunnagan/mcopt#14).
-	if (a->wet && cx + dx >= -1 && cz + dz >= -1 && cx + dx <= LM_TILE && cz + dz <= LM_TILE) {
-		const Col *b = &cols[(cz + dz + 1) * REGION + (cx + dx + 1)];
-		if (b->n > 0 && b->wet && b->hi[0] == a->hi[0]) return a->hi[0];
-	}
+	// There is no far seabed: close the submerged seam even when both cells have the same water surface. These skirts
+	// draw only at a handoff, behind the real seabed. The shader uses water absorption here, never pale atmospheric fog.
+	if (a->wet) return LM_DEEP;
 	int ax = dz != 0 ? 1 : 0, az = dx != 0 ? 1 : 0;
 	for (int k = -1; k <= 1; k++) {
 		int nx = cx + dx + k * ax, nz = cz + dz + k * az;
@@ -272,6 +331,7 @@ static void walls(Out *o, const Col *cols, int b, int x0, int z0, int face, int 
 			if (skirt) floorCol.hi[0] = skirtFloor(cols, x0 + x, z0 + z, dx, dz);
 			const Col *nb = skirt ? &floorCol : &cols[(z0 + z + dz + 1) * REGION + (x0 + x + dx + 1)];
 			p[r].n = a->n > 0 ? faceDiff(a, nb, p[r].lo, p[r].hi, p[r].kind) : 0;
+			shorePieces(a, nb, &p[r]);
 			memset(p[r].used, 0, sizeof p[r].used);
 		}
 		// the wall's plane in tile cells
@@ -279,9 +339,10 @@ static void walls(Out *o, const Col *cols, int b, int x0, int z0, int face, int 
 		for (int r = 0; r < b; r++) {
 			for (int k = 0; k < p[r].n; k++) {
 				if (p[r].used[k]) continue;
-				int lo = p[r].lo[k], hi = p[r].hi[k], kind = p[r].kind[k];
+				int lo = p[r].lo[k], hi = p[r].hi[k], kind = p[r].kind[k], shore = p[r].shore[k];
 				// a skirt's ground piece (its lowest): one cell each, its foot found on the GPU
-				int dynamic = skirt && k == 0 && kind != LM_K_CROWN;
+				const Col *current = &cols[(z0 + (alongX ? i : r) + 1) * REGION + (x0 + (alongX ? r : i) + 1)];
+				int dynamic = skirt && k == 0 && kind != LM_K_CROWN && current->lo[0] == NEG_INF;
 				if (dynamic) {
 					if (alongX) emitf(o, x0 + r, plane, 1, 1, face, kind, lo, hi, 0, 1);
 					else emitf(o, plane, z0 + r, 1, 1, face, kind, lo, hi, 0, 1);
@@ -291,7 +352,7 @@ static void walls(Out *o, const Col *cols, int b, int x0, int z0, int face, int 
 				for (int s = r + 1; s < b; s++) {
 					int hit = -1;
 					for (int j = 0; j < p[s].n; j++) {
-						if (!p[s].used[j] && p[s].lo[j] == lo && p[s].hi[j] == hi && p[s].kind[j] == kind) {
+						if (!p[s].used[j] && p[s].lo[j] == lo && p[s].hi[j] == hi && p[s].kind[j] == kind && p[s].shore[j] == shore) {
 							hit = j;
 							break;
 						}
@@ -300,9 +361,9 @@ static void walls(Out *o, const Col *cols, int b, int x0, int z0, int face, int 
 					p[s].used[hit] = 1;
 					len++;
 				}
-				if (!skirt) range(o, lo, hi);
-				if (alongX) emit(o, x0 + r, plane, len, 1, face, kind, lo, hi, 0);
-				else emit(o, plane, z0 + r, len, 1, face, kind, lo, hi, 0);
+				if (!skirt) range(o, lo - shore, hi);
+				if (alongX) emit(o, x0 + r, plane, len, 1, face, kind, lo, hi, shore);
+				else emit(o, plane, z0 + r, len, 1, face, kind, lo, hi, shore);
 			}
 		}
 	}
@@ -404,7 +465,7 @@ int lm_mesh(const LmIn *in, uint32_t *header, uint32_t *quads, int cap) {
 				for (int x = 0; x < b; x++) {
 					const Col *c = &cols[(z0 + z + 1) * REGION + (x0 + x + 1)];
 					int k = (z * 4 / b) * 4 + x * 4 / b;
-					int top = c->n > 0 && !c->clear ? c->hi[0] : LM_DEEP;
+					int top = c->n > 0 && !c->clear ? c->hi[0] - c->wet : LM_DEEP;
 					if (top < qm[k]) qm[k] = top;
 					if (c->n > 0 && !c->clear && c->bot > qb[k]) qb[k] = c->bot;
 				}

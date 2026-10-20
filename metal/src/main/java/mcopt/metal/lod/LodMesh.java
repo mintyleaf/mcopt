@@ -106,6 +106,7 @@ final class LodMesh implements LodClip.Listener {
 	// stats
 	final AtomicLong meshed = new AtomicLong(), meshNanos = new AtomicLong(), meshQuads = new AtomicLong();
 	int installed;
+	private long reusedMeshes,healthAt=System.nanoTime(),healthFrames;
 	/** The position-keyed lists (-Dmcopt.lod.pk), told when a tile's mesh changes; else null. */
 	@Nullable LodPk pk;
 
@@ -156,7 +157,7 @@ final class LodMesh implements LodClip.Listener {
 
 	@Override
 	public void tilePut(int level, int tx, int tz, boolean refreshed) {
-		if (LodClip.PAIRS) this.snaps.remove(LodTile.key(level, tx, tz));
+		if (LodClip.PAIRS) LodClip.release(this.snaps.remove(LodTile.key(level, tx, tz)));
 		this.request(level, tx, tz);
 		// each neighbor's border walls toward this tile: built without it (skirts), or this tile's border cells changed
 		int[][] d = {{1, 0, 2}, {-1, 0, 1}, {0, 1, 8}, {0, -1, 4}};
@@ -172,12 +173,14 @@ final class LodMesh implements LodClip.Listener {
 	@Override
 	public void tileCleared(int level, int slot) {
 		this.drop(level, slot);
-		if (LodClip.PAIRS) this.snaps.values().removeIf(sn -> sn.level == level && this.clip.slot(sn.tx, sn.tz) == slot);
+		if (LodClip.PAIRS) this.snaps.forEach((key, sn) -> {
+			if (sn.level == level && this.clip.slot(sn.tx, sn.tz) == slot && this.snaps.remove(key, sn)) sn.release();
+		});
 	}
 
 	@Override
 	public void tileStaged(LodClip.Snapshot snap) {
-		this.snaps.put(LodTile.key(snap.level, snap.tx, snap.tz), snap);
+		LodClip.release(this.snaps.put(LodTile.key(snap.level, snap.tx, snap.tz), snap.retain()));
 		this.request(snap.level, snap.tx, snap.tz);
 	}
 
@@ -196,65 +199,72 @@ final class LodMesh implements LodClip.Listener {
 		long quads = MemoryUtil.nmemAlloc((long) SCRATCH_QUADS * 8);
 		// PAIRS: the tile and its 1-cell border copied here (geometry, crowns, runs, plants A and B), meshed from the copy
 		long scratch = LodClip.PAIRS ? MemoryUtil.nmemCalloc(5L * SCRATCH * SCRATCH, 4) : 0;
-		while (!this.closed) {
-			long[] job;
-			try {
-				job = this.jobs.take();
-			} catch (InterruptedException e) {
-				return;
-			}
-			long k = job[0];
-			Long s = this.queued.remove(k);
-			if (s == null) continue;
-			Long ver = this.reqVer.get(k);
-			int level = LodTile.levelOf(k), tx = LodTile.txOf(k), tz = LodTile.tzOf(k);
-			try {
-				if (!this.clip.resident(level, tx, tz)) continue;
-				int neighbors = (this.clip.resident(level, tx + 1, tz) ? 1 : 0) | (this.clip.resident(level, tx - 1, tz) ? 2 : 0)
-					| (this.clip.resident(level, tx, tz + 1) ? 4 : 0) | (this.clip.resident(level, tx, tz - 1) ? 8 : 0);
-				long lw = this.clip.levelWords * 4 * level;
-				boolean crowns = level < this.clip.crownLevels;
-				long crown = crowns ? this.clip.crown + lw : 0, runs = crowns ? this.clip.crown + this.clip.runsOffset() * 4 + lw : 0;
-				boolean plants = level == 0 && this.clip.plants;
-				long pa = plants ? this.clip.tex + this.clip.levelWords * 4 : 0, pb = plants ? this.clip.tex + this.clip.levelWords * 8 : 0;
-				long t0 = System.nanoTime();
-				LodClip.Snapshot snap = null;
-				int n;
-				if (LodClip.PAIRS) {
-					snap = this.snaps.get(k);
-					long v = this.copyRegion(scratch, level, tx, tz, snap, crowns, plants);
-					if (v < 0) {
-						// the render thread kept writing: try again later
-						this.request(level, tx, tz);
+		try {
+			while (!this.closed) {
+				long[] job;
+				try {
+					job = this.jobs.take();
+				} catch (InterruptedException e) {
+					return;
+				}
+				long k = job[0];
+				Long s = this.queued.remove(k);
+				if (s == null) continue;
+				Long ver = this.reqVer.get(k);
+				int level = LodTile.levelOf(k), tx = LodTile.txOf(k), tz = LodTile.tzOf(k);
+				LodClip.Snapshot held = null;
+				try {
+					if (!this.clip.resident(level, tx, tz)) continue;
+					int neighbors = (this.clip.resident(level, tx + 1, tz) ? 1 : 0) | (this.clip.resident(level, tx - 1, tz) ? 2 : 0)
+						| (this.clip.resident(level, tx, tz + 1) ? 4 : 0) | (this.clip.resident(level, tx, tz - 1) ? 8 : 0);
+					long lw = this.clip.levelWords * 4 * level;
+					boolean crowns = level < this.clip.crownLevels;
+					long crown = crowns ? this.clip.crown + lw : 0, runs = crowns ? this.clip.crown + this.clip.runsOffset() * 4 + lw : 0;
+					boolean plants = level == 0 && this.clip.plants;
+					long pa = plants ? this.clip.tex + this.clip.levelWords * 4 : 0, pb = plants ? this.clip.tex + this.clip.levelWords * 8 : 0;
+					long t0 = System.nanoTime();
+					LodClip.Snapshot snap = null;
+					int n;
+					if (LodClip.PAIRS) {
+						snap = held = LodClip.retain(this.snaps, k);
+						long v = this.copyRegion(scratch, level, tx, tz, snap, crowns, plants);
+						if (v < 0) {
+							// the render thread kept writing: try again later
+							this.request(level, tx, tz);
+							continue;
+						}
+						ver = v;
+						long sp = (long) SCRATCH * SCRATCH * 4;
+						n = LodNative.meshTile(scratch, crowns ? scratch + sp : 0, crowns ? scratch + 2 * sp : 0, plants ? scratch + 3 * sp : 0, plants ? scratch + 4 * sp : 0,
+							SCRATCH_LOG, level, tx, tz, neighbors, BLOCK, header, quads, SCRATCH_QUADS);
+					} else {
+						n = LodNative.meshTile(this.clip.geom + lw, crown, runs, pa, pb, this.clip.logN, level, tx, tz, neighbors, BLOCK, header, quads, SCRATCH_QUADS);
+					}
+					this.meshNanos.addAndGet(System.nanoTime() - t0);
+					if (n < 0) {
+						System.out.println("mcopt-lod: mesh of tile L" + level + " " + tx + "," + tz + " overflows " + SCRATCH_QUADS + " quads; not drawn");
 						continue;
 					}
-					ver = v;
-					long sp = (long) SCRATCH * SCRATCH * 4;
-					n = LodNative.meshTile(scratch, crowns ? scratch + sp : 0, crowns ? scratch + 2 * sp : 0, plants ? scratch + 3 * sp : 0, plants ? scratch + 4 * sp : 0,
-						SCRATCH_LOG, level, tx, tz, neighbors, BLOCK, header, quads, SCRATCH_QUADS);
-				} else {
-					n = LodNative.meshTile(this.clip.geom + lw, crown, runs, pa, pb, this.clip.logN, level, tx, tz, neighbors, BLOCK, header, quads, SCRATCH_QUADS);
+					long words = HDR_WORDS + 2L * n;
+					long block = MemoryUtil.nmemAlloc(words * 4);
+					MemoryUtil.memCopy(header, block, (long) HDR_WORDS * 4);
+					MemoryUtil.memCopy(quads, block + (long) HDR_WORDS * 4, (long) n * 8);
+					this.meshed.incrementAndGet();
+					this.meshQuads.addAndGet(n);
+					if (snap != null) this.resultSnaps.put(block, snap);
+					this.results.add(new long[] {k, s, block, words, neighbors, ver != null ? ver : -1});
+					held = null; // The result now owns the worker's lease through deferred installation.
+				} catch (RuntimeException e) {
+					System.out.println("mcopt-lod: mesh job failed: " + e);
+				} finally {
+					LodClip.release(held);
 				}
-				this.meshNanos.addAndGet(System.nanoTime() - t0);
-				if (n < 0) {
-					System.out.println("mcopt-lod: mesh of tile L" + level + " " + tx + "," + tz + " overflows " + SCRATCH_QUADS + " quads; not drawn");
-					continue;
-				}
-				long words = HDR_WORDS + 2L * n;
-				long block = MemoryUtil.nmemAlloc(words * 4);
-				MemoryUtil.memCopy(header, block, (long) HDR_WORDS * 4);
-				MemoryUtil.memCopy(quads, block + (long) HDR_WORDS * 4, (long) n * 8);
-				this.meshed.incrementAndGet();
-				this.meshQuads.addAndGet(n);
-				if (snap != null) this.resultSnaps.put(block, snap);
-				this.results.add(new long[] {k, s, block, words, neighbors, ver != null ? ver : -1});
-			} catch (RuntimeException e) {
-				System.out.println("mcopt-lod: mesh job failed: " + e);
 			}
+		} finally {
+			MemoryUtil.nmemFree(header);
+			MemoryUtil.nmemFree(quads);
+			if (scratch != 0) MemoryUtil.nmemFree(scratch);
 		}
-		MemoryUtil.nmemFree(header);
-		MemoryUtil.nmemFree(quads);
-		if (scratch != 0) MemoryUtil.nmemFree(scratch);
 	}
 
 	/**
@@ -282,42 +292,50 @@ final class LodMesh implements LodClip.Listener {
 				Thread.onSpinWait();
 				continue;
 			}
-			for (int z = -1; z <= LodClip.TILE; z++) {
-				for (int x = -1; x <= LodClip.TILE; x++) {
-					boolean outX = x < 0 || x >= LodClip.TILE, outZ = z < 0 || z >= LodClip.TILE;
-					if (outX && outZ) continue;
-					int ax = ax0 + x, az = az0 + z;
-					long dst = (((long) (az & sm) << SCRATCH_LOG) | (ax & sm)) * 4;
-					if (snap != null && !outX && !outZ) {
-						int i = z * LodClip.TILE + x;
-						MemoryUtil.memPutInt(scratch + dst, snap.g[i]);
+			LodClip.Snapshot[] pending={snap!=null?snap.retain():this.clip.retainPendingGpu(level,tx,tz),this.clip.retainPendingGpu(level,tx+1,tz),
+				this.clip.retainPendingGpu(level,tx-1,tz),this.clip.retainPendingGpu(level,tx,tz+1),this.clip.retainPendingGpu(level,tx,tz-1)};
+			try {
+				for (int z = -1; z <= LodClip.TILE; z++) {
+					for (int x = -1; x <= LodClip.TILE; x++) {
+						boolean outX = x < 0 || x >= LodClip.TILE, outZ = z < 0 || z >= LodClip.TILE;
+						if (outX && outZ) continue;
+						int ax = ax0 + x, az = az0 + z;
+						long dst = (((long) (az & sm) << SCRATCH_LOG) | (ax & sm)) * 4;
+						int region=x>=LodClip.TILE?1:x<0?2:z>=LodClip.TILE?3:z<0?4:0;
+						LodClip.Snapshot source=pending[region];
+						if (source != null) {
+							int i = (z&63) * LodClip.TILE + (x&63);
+							MemoryUtil.memPutInt(scratch + dst, source.g[i]);
+							if (crowns) {
+								MemoryUtil.memPutInt(scratch + sp + dst, source.cr[i]);
+								MemoryUtil.memPutInt(scratch + 2 * sp + dst, source.runs[i]);
+							}
+							if (plants) {
+								MemoryUtil.memPutInt(scratch + 3 * sp + dst, source.pl[i]);
+								MemoryUtil.memPutInt(scratch + 4 * sp + dst, source.pl[LodClip.TILE * LodClip.TILE + i]);
+							}
+							continue;
+						}
+						long src = (((long) (az & m) << this.clip.logN) | (ax & m)) * 4;
+						MemoryUtil.memPutInt(scratch + dst, MemoryUtil.memGetInt(this.clip.geom + lw + src));
 						if (crowns) {
-							MemoryUtil.memPutInt(scratch + sp + dst, snap.cr[i]);
-							MemoryUtil.memPutInt(scratch + 2 * sp + dst, snap.runs[i]);
+							MemoryUtil.memPutInt(scratch + sp + dst, MemoryUtil.memGetInt(crownBase + src));
+							MemoryUtil.memPutInt(scratch + 2 * sp + dst, MemoryUtil.memGetInt(runsBase + src));
 						}
 						if (plants) {
-							MemoryUtil.memPutInt(scratch + 3 * sp + dst, snap.pl[i]);
-							MemoryUtil.memPutInt(scratch + 4 * sp + dst, snap.pl[LodClip.TILE * LodClip.TILE + i]);
+							MemoryUtil.memPutInt(scratch + 3 * sp + dst, MemoryUtil.memGetInt(paBase + src));
+							MemoryUtil.memPutInt(scratch + 4 * sp + dst, MemoryUtil.memGetInt(pbBase + src));
 						}
-						continue;
-					}
-					long src = (((long) (az & m) << this.clip.logN) | (ax & m)) * 4;
-					MemoryUtil.memPutInt(scratch + dst, MemoryUtil.memGetInt(this.clip.geom + lw + src));
-					if (crowns) {
-						MemoryUtil.memPutInt(scratch + sp + dst, MemoryUtil.memGetInt(crownBase + src));
-						MemoryUtil.memPutInt(scratch + 2 * sp + dst, MemoryUtil.memGetInt(runsBase + src));
-					}
-					if (plants) {
-						MemoryUtil.memPutInt(scratch + 3 * sp + dst, MemoryUtil.memGetInt(paBase + src));
-						MemoryUtil.memPutInt(scratch + 4 * sp + dst, MemoryUtil.memGetInt(pbBase + src));
 					}
 				}
+				java.lang.invoke.VarHandle.acquireFence();
+				boolean same = true;
+				for (int i = 0; i < 5; i++) same &= w.get(slots[i]) == before[i];
+				if (same) return before[0];
+				this.seqRetries.incrementAndGet();
+			} finally {
+				for (LodClip.Snapshot source : pending) LodClip.release(source);
 			}
-			java.lang.invoke.VarHandle.acquireFence();
-			boolean same = true;
-			for (int i = 0; i < 5; i++) same &= w.get(slots[i]) == before[i];
-			if (same) return before[0];
-			this.seqRetries.incrementAndGet();
 		}
 		return -1;
 	}
@@ -326,6 +344,7 @@ final class LodMesh implements LodClip.Listener {
 
 	/** Once a frame before drawing: finished meshes go into the arena, freed ranges whose frames are done return. */
 	void integrate(long frame) {
+		this.clip.flushStaged();
 		while (!this.releaseLater.isEmpty() && frame - this.releaseLater.peek()[0] >= RING) {
 			long[] r = this.releaseLater.poll();
 			this.release(r[1], r[2]);
@@ -349,6 +368,14 @@ final class LodMesh implements LodClip.Listener {
 			this.installOrHold(frame, r);
 		}
 		while (budget-- > 0 && (r = this.results.poll()) != null) this.installOrHold(frame, r);
+		this.healthFrames++;
+		long now=System.nanoTime();
+		if(now-this.healthAt>=30_000_000_000L) {
+			long quads=0;for(long[] level:this.len) for(long words:level) if(words>0) quads+=Math.max(0,(words-HDR_WORDS)/2);
+			System.out.printf(java.util.Locale.ROOT,"mcopt-lod: render %.1f fps, mesh %d tiles / %d quads, pending %d, arena %.1f/%.0f MiB, reused %d meshes, unchanged %d cells, GPU copies %d%n",
+				this.healthFrames*1e9/(now-this.healthAt),this.installed,quads,this.pending()+this.publishLater.size(),this.usedMb(),this.arenaMb(),this.reusedMeshes,this.clip.unchangedCells,this.clip.pendingGpuCount());
+			this.healthAt=now;this.healthFrames=0;
+		}
 	}
 
 	private int publishes;
@@ -364,6 +391,7 @@ final class LodMesh implements LodClip.Listener {
 			if (LodClip.PAIRS) this.installPair(frame, r, snap);
 			else this.install(frame, r);
 		} finally {
+			LodClip.release(snap);
 			MemoryUtil.nmemFree(r[2]);
 		}
 	}
@@ -381,7 +409,7 @@ final class LodMesh implements LodClip.Listener {
 		if (snap != null) {
 			if (snap.version <= this.publishedVer[level][slot]) return;
 			if (!this.clip.publish(snap)) return;
-			this.snaps.remove(k, snap);
+			if (this.snaps.remove(k, snap)) snap.release();
 			this.publishedVer[level][slot] = snap.version;
 			this.publishes++;
 			this.published.incrementAndGet();
@@ -411,6 +439,14 @@ final class LodMesh implements LodClip.Listener {
 		// an older job finishing after a newer one keeps the newer mesh (PAIRS: the word versions decide, checked by the caller)
 		if (!checked && this.key[level][slot] == k && this.seq[level][slot] > r[1]) return;
 		long words = r[3];
+		if(this.off[level][slot]>=0 && this.key[level][slot]==k && this.len[level][slot]==words
+			&& MemoryUtil.memByteBuffer(this.arenaAddr+this.off[level][slot]*4,(int)(words*4))
+				.mismatch(MemoryUtil.memByteBuffer(r[2],(int)(words*4)))<0) {
+			// Lighting/color updates publish new words, but can keep the existing geometry and arena allocation.
+			this.seq[level][slot]=r[1];this.builtNeighbors[level][slot]=(int)r[4];this.builtVer[level][slot]=r[5];
+			this.reusedMeshes++;
+			return;
+		}
 		long at = this.allocate(frame, words);
 		if (at < 0) {
 			System.out.println("mcopt-lod: mesh arena full (" + (this.arenaWords >> 18) + " MB); tile L" + level + " " + tx + "," + tz + " not drawn");
@@ -495,6 +531,7 @@ final class LodMesh implements LodClip.Listener {
 			this.installed--;
 		}
 		this.off[level][slot] = -1;
+		this.len[level][slot] = 0;
 		this.key[level][slot] = -1;
 		this.publishedVer[level][slot] = 0;
 		MemoryUtil.memSet(this.tableHost + ((long) level * this.tps * this.tps + slot) * 16, 0, 16);
@@ -642,9 +679,27 @@ final class LodMesh implements LodClip.Listener {
 	}
 
 	void close() {
+		if (this.closed) return;
 		this.closed = true;
 		for (Thread t : this.workers) t.interrupt();
 		this.clip.listener = null;
+		// A dimension switch must not release clipmap buffers while a native mesh job still reads them.
+		boolean interrupted = false;
+		for (Thread t : this.workers) {
+			while (t.isAlive()) try { t.join(); }
+			catch (InterruptedException e) { interrupted = true; }
+		}
+		if (interrupted) Thread.currentThread().interrupt();
+		long[] result;
+		while ((result = this.results.poll()) != null) MemoryUtil.nmemFree(result[2]);
+		while ((result = this.publishLater.poll()) != null) MemoryUtil.nmemFree(result[2]);
+		this.jobs.clear();
+		for (LodClip.Snapshot s : this.snaps.values()) s.release();
+		this.snaps.clear();
+		for (LodClip.Snapshot s : this.resultSnaps.values()) s.release();
+		this.resultSnaps.clear();
+		MemoryUtil.nmemFree(this.tableHost);
+		MemoryUtil.nmemFree(this.frame);
 	}
 
 	/** GPU buffers, for release by the owner once frames in flight are done (the arena's current and old ones included). */
