@@ -46,6 +46,16 @@ Setup (from repository root)
    means 5120 x 2760 framebuffer pixels on a 2x Retina display. Use --width/--height
    at prepare time to change this. Actual framebuffer/setup are in report.json.
 
+   To reuse the source pack's graphics, add --graphics-from-source. This copies
+   only a whitelist of graphics options plus RenderScale, Cloth Config, Fabric
+   API and config/renderscale.json5. Keybinds, chat, servers and other personal
+   settings are excluded. Both comparison jars must use the same option. The
+   extra config is restored before each launch and its input hash is compared.
+   Use --width 1920 --height 1080 for a 3840 x 2160 framebuffer on a 2x display.
+   report.json also records main-target dimensions and worldTargetWidth/Height
+   sampled inside renderLevel, separately from the display framebuffer, to verify
+   that scaling took effect before the UI target is restored.
+
 3. Run the short smoke test first. Output must be a new absolute path without
    whitespace. No mouse/keyboard camera control is needed. Keep the game focused;
    each phase checks focus. The route advances by wall clock, so pauses or window

@@ -71,6 +71,13 @@ class ResetSafety(unittest.TestCase):
         MODULE.clear_children(self.world, self.game)
         self.assertEqual((self.personal / 'level.dat').read_bytes(), b'never modify')
 
+    def test_refuse_symlinked_graphics_config(self):
+        (self.game / 'config').mkdir()
+        (self.game / 'config/renderscale.json5').symlink_to(self.personal / 'level.dat')
+        with self.assertRaises(ValueError):
+            MODULE.read_owner(self.game)
+        self.assertEqual((self.personal / 'level.dat').read_bytes(), b'never modify')
+
     def test_unresolved_launch_stays_locked_regardless_of_age(self):
         output = self.root / 'output'
         MODULE.write_json(self.game / '.replay-active.json', dict(output=str(output), startedEpoch=0))

@@ -41,6 +41,7 @@ public final class Replay {
     private static int phase=-1,frames,lastFov=-1;
     private static boolean stableSetup=true;
     private static int minRenderDistance=Integer.MAX_VALUE,maxRenderDistance;
+    private static int worldTargetWidth,worldTargetHeight;
     private static Path output;
     private static Recording recording;
     private static Marker marker;
@@ -56,6 +57,14 @@ public final class Replay {
     static final class Marker extends Event { String phase,routeSha256; }
 
     private Replay() { }
+    /** Sample inside renderLevel, after render-scaling mods take over and before they restore the UI target. */
+    public static void worldTarget() {
+        if(!ON || finished) return;
+        var target=Minecraft.getInstance().gameRenderer.mainRenderTarget();
+        if(phase>=0) stableSetup &= target.width==setup.get("worldTargetWidth").getAsInt()
+            && target.height==setup.get("worldTargetHeight").getAsInt();
+        worldTargetWidth=target.width;worldTargetHeight=target.height;
+    }
     private static void load(Minecraft mc) throws Exception {
         Path owned=mc.gameDirectory.toPath().resolve(".mcopt-replay-owned.json");
         if(!Files.isRegularFile(owned)) throw new IllegalStateException("Replay requires a marker-owned disposable instance");
@@ -118,6 +127,8 @@ public final class Replay {
             stableSetup &= rd==setup.get("renderDistance").getAsInt()
                 && mc.getWindow().getWidth()==setup.get("framebufferWidth").getAsInt()
                 && mc.getWindow().getHeight()==setup.get("framebufferHeight").getAsInt()
+                && mc.gameRenderer.mainRenderTarget().width==setup.get("mainTargetWidth").getAsInt()
+                && mc.gameRenderer.mainRenderTarget().height==setup.get("mainTargetHeight").getAsInt()
                 && mc.options.enableVsync().get()==setup.get("vsync").getAsBoolean()
                 && mc.options.framerateLimit().get()==setup.get("maxFps").getAsInt();
             if(lastFrame!=0 && phase>=0) {
@@ -185,6 +196,8 @@ public final class Replay {
         JsonObject o=new JsonObject();
         o.addProperty("routeSha256",routeHash);o.addProperty("clock","wall-clock interpolation, not keyboard/physics playback");
         o.addProperty("framebufferWidth",mc.getWindow().getWidth());o.addProperty("framebufferHeight",mc.getWindow().getHeight());
+        o.addProperty("mainTargetWidth",mc.gameRenderer.mainRenderTarget().width);o.addProperty("mainTargetHeight",mc.gameRenderer.mainRenderTarget().height);
+        o.addProperty("worldTargetWidth",worldTargetWidth);o.addProperty("worldTargetHeight",worldTargetHeight);
         o.addProperty("renderDistance",mc.options.getEffectiveRenderDistance());o.addProperty("vsync",mc.options.enableVsync().get());
         o.addProperty("maxFps",mc.options.framerateLimit().get());o.addProperty("maxHeapBytes",Runtime.getRuntime().maxMemory());
         o.addProperty("java",System.getProperty("java.version"));o.addProperty("os",System.getProperty("os.name")+" "+System.getProperty("os.version"));

@@ -2,6 +2,6 @@
   "required": true,
   "package": "mcopt.replay.mixin",
   "compatibilityLevel": "JAVA_25",
-  "client": ["MinecraftReplayMixin", "ServerReplayMixin", "CameraReplayMixin"],
+  "client": ["MinecraftReplayMixin", "ServerReplayMixin", "CameraReplayMixin", "RenderTargetReplayMixin"],
   "injectors": {"defaultRequire": 1}
 }

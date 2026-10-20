@@ -24,6 +24,7 @@ PRISM = Path('/Applications/Prism Launcher.app/Contents/MacOS/prismlauncher')
 INSTANCES = Path.home() / 'Library/Application Support/PrismLauncher/instances'
 OWNER = 'mcopt-controlled-replay-v1'
 MARKER = '.mcopt-replay-owned.json'
+EXTRA_CONFIGS = ('config/renderscale.json5',)
 
 
 def digest(path):
@@ -56,7 +57,7 @@ def read_owner(game):
     if data.get('owner') != OWNER or Path(data['game']).resolve() != game.resolve():
         raise ValueError('Ownership marker mismatch; refusing cleanup')
     for relative in ('saves', 'saves/mcopt-replay', 'mcopt-replay-cache', 'mods', 'config',
-                     'config/mcopt.properties', 'options.txt', '.replay-active.json'):
+                     'config/mcopt.properties', 'options.txt', '.replay-active.json', *EXTRA_CONFIGS):
         if (game / relative).is_symlink():
             raise ValueError('Symlink in owned replay layout; refusing mutation')
     if (game.parent / 'instance.cfg').is_symlink():
@@ -175,6 +176,23 @@ def prepare(args):
             matches = list((source / '.minecraft/mods').glob(prefix + '*.jar'))
             if len(matches) != 1: raise ValueError('Expected one source mod for ' + prefix)
             shutil.copy2(matches[0], mods / matches[0].name)
+    extra_configs = {}
+    prefixes = set()
+    if args.graphics_from_source:
+        prefixes.update(('renderscale-', 'cloth-config-', 'fabric-api-'))
+        extra_configs['config/renderscale.json5'] = (source / '.minecraft/config/renderscale.json5').read_text()
+    for prefix in sorted(prefixes):
+        matches = list((source / '.minecraft/mods').glob(prefix + '*.jar'))
+        if len(matches) != 1: raise ValueError('Expected one source mod for ' + prefix)
+        shutil.copy2(matches[0], mods / matches[0].name)
+    # Only known graphics files are copied. Persist their exact inputs before every launch.
+    for relative in EXTRA_CONFIGS:
+        target = game / relative
+        if relative in extra_configs:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(extra_configs[relative])
+        elif target.exists():
+            target.unlink()
     config = game / 'config';config.mkdir(exist_ok=True)
     (config / 'mcopt.properties').write_text('''profile=indie
 mcopt.lod=true
@@ -193,13 +211,19 @@ mcopt.own.arena.reserveMaxMiB=512
     options = {'ao':'true','enableVsync':'true','maxFps':'60','renderDistance':'12','simulationDistance':'8','fov':'0.0',
         'fullscreen':'false','guiScale':'3','mipmapLevels':'2','pauseOnLostFocus':'false','soundCategory_master':'0.0',
         'tutorialStep':'none','onboardAccessibility':'false','showSubtitles':'false','inactivityFpsLimit':'afk'}
+    if args.graphics_from_source:
+        graphics_keys = ('ao', 'enableVsync', 'maxFps', 'renderDistance', 'simulationDistance', 'guiScale',
+            'mipmapLevels', 'particles', 'renderClouds', 'cloudRange', 'biomeBlendRadius', 'entityDistanceScaling',
+            'entityShadows', 'prioritizeChunkUpdates')
+        source_options = dict(line.split(':', 1) for line in (source / '.minecraft/options.txt').read_text().splitlines() if ':' in line)
+        options.update({k:source_options[k] for k in graphics_keys if k in source_options})
     (game / 'options.txt').write_text(''.join(k+':'+v+'\n' for k,v in options.items()))
     data = read_owner(game)
     data.update(fixture=str(fixture),fixtureSha256=tree_digest(fixture / 'world'),sourceVersion=version,java=java,
                 width=args.width,height=args.height,modset=args.modset,rendererJar=metal.name,
                 mods={p.name:digest(p) for p in sorted(mods.glob('*.jar'))},
                 controlledOptions=(game / 'options.txt').read_text(),
-                controlledConfig=(config / 'mcopt.properties').read_text())
+                controlledConfig=(config / 'mcopt.properties').read_text(), controlledExtraConfigs=extra_configs)
     write_json(game / MARKER, data)
     base_cfg = {'InstanceType':'OneSix','name':'mcopt controlled replay','iconKey':'default','OverrideJavaLocation':'true',
         'JavaPath':java,'OverrideJavaArgs':'true','OverrideMemory':'true','MinMemAlloc':'512','MaxMemAlloc':'4096',
@@ -233,6 +257,9 @@ def run(args):
     # Minecraft persists route FOV and defaults on exit. Restore identical input settings each time.
     (game / 'options.txt').write_text(data['controlledOptions'])
     (game / 'config/mcopt.properties').write_text(data['controlledConfig'])
+    for relative, content in data.get('controlledExtraConfigs', {}).items():
+        if relative not in EXTRA_CONFIGS: raise ValueError('Unexpected controlled graphics config')
+        (game / relative).write_text(content)
     output = args.output.expanduser().resolve();output.mkdir(parents=True, exist_ok=False)
     world = game / 'saves/mcopt-replay';world.mkdir(parents=True, exist_ok=True)
     birth = world.stat().st_birthtime
@@ -256,6 +283,7 @@ def run(args):
     cfg.write_text('\n'.join(lines)+'\nJvmArgs="'+' '.join(flags)+'"\n')
     manifest = dict(schema=1,case=args.case,rendererJar=data["rendererJar"],planSha256=digest(route),fixtureSha256=data['fixtureSha256'],mods=data['mods'],
         optionsSha256=digest(game / 'options.txt'),configSha256=digest(game / 'config/mcopt.properties'),
+        extraConfigSha256={relative:digest(game / relative) for relative in data.get('controlledExtraConfigs', {})},
         saveDirectoryBirthTime=birth,lodCacheFilesBefore=len(cache_files),lodCacheBytesBefore=sum(p.stat().st_size for p in cache_files),
         startedEpoch=time.time(),memoryBefore=memory_state(),instance=args.instance,
         note='Controlled wall-clock route/world/cache state; rendering, generation scheduling, filesystem/GPU caches and thermal state remain nondeterministic.')
@@ -369,8 +397,8 @@ def compare(args):
         manifest=json.loads((directory/'run.json').read_text());report=json.loads((directory/'report.json').read_text())
         phases=json.loads((directory/'phase-summary.json').read_text()) if (directory/'phase-summary.json').exists() else {'phases':[]}
         records.append((directory,manifest,report,{p['phase']:p for p in phases['phases']}))
-    keys=('planSha256','fixtureSha256','optionsSha256','configSha256')
-    setup_keys=('framebufferWidth','framebufferHeight','renderDistance','vsync','maxFps','maxHeapBytes','backend','gpu','java','os')
+    keys=('planSha256','fixtureSha256','optionsSha256','configSha256','extraConfigSha256')
+    setup_keys=('framebufferWidth','framebufferHeight','mainTargetWidth','mainTargetHeight','worldTargetWidth','worldTargetHeight','renderDistance','vsync','maxFps','maxHeapBytes','backend','gpu','java','os')
     reference=records[0]
     mismatches=[]
     for directory,manifest,report,_ in records[1:]:
@@ -411,6 +439,7 @@ def main():
     p.add_argument('--fixture',type=Path,required=True);p.add_argument('--metal',type=Path,required=True)
     p.add_argument('--harness',type=Path,default=ROOT/'replay/build/libs/replay-1.0.0-dev.jar')
     p.add_argument('--modset',choices=['minimal','c2me'],default='minimal')
+    p.add_argument('--graphics-from-source',action='store_true',help='Copy whitelisted graphics options plus RenderScale and its config/dependencies')
     p.add_argument('--width',type=int,default=2560);p.add_argument('--height',type=int,default=1380)
     p=sub.add_parser('run');p.add_argument('--instance',default='mcopt-replay-profile')
     p.add_argument('--plan',type=Path,default=ROOT/'tools/replay/overworld.json')
