@@ -1237,6 +1237,41 @@ static inline bool compOccupied(constant CompFrame& f, device const uint* geom, 
     return y < top;
 }
 
+// A wall's AO samples the same three columns at y-1, y and y+1. Decode each column's solid intervals once and test
+// the three heights together, preserving the scalar compOccupied rules used by tops and the surface walker.
+static inline bool3 compOccupiedTriplet(constant CompFrame& f, device const uint* geom, device const uint* crowns, int x, int z, int y) {
+    uint m = (1u << uint(f.origin.w)) - 1u;
+    uint idx = (uint(z) & m) << uint(f.origin.w) | (uint(x) & m), g = geom[idx];
+    int top = GEOM_Y(g);
+    int3 ys = int3(y - 1, y, y + 1);
+    if ((g & GEOM_VALID) == 0u || all(ys >= top) || (top == -512 && (g & GEOM_CROWN) == 0u)) return bool3(false);
+    bool3 below = ys < top;
+    if (!(f.quadDepth.w > 0.0)) return below;
+    uint cr = crowns[idx];
+    if ((g & GEOM_CROWN) != 0u && (cr & CROWN_SEGMENTED) != 0u) {
+        uint runs = crowns[uint(f.skyLight.w) + idx];
+        int ground = int(cr & 4095u) - 512;
+        int bottom = (cr & CROWN_BOUNDED) != 0u ? ground - int(max(1u, (g >> 25) & 127u)) : -100000;
+        bool3 occupied = bool3(ground > -512) & (ys >= bottom) & (ys < ground);
+        int base = top - GEOM_THICK(g);
+        for (uint k = 0u; k < 4u; k++) {
+            uint2 run = verticalRun(runs, top - base, k);
+            if (run.y == 0u) break;
+            occupied |= (ys >= base + int(run.x)) & (ys < base + int(run.y));
+        }
+        return occupied & below;
+    }
+    if ((cr & CROWN_BOUNDED) != 0u) {
+        int lower = int(cr & 4095u) - 512;
+        if ((g & GEOM_CROWN) == 0u) return (ys >= lower) & below;
+        uint bounds = crowns[uint(f.skyLight.w) + idx];
+        return (((ys >= int(bounds & 4095u) - 512) & (ys < lower))
+            | ((ys >= int((bounds >> 12) & 4095u) - 512) & below)) & below;
+    }
+    if ((g & GEOM_CROWN) != 0u) return ((ys < int(cr & 4095u) - 512) | (ys >= top - GEOM_THICK(g))) & below;
+    return below;
+}
+
 // Light in the column outside a particular wall. An air gap under a roof uses the lower surface's light, never the
 // roof's sunlit top. Block light fades vertically from the sampled surface; open-sky light stays constant above it.
 static inline bool compAirLight(constant CompFrame& f, device const uint* geom, device const uint* crowns, device const uint* texWords,
@@ -1552,10 +1587,11 @@ static inline bool compShade(constant CompFrame& f, uint2 v, device const uint* 
 #ifdef MESH_BENCH_NOAO
     bool belowFront = false, aboveFront = false, sideM = false, sideP = false, cMb = false, cPb = false, cMt = false, cPt = false;
 #else
-    bool belowFront = compOccupied(f, geom, crowns, ox, oz, b - 1), aboveFront = compOccupied(f, geom, crowns, ox, oz, b + 1);
-    bool sideM = compOccupied(f, geom, crowns, ox - ux, oz - uz, b), sideP = compOccupied(f, geom, crowns, ox + ux, oz + uz, b);
-    bool cMb = compOccupied(f, geom, crowns, ox - ux, oz - uz, b - 1), cPb = compOccupied(f, geom, crowns, ox + ux, oz + uz, b - 1);
-    bool cMt = compOccupied(f, geom, crowns, ox - ux, oz - uz, b + 1), cPt = compOccupied(f, geom, crowns, ox + ux, oz + uz, b + 1);
+    bool3 front = compOccupiedTriplet(f, geom, crowns, ox, oz, b);
+    bool3 minus = compOccupiedTriplet(f, geom, crowns, ox - ux, oz - uz, b);
+    bool3 plus = compOccupiedTriplet(f, geom, crowns, ox + ux, oz + uz, b);
+    bool belowFront = front.x, aboveFront = front.z, sideM = minus.y, sideP = plus.y;
+    bool cMb = minus.x, cPb = plus.x, cMt = minus.z, cPt = plus.z;
 #endif
     float a00 = compVertexAo(belowFront, sideM, cMb), a10 = compVertexAo(belowFront, sideP, cPb);
     float a01 = compVertexAo(aboveFront, sideM, cMt), a11 = compVertexAo(aboveFront, sideP, cPt);
@@ -1778,15 +1814,34 @@ kernel void lod_mesh_hz_clear(device uint* hz [[buffer(8)]], uint gid [[thread_p
     if (gid < uint(HZ_BINS)) hz[HZ_FARMIN + gid] = 0xFFFFFFFFu;
 }
 
-// The running maximum over the bands, per bin (after the block cull scattered the occluders).
-kernel void lod_mesh_hz_prefix(device uint* hz [[buffer(8)]], uint gid [[thread_position_in_grid]]) {
-    if (gid >= uint(HZ_BINS)) return;
-    uint m = 0u;
-    for (int k = 0; k < HZ_BANDS; k++) {
-        uint v = hz[gid * HZ_BANDS + uint(k)];
-        m = max(m, v);
-        hz[gid * HZ_BANDS + uint(k)] = m;
+// One SIMD group per azimuth bin: adjacent lanes read adjacent distance bands. The old one-thread-per-bin scan
+// serialized 128 dependent loads/stores per thread, with 512-byte strides between adjacent lanes' accesses.
+// Integer maxima preserve the exact ordered-float keys, including the zero sentinel; no horizon bounds change.
+static inline void hzPrefixBin(device uint* hz, uint bin, uint lane, uint width) {
+    uint carry = 0u;
+    for (uint base = 0u; base < uint(HZ_BANDS); base += width * 4u) {
+        uint band = base + lane * 4u;
+        uint4 v = band < uint(HZ_BANDS) ? *(device uint4*)&hz[bin * uint(HZ_BANDS) + band] : uint4(0u);
+        v.y = max(v.y, v.x);
+        v.z = max(v.z, v.y);
+        v.w = max(v.w, v.z);
+        uint m = v.w;
+        for (uint offset = 1u; offset < width; offset <<= 1u) {
+            uint previous = simd_shuffle_up(m, ushort(offset));
+            if (lane >= offset) m = max(m, previous);
+        }
+        uint previous = simd_shuffle_up(m, 1u);
+        v = max(v, max(carry, lane == 0u ? 0u : previous));
+        if (band < uint(HZ_BANDS)) *(device uint4*)&hz[bin * uint(HZ_BANDS) + band] = v;
+        carry = max(carry, simd_shuffle(m, ushort(width - 1u)));
     }
+}
+
+// The running maximum over the bands, per bin (after the block cull scattered the occluders).
+kernel void lod_mesh_hz_prefix(device uint* hz [[buffer(8)]], uint gid [[thread_position_in_grid]],
+                               uint lane [[thread_index_in_simdgroup]], uint width [[threads_per_simdgroup]]) {
+    uint bin = gid / width;
+    if (bin < uint(HZ_BINS)) hzPrefixBin(hz, bin, lane, width);
 }
 
 // For a footprint [lo, hi] (camera-relative xz): the elevation tangent under which every ray toward it is blocked by nearer
@@ -3665,14 +3720,10 @@ kernel void lod_pk_hz_clear(device uint* hz [[buffer(8)]], constant PkParams& pk
 }
 
 // The running maximum over the bands of the needed sectors' bins (the position pass; lod_mesh_hz_prefix does all of them).
-kernel void lod_pk_hz_prefix(device uint* hz [[buffer(8)]], constant PkParams& pk [[buffer(14)]], uint gid [[thread_position_in_grid]]) {
-    if (gid >= uint(HZ_BINS) || !pkBinIn(pk.needed, int(gid))) return;
-    uint m = 0u;
-    for (int k = 0; k < HZ_BANDS; k++) {
-        uint v = hz[gid * HZ_BANDS + uint(k)];
-        m = max(m, v);
-        hz[gid * HZ_BANDS + uint(k)] = m;
-    }
+kernel void lod_pk_hz_prefix(device uint* hz [[buffer(8)]], constant PkParams& pk [[buffer(14)]], uint gid [[thread_position_in_grid]],
+                             uint lane [[thread_index_in_simdgroup]], uint width [[threads_per_simdgroup]]) {
+    uint bin = gid / width;
+    if (bin < uint(HZ_BINS) && pkBinIn(pk.needed, int(bin))) hzPrefixBin(hz, bin, lane, width);
 }
 
 // A quad's footprint (camera-relative xz box of the position pass's camera) and its y range, from its words.

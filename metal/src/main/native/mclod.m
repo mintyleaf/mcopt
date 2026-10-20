@@ -427,6 +427,14 @@ double mcl_cull_time_read(LodCols *l, int slot) {
 	return ms;
 }
 
+// The prefix kernel assigns a complete SIMD group to each bin, including the position-keyed and live paths.
+// Query the pipeline's width rather than assuming Apple GPUs always use 32 lanes.
+static void meshHorizonPrefix(id<MTLComputeCommandEncoder> encoder, id<MTLComputePipelineState> pipeline) {
+	NSUInteger width = pipeline.threadExecutionWidth;
+	[encoder setComputePipelineState:pipeline];
+	[encoder dispatchThreads:MTLSizeMake(4096 * width, 1, 1) threadsPerThreadgroup:MTLSizeMake(width * 4, 1, 1)];
+}
+
 // The mesh's per-frame selection, in an encoder of its own in the pre command buffer: the block cull (blocks: threads, a
 // block of every level's window each), then every candidate quad (an indirect dispatch the block cull sizes), leaving the
 // draws' indirect arguments in args. args, inst, plantInst and survivors are GPU-only and hazard-tracked: the draws in
@@ -471,8 +479,7 @@ void mcl_mesh_cull(LodCols *l, Enc *enc, const void *frame, int frameLength, con
 		[c memoryBarrierWithScope:MTLBarrierScopeBuffers];
 		[c setComputePipelineState:l->meshFinishList];
 		[c dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
-		[c setComputePipelineState:l->hzPrefix];
-		[c dispatchThreads:MTLSizeMake(4096, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+		meshHorizonPrefix(c, l->hzPrefix);
 		[c memoryBarrierWithScope:MTLBarrierScopeBuffers];
 		[c setComputePipelineState:l->meshEmit];
 		[c dispatchThreadgroupsWithIndirectBuffer:args indirectBufferOffset:19 * 4 threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
@@ -647,8 +654,7 @@ int mcl_pk_cull(LodCols *l, Enc *enc, const void *frame, int frameLength, const 
 			[c memoryBarrierWithScope:MTLBarrierScopeBuffers];
 			[c setComputePipelineState:l->meshFinishList];
 			[c dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
-			[c setComputePipelineState:prefix];
-			[c dispatchThreads:MTLSizeMake(4096, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+			meshHorizonPrefix(c, prefix);
 			[c memoryBarrierWithScope:MTLBarrierScopeBuffers];
 			[c setComputePipelineState:emit];
 			[c dispatchThreadgroupsWithIndirectBuffer:B(3) indirectBufferOffset:19 * 4 threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
@@ -692,8 +698,7 @@ int mcl_pk_cull(LodCols *l, Enc *enc, const void *frame, int frameLength, const 
 			[c memoryBarrierWithScope:MTLBarrierScopeBuffers];
 			[c setComputePipelineState:l->meshFinishList];
 			[c dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
-			[c setComputePipelineState:l->hzPrefix];
-			[c dispatchThreads:MTLSizeMake(4096, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+			meshHorizonPrefix(c, l->hzPrefix);
 			[c memoryBarrierWithScope:MTLBarrierScopeBuffers];
 			[c setComputePipelineState:l->meshEmit];
 			[c dispatchThreadgroupsWithIndirectBuffer:B(14) indirectBufferOffset:19 * 4 threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
