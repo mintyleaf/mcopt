@@ -385,3 +385,12 @@ tasks.register('checkLodMeshResults', JavaExec) {
 			'-Dmcopt.lod.meshArenaInitialKiB=16', '-Dmcopt.lod.meshCopyBytes=1024'
 	}
 }
+
+['checkLodShading': 'pair', 'checkLodShadingGpu': 'gpu', 'checkLodShadingDirect': ''].each { taskName, mode ->
+	tasks.register(taskName, JavaExec) {
+		dependsOn 'metalChecksClasses'
+		classpath = sourceSets.metalChecks.runtimeClasspath
+		mainClass = 'mcopt.metal.lod.LodShadingChecks'
+		jvmArgs '--enable-native-access=ALL-UNNAMED', '-Xmx256M', '-Dmcopt.lod.publish=' + mode
+	}
+}

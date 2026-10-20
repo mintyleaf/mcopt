@@ -74,7 +74,9 @@ final class LodMesh implements LodClip.Listener {
 	private final int[][] builtNeighbors;
 	private final long[][] seq;
 	/** Per level, per slot: the clipmap slot's word version the installed mesh was requested at (LodClip.slotVer). */
-	private final long[][] builtVer;
+	private final long[][] builtVer, builtGeometry;
+	private final it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet shading = new it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet();
+	long shadingPublishes;
 	// the tile table: per level, per slot {mesh offset + 1 (0: none), tx, tz, 0}, copied each frame into a ring buffer
 	private final long tableBytes;
 	private final long tableHost;
@@ -98,6 +100,7 @@ final class LodMesh implements LodClip.Listener {
 	private static final int SCRATCH_LOG = 7, SCRATCH = 1 << SCRATCH_LOG;
 	final AtomicLong published = new AtomicLong(), seqRetries = new AtomicLong();
 	private final AtomicLong nextSeq = new AtomicLong();
+	private final java.util.concurrent.atomic.AtomicInteger activeJobs = new java.util.concurrent.atomic.AtomicInteger();
 	private final Thread[] workers;
 	private volatile boolean closed;
 	// stats
@@ -119,6 +122,7 @@ final class LodMesh implements LodClip.Listener {
 		this.seq = new long[clip.levels][slots];
 		this.builtNeighbors = new int[clip.levels][slots];
 		this.builtVer = new long[clip.levels][slots];
+		this.builtGeometry = new long[clip.levels][slots];
 		this.publishedVer = new long[clip.levels][slots];
 		for (long[] o : this.off) java.util.Arrays.fill(o, -1L);
 		for (long[] k : this.key) java.util.Arrays.fill(k, -1L);
@@ -156,10 +160,16 @@ final class LodMesh implements LodClip.Listener {
 	@Override
 	public void tilePut(int level, int tx, int tz, boolean refreshed) {
 		if (LodClip.PAIRS) LodClip.release(this.snaps.remove(LodTile.key(level, tx, tz)));
+		int slot=this.clip.slot(tx,tz), borders=this.clip.changedBorders[level][slot];
+		this.clip.changedBorders[level][slot]=0;
+		if(refreshed && this.reusableGeometry(level,tx,tz,this.clip.geometryVer[level][slot])) {
+			this.builtVer[level][slot]=this.clip.slotVer[level][slot];this.shadingPublishes++;return;
+		}
 		this.request(level, tx, tz);
 		// each neighbor's border walls toward this tile: built without it (skirts), or this tile's border cells changed
 		int[][] d = {{1, 0, 2}, {-1, 0, 1}, {0, 1, 8}, {0, -1, 4}};
 		for (int[] n : d) {
+			if (refreshed && (borders & (n[2]==2?1:n[2]==1?2:n[2]==8?4:8))==0) continue;
 			int nx = tx + n[0], nz = tz + n[1];
 			if (!this.clip.resident(level, nx, nz)) continue;
 			int ns = this.clip.slot(nx, nz);
@@ -171,6 +181,7 @@ final class LodMesh implements LodClip.Listener {
 	@Override
 	public void tileCleared(int level, int slot) {
 		this.jobs.cancel(level, slot);
+		this.shading.removeIf(k -> LodTile.levelOf(k)==level && this.clip.slot(LodTile.txOf(k),LodTile.tzOf(k))==slot);
 		this.drop(level, slot);
 		if (LodClip.PAIRS) this.snaps.forEach((key, sn) -> {
 			if (sn.level == level && this.clip.slot(sn.tx, sn.tz) == slot && this.snaps.remove(key, sn)) sn.release();
@@ -180,7 +191,30 @@ final class LodMesh implements LodClip.Listener {
 	@Override
 	public void tileStaged(LodClip.Snapshot snap) {
 		LodClip.release(this.snaps.put(LodTile.key(snap.level, snap.tx, snap.tz), snap.retain()));
-		this.request(snap.level, snap.tx, snap.tz);
+		long key=LodTile.key(snap.level,snap.tx,snap.tz);
+		if(this.reusableGeometry(snap.level,snap.tx,snap.tz,snap.geometryVersion))this.shading.add(key);
+		else {this.shading.remove(key);this.request(snap.level,snap.tx,snap.tz);}
+	}
+
+	private boolean reusableGeometry(int level,int tx,int tz,long version) {
+		int slot=this.clip.slot(tx,tz);long k=LodTile.key(level,tx,tz);
+		return this.installed(level,tx,tz) && this.builtGeometry[level][slot]==version && this.jobs.current(k,this.seq[level][slot]);
+	}
+
+	/** Publish shading against the existing mesh. No geometry job, native result, arena allocation or border invalidation. */
+	private void publishShading() {
+		var it=this.shading.iterator();
+		while(it.hasNext() && this.publishes<PUBLISH_BUDGET) {
+			long key=it.nextLong();it.remove();
+			LodClip.Snapshot snap=this.snaps.get(key);if(snap==null)continue;
+			int level=snap.level,slot=this.clip.slot(snap.tx,snap.tz);
+			if(!this.reusableGeometry(level,snap.tx,snap.tz,snap.geometryVersion)) {this.request(level,snap.tx,snap.tz);continue;}
+			if(this.clip.publish(snap)) {
+				this.publishedVer[level][slot]=snap.version;this.builtVer[level][slot]=this.clip.writing[level].get(slot);
+				this.publishes++;this.published.incrementAndGet();this.shadingPublishes++;
+			}
+			if(this.snaps.remove(key,snap))snap.release();
+		}
 	}
 
 	private void request(int level, int tx, int tz) {
@@ -203,6 +237,7 @@ final class LodMesh implements LodClip.Listener {
 				} catch (InterruptedException e) {
 					return;
 				}
+				this.activeJobs.incrementAndGet();
 				long k = job.key(), s = job.sequence(), ver = job.version();
 				int level = LodTile.levelOf(k), tx = LodTile.txOf(k), tz = LodTile.tzOf(k);
 				LodClip.Snapshot held = null;
@@ -263,6 +298,7 @@ final class LodMesh implements LodClip.Listener {
 					System.out.println("mcopt-lod: mesh job failed: " + e);
 				} finally {
 					LodClip.release(held);
+					this.activeJobs.decrementAndGet();
 				}
 			}
 		} finally {
@@ -349,6 +385,7 @@ final class LodMesh implements LodClip.Listener {
 
 	/** Once a frame before drawing: finished meshes go into the arena, freed ranges whose frames are done return. */
 	void integrate(long frame) {
+		this.publishes = 0;
 		this.clip.flushStaged();
 		this.advanceGrowth(frame);
 		while (!this.releaseLater.isEmpty() && frame - this.releaseLater.peek()[0] >= RING) {
@@ -359,11 +396,11 @@ final class LodMesh implements LodClip.Listener {
 		int budget = Math.min(256, this.results.size());
 		long bytes = 0;
 		long begin = System.nanoTime();
-		this.publishes = 0;
 		while (!this.requestLater.isEmpty() && this.requestLater.peek()[0] <= frame) {
 			long[] q = this.requestLater.poll();
 			if (this.clip.resident((int) q[1], (int) q[2], (int) q[3])) this.request((int) q[1], (int) q[2], (int) q[3]);
 		}
+		this.publishShading();
 		while (budget-- > 0) {
 			var result = this.results.poll();
 			if (result == null) break;
@@ -430,7 +467,8 @@ final class LodMesh implements LodClip.Listener {
 			this.install(frame, r, true, reuse);
 			int[][] d = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
 			for (int[] n : d) {
-				if (!this.clip.resident(level, tx + n[0], tz + n[1])) continue;
+				int bit=n[0]>0?1:n[0]<0?2:n[1]>0?4:8;
+				if ((snap.borderMask & bit)==0 || !this.clip.resident(level, tx + n[0], tz + n[1])) continue;
 				if (LodPublish.ON) this.requestLater.add(new long[] {frame + RING, level, tx + n[0], tz + n[1]});
 				else this.request(level, tx + n[0], tz + n[1]);
 			}
@@ -451,7 +489,7 @@ final class LodMesh implements LodClip.Listener {
 		long words = r[3];
 		if (reuse) {
 			// Lighting/color updates publish new words, but can keep the existing geometry and arena allocation.
-			this.seq[level][slot]=r[1];this.builtNeighbors[level][slot]=(int)r[4];this.builtVer[level][slot]=r[5];
+			this.seq[level][slot]=r[1];this.builtNeighbors[level][slot]=(int)r[4];this.builtVer[level][slot]=r[5];this.builtGeometry[level][slot]=this.clip.geometryVer[level][slot];
 			this.reusedMeshes++;
 			return;
 		}
@@ -480,6 +518,7 @@ final class LodMesh implements LodClip.Listener {
 		this.seq[level][slot] = r[1];
 		this.builtNeighbors[level][slot] = (int) r[4];
 		this.builtVer[level][slot] = r[5];
+		this.builtGeometry[level][slot] = this.clip.geometryVer[level][slot];
 		this.installed++;
 		long e = this.tableHost + ((long) level * this.tps * this.tps + slot) * 16;
 		MemoryUtil.memPutInt(e, (int) (at + 1));
@@ -719,7 +758,7 @@ final class LodMesh implements LodClip.Listener {
 	}
 
 	int pending() {
-		return this.jobs.size() + this.results.size();
+		return this.jobs.size() + this.results.size() + this.activeJobs.get() + this.requestLater.size() + this.shading.size();
 	}
 
 	void close() {
@@ -736,7 +775,7 @@ final class LodMesh implements LodClip.Listener {
 			catch (InterruptedException e) { interrupted = true; }
 		}
 		if (interrupted) Thread.currentThread().interrupt();
-		this.jobs.clear();
+		this.jobs.clear();this.shading.clear();
 		for (LodClip.Snapshot s : this.snaps.values()) s.release();
 		this.snaps.clear();
 		MemoryUtil.nmemFree(this.tableHost);

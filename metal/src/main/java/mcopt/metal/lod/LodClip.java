@@ -40,6 +40,10 @@ final class LodClip {
 	long version;
 	/** Per level, per slot: bumped whenever the slot's words change (written, refreshed, cleared). */
 	final long[][] slotVer;
+	/** Geometry identity is independent of shading/word publication revisions. */
+	final long[][] geometryVer;
+	final int[][] changedBorders;
+	private long geometrySerial;
 	/**
 	 * -Dmcopt.lod.publish=pair (mesh path): a resident tile's words never change under its installed mesh. Real chunks' cells go
 	 * to a staged copy of the tile; the mesh is built from a snapshot of it, and the snapshot's words are written into the
@@ -96,7 +100,8 @@ final class LodClip {
 		private final LodSnapshotPool pool;
 		private final LodSnapshotPool.Words words;
 		private final java.util.concurrent.atomic.AtomicInteger leases = new java.util.concurrent.atomic.AtomicInteger(1);
-		long version;
+		long version, geometryVersion;
+		int borderMask;
 		/** The slot's residency epoch it was staged in (a clear or a new put makes it void). */
 		long epoch;
 		/** Once handed to a mesh worker, this snapshot is immutable; further edits first copy it. */
@@ -144,6 +149,7 @@ final class LodClip {
 			if (this.tw != null) System.arraycopy(this.tw, 0, s.tw, 0, this.tw.length);
 			if (this.pl != null) System.arraycopy(this.pl, 0, s.pl, 0, this.pl.length);
 			s.version = this.version;
+			s.geometryVersion = this.geometryVersion; s.borderMask = this.borderMask;
 			s.epoch = this.epoch;
 			return s;
 		}
@@ -209,6 +215,8 @@ final class LodClip {
 		this.slotMax = new short[lv][this.tilesPerSide * this.tilesPerSide];
 		for (long[] k : this.slotKey) java.util.Arrays.fill(k, -1L);
 		this.slotVer = new long[lv][this.tilesPerSide * this.tilesPerSide];
+		this.geometryVer = new long[lv][this.tilesPerSide * this.tilesPerSide];
+		this.changedBorders = new int[lv][this.tilesPerSide * this.tilesPerSide];
 		this.epoch = new long[lv][this.tilesPerSide * this.tilesPerSide];
 		this.writing = new java.util.concurrent.atomic.AtomicLongArray[lv];
 		for (int l = 0; l < lv; l++) this.writing[l] = new java.util.concurrent.atomic.AtomicLongArray(this.tilesPerSide * this.tilesPerSide);
@@ -322,6 +330,7 @@ final class LodClip {
 		}
 		MemoryUtil.memPutShort(this.mip + (this.tileMaxOffset(level) + slot) * 2, (short) 0);
 		this.slotKey[level][slot] = -1L;
+		this.geometryVer[level][slot] = ++this.geometrySerial; this.changedBorders[level][slot] = 15;
 		this.slotVer[level][slot]++;
 		this.endWrite(level, slot);
 		this.version++;
@@ -355,6 +364,7 @@ final class LodClip {
 			this.gpuCopies.add(new GpuCopy(this.publisher.frame(),key,s));
 		}
 		else this.write(s.level, s.tx, s.tz, s.g, s.c, s.cr, s.tw, s.runs, s.pl);
+		this.geometryVer[s.level][this.slot(s.tx,s.tz)] = s.geometryVersion;
 		long key = LodTile.key(s.level, s.tx, s.tz);
 		Snapshot st = this.staged.get(key);
 		if (st != null && st.version == s.version) {
@@ -382,6 +392,7 @@ final class LodClip {
 		int[] tww = texture ? (tw != null ? tw : this.publishZeros) : null;
 		p.stage(level, tx, tz, gm, c, crw, crowns ? runs : null, tww, plant ? pl : null);
 		this.slotKey[level][s0] = LodTile.key(level, tx, tz);
+		this.geometryVer[level][s0] = ++this.geometrySerial; this.changedBorders[level][s0] = 15;
 		this.mips(level, tx, tz, g);
 		this.slotVer[level][s0]++;
 		this.version++;
@@ -422,6 +433,7 @@ final class LodClip {
 		}
 		int s = this.slot(tx, tz);
 		this.slotKey[level][s] = LodTile.key(level, tx, tz);
+		this.geometryVer[level][s] = ++this.geometrySerial; this.changedBorders[level][s] = 15;
 		this.mips(level, tx, tz, g);
 		this.slotVer[level][s]++;
 		this.version++;
@@ -533,6 +545,13 @@ final class LodClip {
 		this.beginWrite(level, ps);
 		long at = this.cellOffset(level, cx, cz) * 4;
 		boolean crowns = level < this.crownLevels;
+		if (geometryChanged(MemoryUtil.memGetInt(this.geom+at), crowns?MemoryUtil.memGetInt(this.crown+at):0,
+			crowns?MemoryUtil.memGetInt(this.crown+this.runsOffset()*4+at):0,
+			level==0&&this.plants?MemoryUtil.memGetInt(this.tex+this.levelWords*4+at):0,
+			level==0&&this.plants?MemoryUtil.memGetInt(this.tex+this.levelWords*8+at):0,
+			g, crowns?cr:0, crowns?runs:0, level==0&&this.plants?plantA:0, level==0&&this.plants?plantB:0)) {
+			this.geometryVer[level][ps]=++this.geometrySerial; this.changedBorders[level][ps]|=borderMask(cx,cz);
+		}
 		if (crowns) MemoryUtil.memPutInt(this.crown + this.runsOffset() * 4 + at, runs);
 		if (level == 0 && LodConfig.SURFACE_DATA) MemoryUtil.memPutInt(this.tex + at, tw);
 		if (level == 0 && LodConfig.LIGHTING) MemoryUtil.memPutInt(this.tex + this.levelWords * 12 + at, light);
@@ -548,6 +567,15 @@ final class LodClip {
 		MemoryUtil.memPutInt(this.color + at, c);
 		this.endWrite(level, ps);
 		return true;
+	}
+
+	/** Exactly the fields consumed by lodmesh.c: crown RGB/light and plant tint/texture IDs do not alter topology. */
+	static boolean geometryChanged(int g,int cr,int runs,int pa,int pb,int ng,int ncr,int nruns,int npa,int npb) {
+		return g!=ng || ((cr^ncr)&0x70000FFF)!=0 || runs!=nruns
+			|| ((pa&1023)==0) != ((npa&1023)==0) || ((pb^npb)&0x0FFF0000)!=0;
+	}
+	private static int borderMask(int x,int z) {
+		return ((x&63)==63?1:0)|((x&63)==0?2:0)|((z&63)==63?4:0)|((z&63)==0?8:0);
 	}
 
 	private boolean sameCell(int level,int cx,int cz,int g,int c,int cr,int tw,int runs,int pa,int pb,int light) {
@@ -577,6 +605,7 @@ final class LodClip {
 			s = new Snapshot(this.snapshotPool, level, tx, tz, crowns, level == 0 && LodConfig.SURFACE_DATA, level == 0 && this.plants);
 			this.read(level, tx, tz, s.g, s.c, s.cr, s.tw, s.runs, s.pl);
 			s.epoch = this.epoch[level][this.slot(tx, tz)];
+			s.geometryVersion = this.geometryVer[level][this.slot(tx,tz)];
 			this.staged.put(key, s);
 		} else if (s.shared) {
 			Snapshot previous = s;
@@ -585,6 +614,10 @@ final class LodClip {
 			previous.release();
 		}
 		int i = (cz - tz * TILE) * TILE + (cx - tx * TILE);
+		if (geometryChanged(s.g[i], s.cr==null?0:s.cr[i], s.runs==null?0:s.runs[i], s.pl==null?0:s.pl[i], s.pl==null?0:s.pl[TILE*TILE+i],
+			g, crowns?cr:0, crowns?runs:0, s.pl==null?0:plantA, s.pl==null?0:plantB)) {
+			s.geometryVersion=++this.geometrySerial; s.borderMask|=borderMask(cx,cz);
+		}
 		if (crowns) s.runs[i] = runs;
 		if (s.tw != null) {
 			s.tw[i] = tw;
