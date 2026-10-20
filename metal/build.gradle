@@ -346,3 +346,9 @@ tasks.register('checkLodWaterColors', JavaExec) {
 		if (mode) jvmArgs "-Dmcopt.lod.publish=${mode}"
 	}
 }
+
+tasks.register('checkLodMeshRequests', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.lod.LodMeshRequestChecks'
+}

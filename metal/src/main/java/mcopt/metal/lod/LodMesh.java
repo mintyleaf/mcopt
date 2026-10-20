@@ -5,7 +5,6 @@ import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.atomic.AtomicLong;
 import org.jspecify.annotations.Nullable;
 import org.lwjgl.system.MemoryUtil;
@@ -73,8 +72,6 @@ final class LodMesh implements LodClip.Listener {
 	private final long[][] seq;
 	/** Per level, per slot: the clipmap slot's word version the installed mesh was requested at (LodClip.slotVer). */
 	private final long[][] builtVer;
-	/** Per tile key: the word version at its latest request (render thread writes, workers read). */
-	private final ConcurrentHashMap<Long, Long> reqVer = new ConcurrentHashMap<>();
 	// the tile table: per level, per slot {mesh offset + 1 (0: none), tx, tz, 0}, copied each frame into a ring buffer
 	private final long tableBytes;
 	private final long tableHost;
@@ -83,8 +80,7 @@ final class LodMesh implements LodClip.Listener {
 	private static final int MAX_LISTED = 1 << 16;
 	final long frame = MemoryUtil.nmemCalloc(1, FRAME_BYTES);
 	// meshing
-	private final LinkedBlockingDeque<long[]> jobs = new LinkedBlockingDeque<>();
-	private final ConcurrentHashMap<Long, Long> queued = new ConcurrentHashMap<>();
+	private final LodMeshRequests jobs;
 	private final ConcurrentLinkedQueue<long[]> results = new ConcurrentLinkedQueue<>();
 	/** PAIRS: the latest staged snapshot per tile key, waiting for a mesh job (render thread puts, workers read). */
 	private final ConcurrentHashMap<Long, LodClip.Snapshot> snaps = new ConcurrentHashMap<>();
@@ -114,6 +110,7 @@ final class LodMesh implements LodClip.Listener {
 		this.ctx = ctx;
 		this.clip = clip;
 		this.tps = clip.tilesPerSide;
+		this.jobs = new LodMeshRequests(clip.levels, this.tps);
 		int slots = this.tps * this.tps;
 		this.off = new long[clip.levels][slots];
 		this.len = new long[clip.levels][slots];
@@ -172,6 +169,7 @@ final class LodMesh implements LodClip.Listener {
 
 	@Override
 	public void tileCleared(int level, int slot) {
+		this.jobs.cancel(level, slot);
 		this.drop(level, slot);
 		if (LodClip.PAIRS) this.snaps.forEach((key, sn) -> {
 			if (sn.level == level && this.clip.slot(sn.tx, sn.tz) == slot && this.snaps.remove(key, sn)) sn.release();
@@ -185,11 +183,8 @@ final class LodMesh implements LodClip.Listener {
 	}
 
 	private void request(int level, int tx, int tz) {
-		long k = LodTile.key(level, tx, tz);
-		long s = this.nextSeq.incrementAndGet();
-		this.reqVer.put(k, this.clip.slotVer[level][this.clip.slot(tx, tz)]);
-		if (this.queued.put(k, s) != null) return;
-		this.jobs.add(new long[] {k});
+		if (!this.clip.resident(level, tx, tz)) return;
+		this.jobs.offer(level, tx, tz, this.nextSeq.incrementAndGet(), this.clip.slotVer[level][this.clip.slot(tx, tz)]);
 	}
 
 	// ---- meshing (workers) ----
@@ -201,16 +196,13 @@ final class LodMesh implements LodClip.Listener {
 		long scratch = LodClip.PAIRS ? MemoryUtil.nmemCalloc(5L * SCRATCH * SCRATCH, 4) : 0;
 		try {
 			while (!this.closed) {
-				long[] job;
+				LodMeshRequests.Request job;
 				try {
 					job = this.jobs.take();
 				} catch (InterruptedException e) {
 					return;
 				}
-				long k = job[0];
-				Long s = this.queued.remove(k);
-				if (s == null) continue;
-				Long ver = this.reqVer.get(k);
+				long k = job.key(), s = job.sequence(), ver = job.version();
 				int level = LodTile.levelOf(k), tx = LodTile.txOf(k), tz = LodTile.tzOf(k);
 				LodClip.Snapshot held = null;
 				try {
@@ -230,7 +222,7 @@ final class LodMesh implements LodClip.Listener {
 						long v = this.copyRegion(scratch, level, tx, tz, snap, crowns, plants);
 						if (v < 0) {
 							// the render thread kept writing: try again later
-							this.request(level, tx, tz);
+							this.jobs.retry(job);
 							continue;
 						}
 						ver = v;
@@ -252,7 +244,7 @@ final class LodMesh implements LodClip.Listener {
 					this.meshed.incrementAndGet();
 					this.meshQuads.addAndGet(n);
 					if (snap != null) this.resultSnaps.put(block, snap);
-					this.results.add(new long[] {k, s, block, words, neighbors, ver != null ? ver : -1});
+					this.results.add(new long[] {k, s, block, words, neighbors, ver});
 					held = null; // The result now owns the worker's lease through deferred installation.
 				} catch (RuntimeException e) {
 					System.out.println("mcopt-lod: mesh job failed: " + e);
