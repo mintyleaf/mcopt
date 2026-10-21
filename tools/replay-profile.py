@@ -24,7 +24,7 @@ PRISM = Path('/Applications/Prism Launcher.app/Contents/MacOS/prismlauncher')
 INSTANCES = Path.home() / 'Library/Application Support/PrismLauncher/instances'
 OWNER = 'mcopt-controlled-replay-v1'
 MARKER = '.mcopt-replay-owned.json'
-EXTRA_CONFIGS = ('config/renderscale.json5',)
+EXTRA_CONFIGS = ('config/renderscale.json5', 'config/litematica.json', 'config/malilib.json')
 
 
 def digest(path):
@@ -141,6 +141,8 @@ def validate_plan(path):
 
 
 def prepare(args):
+    if args.overlay_only and args.modset != 'litematica':
+        raise ValueError('--overlay-only requires --modset litematica')
     source = args.source.expanduser().resolve()
     instance = INSTANCES / args.instance
     if Path(args.instance).name != args.instance or args.instance in {'.', '..'}:
@@ -178,6 +180,17 @@ def prepare(args):
             shutil.copy2(matches[0], mods / matches[0].name)
     extra_configs = {}
     prefixes = set()
+    if args.modset == 'litematica':
+        prefixes.update(('litematica-', 'malilib-', 'fabric-api-'))
+        original = json.loads((source / '.minecraft/config/litematica.json').read_text())
+        overlay = {key:original[key] for key in ('Colors', 'Visuals')}
+        for key in ('enableAreaSelectionBoxesRendering', 'enablePlacementBoxesRendering'):
+            overlay['Visuals'][key] = {'enabled':False,'hotkey':{'keys':''}}
+        if args.overlay_only:
+            for key in ('enableSchematicBlocksRendering', 'enableSchematicFluidRendering'):
+                overlay['Visuals'][key] = {'enabled':False,'hotkey':{'keys':''}}
+        extra_configs['config/litematica.json'] = json.dumps(overlay, indent=2) + '\n'
+        extra_configs['config/malilib.json'] = '{}\n'
     if args.graphics_from_source:
         prefixes.update(('renderscale-', 'cloth-config-', 'fabric-api-'))
         extra_configs['config/renderscale.json5'] = (source / '.minecraft/config/renderscale.json5').read_text()
@@ -207,6 +220,8 @@ mcopt.own.arena.remember=false
 mcopt.own.arena.initialMiB=512
 mcopt.own.arena.reserveMaxMiB=512
 '''+ 'mcopt.lod.cacheDir=' + str(game / 'mcopt-replay-cache') + '\n')
+    if args.overlay_only:
+        with (config / 'mcopt.properties').open('a') as stream: stream.write('mcopt.lod=false\n')
     # Whitelisted options only; no servers, keybinds, resource packs, accounts or personal worlds copied.
     options = {'ao':'true','enableVsync':'true','maxFps':'60','renderDistance':'12','simulationDistance':'8','fov':'0.0',
         'fullscreen':'false','guiScale':'3','mipmapLevels':'2','pauseOnLostFocus':'false','soundCategory_master':'0.0',
@@ -217,6 +232,7 @@ mcopt.own.arena.reserveMaxMiB=512
             'entityShadows', 'prioritizeChunkUpdates')
         source_options = dict(line.split(':', 1) for line in (source / '.minecraft/options.txt').read_text().splitlines() if ':' in line)
         options.update({k:source_options[k] for k in graphics_keys if k in source_options})
+    if args.overlay_only: options.update(hideGui='true', renderClouds='"false"', maxFps='60')
     (game / 'options.txt').write_text(''.join(k+':'+v+'\n' for k,v in options.items()))
     data = read_owner(game)
     data.update(fixture=str(fixture),fixtureSha256=tree_digest(fixture / 'world'),sourceVersion=version,java=java,
@@ -438,7 +454,8 @@ def main():
     p.add_argument('--source',type=Path,required=True);p.add_argument('--instance',default='mcopt-replay-profile')
     p.add_argument('--fixture',type=Path,required=True);p.add_argument('--metal',type=Path,required=True)
     p.add_argument('--harness',type=Path,default=ROOT/'replay/build/libs/replay-1.0.0-dev.jar')
-    p.add_argument('--modset',choices=['minimal','c2me'],default='minimal')
+    p.add_argument('--modset',choices=['minimal','c2me','litematica'],default='minimal')
+    p.add_argument('--overlay-only',action='store_true',help='With litematica modset, isolate colored overlays: disable LOD/ghost blocks, boxes, HUD and clouds; cap60FPS')
     p.add_argument('--graphics-from-source',action='store_true',help='Copy whitelisted graphics options plus RenderScale and its config/dependencies')
     p.add_argument('--width',type=int,default=2560);p.add_argument('--height',type=int,default=1380)
     p=sub.add_parser('run');p.add_argument('--instance',default='mcopt-replay-profile')

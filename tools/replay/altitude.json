@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "seed": 12345,
+  "warmupSeconds": 20,
+  "maximize": true,
+  "phases": [
+    {"name":"low","seconds":6,"from":[0,140,0],"to":[0,140,0],"yaw":-90,"pitch":12,"fov":70},
+    {"name":"climb","seconds":6,"from":[0,140,0],"to":[0,320,0],"yaw":-90,"pitch":12,"fov":70},
+    {"name":"high","seconds":14,"from":[0,320,0],"to":[0,320,0],"yaw":-90,"pitch":12,"fov":70},
+    {"name":"zoom_high","seconds":6,"from":[0,320,0],"to":[0,320,0],"yaw":-90,"pitch":12,"fov":30},
+    {"name":"descend","seconds":6,"from":[0,320,0],"to":[0,140,0],"yaw":-90,"pitch":12,"fov":70},
+    {"name":"low_again","seconds":6,"from":[0,140,0],"to":[0,140,0],"yaw":-90,"pitch":12,"fov":70}
+  ]
+}

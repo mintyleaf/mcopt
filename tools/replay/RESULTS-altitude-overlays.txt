@@ -1,0 +1,76 @@
+Altitude detail and Litematica overlay validation -- 2026-10-21
+=============================================================
+
+Runtime changes are independent commits:
+  d6bce3f perf(lod): adapt detail to terrain clearance
+  6632ad7 perf(compat): batch Litematica overlay passes
+
+Machine / controls
+------------------
+Apple M3 MacBook Air, 8 GiB RAM; Java 25, Minecraft 26.3, Metal.
+4 GiB ZGC heap, render distance 12, VSync, 60 FPS cap. Maximized window:
+5120x2762 framebuffer, 3840x2071 world target (RenderScale 0.75).
+Fresh copies of the same seed-12345 world fixture and empty LOD caches;
+same harness, source graphics settings, configs and supporting mods.
+These are interpolated camera routes, not keyboard/elytra physics replays.
+The controlled fixtures and profiler are development tools, not release mods.
+
+Baseline: fork.3; candidate: fork.4. Two valid runs of each per fixture.
+Input comparisons found no mismatches. Overlay runs used ABBA order;
+altitude repetitions were interleaved with overlay runs. Early exploratory/smoke runs
+were excluded from the measurements below. Background terrain generation,
+scene readiness, thermal conditions and OS scheduling remain variable.
+
+High-altitude route
+-------------------
+Median main GPU command-buffer span (ms), stationary high phase:
+                   run 1    run 2
+  fork.3           21.45    17.68
+  fork.4           14.16    11.42
+
+Frame interval p95 (ms), same phase:
+  fork.3           38.92    22.01
+  fork.4           16.83    18.08
+
+Detail telemetry settled near 0.64 of the original fine radius; zoom and
+descent restored 1.0. The horizon reach remained unchanged. GPU spans
+measure scheduled command-buffer duration, not GPU utilization or time
+attributable solely to LODs. The result supports reduced high-view cost,
+but does not establish a general FPS gain or guarantee a 60 FPS budget.
+Descent still had CPU/generation stalls; one candidate descent was slower
+than either baseline. This change does not resolve every flight hitch.
+
+Colored schematic overlay fixture
+---------------------------------
+Litematica 0.29.1 / MaLiLib 0.30.2. Synthetic 96x24x96 schematic across
+36 chunks, with roof/wall/stair geometry and wrong/extra real blocks.
+Only colored faces/outlines enabled; LODs and ghost blocks disabled.
+Median overlay caller CPU wall duration (ms):
+                   run 1    run 2
+  fork.3            0.254    0.338
+  fork.4            0.158    0.129
+
+Every measured candidate frame submitted 66 original draws in 2 passes,
+with one flush and successful completion. Frame medians remained near
+16.7 ms under the cap; no GPU-time improvement is claimed for this case.
+Small-window schematic image regions were identical. Maximized regions
+differed by 5 pixels at intensity <=1, including the repeated baseline:
+within the measured baseline variation. Transparent draw order is kept.
+
+Checks / compatibility
+----------------------
+Policy and real Metal tier-selector checks cover 532480 ownership cases,
+normal/position-keyed paths, zoom and protected full-terrain handoff.
+Scheduler checks verify immutable switch-distance snapshots for workers.
+Overlay checks cover ordered uniforms/draws, bounded queues, target and
+pipeline boundaries, nested calls, exception recovery, real protected
+accessor linking, and rejection of unknown renderer bodies.
+Projection, survivor, handoff, fog, water, surface/cache, dimension,
+shading, pipeline and settings regression checks passed; release built.
+Replay cleanup tests cover all copied config paths, including symlinks.
+
+Combined smoke testing also loaded LODs, Litematica, RenderScale,
+Atmospherics 2.6.7 and the separate Atmospherics Fixes 0.1.0 companion.
+The fog hook and overlay batch were active. That smoke test is separate
+from the performance comparison above. Atmospherics compatibility stays
+in the companion project; no Atmospherics-specific patch is added here.

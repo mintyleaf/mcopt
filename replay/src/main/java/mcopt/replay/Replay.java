@@ -36,6 +36,9 @@ public final class Replay {
     private static volatile boolean serverReady;
     private static volatile boolean loaded,finished;
     private static boolean opened,started;
+    private static boolean schematicFixture,captureImage,captureRequested;
+    private static volatile boolean captureFinished;
+    private static volatile Exception captureError;
     private static double warmup,total;
     private static long startedAt,measureAt,lastFrame;
     private static int phase=-1,frames,lastFov=-1;
@@ -55,6 +58,9 @@ public final class Replay {
 
     @Name("mcopt.ReplayPhase") @Label("Controlled replay phase") @Category("mcopt") @StackTrace(false)
     static final class Marker extends Event { String phase,routeSha256; }
+    @Name("mcopt.ReplayOverlay") @Label("Schematic overlay CPU scope") @Category("mcopt") @StackTrace(false)
+    static final class OverlaySample extends Event { }
+    public static Event overlaySample() { return ON && !finished ? new OverlaySample() : null; }
 
     private Replay() { }
     /** Sample inside renderLevel, after render-scaling mods take over and before they restore the UI target. */
@@ -70,6 +76,9 @@ public final class Replay {
         if(!Files.isRegularFile(owned)) throw new IllegalStateException("Replay requires a marker-owned disposable instance");
         byte[] bytes=Files.readAllBytes(Path.of(PLAN));
         JsonObject plan=JsonParser.parseString(new String(bytes,StandardCharsets.UTF_8)).getAsJsonObject();
+        schematicFixture=plan.has("schematicFixture") && plan.get("schematicFixture").getAsBoolean();
+        captureImage=plan.has("captureImage") && plan.get("captureImage").getAsBoolean();
+        if(plan.has("maximize") && plan.get("maximize").getAsBoolean())org.lwjgl.sdl.SDLVideo.SDL_MaximizeWindow(mc.getWindow().handle());
         if(plan.get("schema").getAsInt()!=1) throw new IllegalArgumentException("Unsupported route schema");
         warmup=plan.get("warmupSeconds").getAsDouble();
         if(!Double.isFinite(warmup)||warmup<3||warmup>120) throw new IllegalArgumentException("warmupSeconds must be 3..120");
@@ -110,7 +119,13 @@ public final class Replay {
                 return;
             }
             long now=System.nanoTime();
+            if(captureRequested) {
+                if(captureError!=null)throw captureError;
+                if(captureFinished)finish(mc,null);
+                return;
+            }
             if(!started) {
+                if(schematicFixture)SchematicFixture.load(output);
                 started=true;startedAt=now;measureAt=now+(long)(warmup*1e9);
                 setup=setup(mc);
                 JsonObject capture=new JsonObject();capture.addProperty("label","controlled_replay");capture.addProperty("pid",ProcessHandle.current().pid());
@@ -143,7 +158,18 @@ public final class Replay {
             for(;selected<segments.size();selected++) {
                 Segment s=segments.get(selected);if(elapsed<offset+s.seconds)break;offset+=s.seconds;
             }
-            if(selected==segments.size()) { finish(mc,null);return; }
+            if(selected==segments.size()) {
+                if(captureImage) {
+                    if(marker!=null){marker.end();marker.commit();marker=null;}
+                    captureRequested=true;lastFrame=0;
+                    net.minecraft.client.Screenshot.takeScreenshot(mc.gameRenderer.mainRenderTarget(),image->{
+                        try {image.writeToFile(output.resolve("view.png"));}
+                        catch(Exception e){captureError=e;}
+                        finally {image.close();captureFinished=true;}
+                    });
+                } else finish(mc,null);
+                return;
+            }
             if(selected!=phase) {
                 if(marker!=null) {marker.end();marker.commit();}
                 phase=selected;marker=new Marker();marker.phase=segments.get(phase).name;marker.routeSha256=routeHash;marker.begin();
@@ -171,6 +197,7 @@ public final class Replay {
         Pose p=target;
         for(var player:level.players()) {
             if(!serverReady) {
+                if(schematicFixture)SchematicFixture.populate(level);
                 player.setGameMode(GameType.SPECTATOR);
                 level.getServer().getGameRules().set(GameRules.ADVANCE_TIME,false,level.getServer());
                 level.getServer().getGameRules().set(GameRules.ADVANCE_WEATHER,false,level.getServer());
@@ -188,7 +215,8 @@ public final class Replay {
         recording=new Recording(Configuration.getConfiguration("profile"));
         for(String event:List.of("mcopt.ReplayPhase","mcopt.MetalOperation","mcopt.MetalCommandBuffer","mcopt.MetalPresentation",
                 "mcopt.MetalDrawable","mcopt.MetalPipelineCompile","mcopt.OwnArenaGrowth","mcopt.LodArenaGrowth","mcopt.OwnArenaAllocation",
-                "mcopt.LodScheduling","mcopt.LodCaptureQueue","mcopt.LodClientCapture"))recording.enable(event).withoutStackTrace();
+                "mcopt.LodScheduling","mcopt.LodCaptureQueue","mcopt.LodClientCapture","mcopt.LodDetail",
+                "mcopt.LitematicaOverlayBatch","mcopt.ReplayOverlay"))recording.enable(event).withoutStackTrace();
         recording.disable("mcopt.MetalGpuPass");
         recording.setDestination(output.resolve("recording.jfr"));recording.setDumpOnExit(true);recording.start();
     }

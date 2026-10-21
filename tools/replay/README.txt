@@ -74,6 +74,36 @@ Setup (from repository root)
    a climb from Y=180 to Y=320, descent, and stopping with zoom. It is currently an
    Overworld route; the server hook does not replay Nether/End dimension changes.
 
+Optional altitude and overlay fixtures
+--------------------------------------
+
+altitude.json holds the same X/Z while climbing, viewing/zooming high terrain and
+descending. "maximize":true maximizes the owned game window through SDL before
+warmup; recorded framebuffer/world-target sizes still determine comparability.
+Use --graphics-from-source to retain the pack's RenderScale setting (e.g.0.75).
+
+For litematica.json, prepare with --modset litematica --overlay-only. This copies
+Litematica, MaLiLib and Fabric API, plus only the source's Colors/Visuals config;
+no personal schematics, placements or world data are copied. The source instance
+must have those mods/config installed. Add --graphics-from-source for RenderScale.
+--overlay-only disables LOD/ghost blocks, selection/placement boxes, HUD and clouds
+and caps60FPS to isolate colored faces/outlines. The config input hash is checked.
+
+The opt-in "schematicFixture":true route creates a synthetic96x24x96 schematic
+across36 chunks, with walls, roof and stair models. The disposable server places
+small wrong/extra block markers; the client clears only its disposable placement
+manager and loads exactly this fixture. Never point this development harness at
+your normal game. Fixture creation occurs before warmup. "captureImage":true
+writes view.png after measurement, then waits for the GPU readback before exit.
+Compare the schematic region rather than moving entities/terrain readiness in
+the rest of the image. The optional replay overlay timer samples the caller, so
+it does not change renderer bodies inspected by compatibility guards.
+
+JFR adds mcopt.ReplayOverlay (CPU wall duration), mcopt.LitematicaOverlayBatch
+(draw/pass/flush counts and CPU scope) and mcopt.LodDetail (scale, fine radius,
+clearance and projected pixels per radian). Inspect these separately from total
+frame intervals; CPU scopes and GPU command-buffer spans are different metrics.
+
 Cache cases
 -----------
 

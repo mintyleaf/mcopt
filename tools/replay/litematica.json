@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "seed": 12345,
+  "warmupSeconds": 20,
+  "maximize": true,
+  "schematicFixture": true,
+  "captureImage": true,
+  "phases": [
+    {"name":"overlay_static","seconds":10,"from":[-96,260,-96],"to":[-96,260,-96],"yaw":-45,"pitch":15,"fov":70}
+  ]
+}
