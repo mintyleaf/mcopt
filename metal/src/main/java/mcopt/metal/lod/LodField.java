@@ -985,6 +985,15 @@ final class LodField {
 
 	long frame;
 	private boolean dirty = true;
+	private boolean detailDirty;
+	private long detailScanAt;
+	/** Render-tier changes need a fresh priority scan even when the camera has stopped. */
+	void detailChanged() { this.detailDirty = true; }
+	private void detailForScan(long now) {
+		if (this.detailDirty && now >= this.detailScanAt) {
+			this.dirty = true; this.detailDirty = false; this.detailScanAt = now + 250_000_000L;
+		}
+	}
 	private double reqX = Double.NaN, reqZ;
 	private long nextCaptureSample;
 
@@ -1005,6 +1014,7 @@ final class LodField {
 	 * moved a few blocks or tiles arrived.
 	 */
 	void update(double cx, double cz, FrustumIntersection frustum, double camY) {
+		this.detailForScan(System.nanoTime());
 		boolean moved = this.clip.recenter(cx, cz);
 		for (int l = 0; l < this.clip.levels; l++) {
 			this.winTx[l] = this.clip.winTx[l];
@@ -1106,6 +1116,7 @@ final class LodField {
 		this.lastX = cx;
 		this.lastZ = cz;
 		this.lastT = now;
+		this.detailForScan(now);
 		boolean moved = this.clip.recenter(cx, cz);
 		for (int l = 0; l < this.clip.levels; l++) {
 			this.winTx[l] = this.clip.winTx[l];
@@ -1136,12 +1147,13 @@ final class LodField {
 		this.reqX = cx;
 		this.reqZ = cz;
 		int[] wx = this.winTx.clone(), wz = this.winTz.clone();
+		float[] switches = this.clip.switchDist.clone();
 		org.joml.Matrix4f vp = new org.joml.Matrix4f(viewProj);
 		LodSeam.ChunkMask masked = maskSnapshot.get();
 		double px = cx + this.velX, pz = cz + this.velZ;
 		this.scanner.execute(() -> {
 			try {
-				this.scanResult = this.scanScreen(cx, cz, camY, px, pz, vp, wx, wz, masked);
+				this.scanResult = this.scanScreen(cx, cz, camY, px, pz, vp, wx, wz, switches, masked);
 			} catch (RuntimeException e) {
 				System.out.println("mcopt-lod: scan failed: " + e);
 			} finally {
@@ -1151,7 +1163,7 @@ final class LodField {
 	}
 
 	private ScanResult scanScreen(double cx, double cz, double camY, double px, double pz, org.joml.Matrix4f viewProj, int[] winTx, int[] winTz,
-		LodSeam.ChunkMask masked) {
+		float[] switches, LodSeam.ChunkMask masked) {
 		FrustumIntersection frustum = new FrustumIntersection(viewProj, false);
 		double reach = LodConfig.reachBlocks();
 		int needed = 0, missing = 0;
@@ -1164,8 +1176,8 @@ final class LodField {
 		boolean fast = Math.hypot(px - cx, pz - cz) > 8;
 		for (int l = 0; l <= top; l++) {
 			int span = this.clip.span(l);
-			double inner = l == 0 || l == top ? -1 : this.clip.switchDist[l - 1] - span;
-			double outer = Math.min(this.clip.switchDist[l] + span, reach + span);
+			double inner = l == 0 || l == top ? -1 : switches[l - 1] - span;
+			double outer = Math.min(switches[l] + span, reach + span);
 			for (int z = 0; z < this.clip.tilesPerSide; z++) {
 				for (int x = 0; x < this.clip.tilesPerSide; x++) {
 					int tx = winTx[l] + x, tz = winTz[l] + z;

@@ -55,6 +55,7 @@ public final class Lod {
 			lines.addAll(l.field.debugLines());
 			lines.add("LOD capture input: " + l.captureLoads.size() + " loads, " + l.edited.size() + " edits/light updates");
 			if (l.mesh != null) lines.add(String.format(java.util.Locale.ROOT, "LOD mesh: %d pending, %.0f/%.0f MiB arena", l.mesh.pending(), l.mesh.usedMb(), l.mesh.arenaMb()));
+			if (l.clip != null) lines.add(String.format(java.util.Locale.ROOT, "LOD detail: %.0f%% fine radius (%.0f blocks)", l.altitudeScale * 100, l.clip.switchDist[0]));
 			l.debug = java.util.List.copyOf(lines);
 		}
 		return l.debug;
@@ -96,6 +97,10 @@ public final class Lod {
 	private volatile @Nullable Object worldOwner;
 	private int cavernY = LodCaverns.NONE;
 	private final LodCaverns.Selection cavernSelection = new LodCaverns.Selection();
+	private final LodAltitudeQuality altitudeQuality = new LodAltitudeQuality();
+	private double altitudeSurface = Double.NaN, altitudeX, altitudeZ;
+	private long altitudeSampleAt;
+	private float altitudeScale = 1;
 	private double reach;
 	/** -Dmcopt.lod.seam=DIR: the transition probe (LodSeam), else null. */
 	private final @Nullable LodSeam seam;
@@ -446,6 +451,10 @@ public final class Lod {
 		this.captureLoads.clear();
 		this.captureFreshness.clear();
 		this.handoff.reset();
+		this.altitudeQuality.reset();
+		this.altitudeSurface = Double.NaN;
+		this.altitudeSampleAt = 0;
+		this.altitudeScale = 1;
 		this.handoffOn = false;
 		this.worldOwner = owner;
 		this.cavernY = view;
@@ -566,6 +575,7 @@ public final class Lod {
 				if (pub != null) pub.encode(enc, clip);
 				this.partNanos[3] += System.nanoTime() - t3;
 			}
+			this.updateAltitudeDetail(mc, clip, height, rd, start);
 			int columns = this.packFrames(clip, width, height, rd);
 			LodMesh mesh = this.mesh;
 			if (columns > 0 && mesh != null) {
@@ -628,6 +638,41 @@ public final class Lod {
 	}
 
 	private long settledFrame = -1;
+
+	private void updateAltitudeDetail(Minecraft mc, LodClip clip, int height, int rd, long now) {
+		ClientLevel level = mc.level;
+		if (now >= this.altitudeSampleAt || Math.hypot(this.camX - this.altitudeX, this.camZ - this.altitudeZ) >= 16) {
+			this.altitudeSampleAt = now + 250_000_000L;
+			this.altitudeX = this.camX; this.altitudeZ = this.camZ;
+			this.altitudeSurface = Double.NaN;
+			// Read loaded heightmaps only. Never load/generate chunks to decide visual detail.
+			if (level != null && !level.dimensionType().hasCeiling()) {
+				int x = (int)Math.floor(this.camX), z = (int)Math.floor(this.camZ), samples = 0, highest = Integer.MIN_VALUE;
+				for (int dz = -64; dz <= 64; dz += 32) for (int dx = -64; dx <= 64; dx += 32) {
+					LevelChunk chunk = level.getChunkSource().getChunk((x + dx) >> 4, (z + dz) >> 4, false);
+					if (chunk == null) continue;
+					int y = chunk.getHeight(Heightmap.Types.MOTION_BLOCKING, (x + dx) & 15, (z + dz) & 15);
+					if (y < level.getMinY()) continue;
+					highest = Math.max(highest, y + 1); samples++;
+				}
+				// Near trees, peaks and tall structures, the highest sample conservatively keeps detail.
+				if (samples >= 13) this.altitudeSurface = highest;
+			}
+		}
+		// The projection's vertical row norm removes camera rotation (including pitch) from the focal length.
+		double focal = Math.sqrt(this.viewProj.m01()*this.viewProj.m01() + this.viewProj.m11()*this.viewProj.m11()
+			+ this.viewProj.m21()*this.viewProj.m21());
+		float scale = this.altitudeQuality.update(this.camY, this.altitudeSurface, height * .5 * focal,
+			clip.baseSwitchDist[0], rd * 16 + 112, now);
+		if (scale == this.altitudeScale) return;
+		this.altitudeScale = scale;
+		for (int l = 0; l < clip.levels; l++) clip.switchDist[l] = clip.baseSwitchDist[l] * scale;
+		LodAltitudeQuality.record(scale,clip.switchDist[0],this.camY-this.altitudeSurface,height*.5*focal);
+		if (this.field != null) this.field.detailChanged();
+		if (this.pk != null) this.pk.detailChanged();
+		if (this.taa != null) this.taa.reset();
+		if (this.taaTile != null) this.taaTile.reset();
+	}
 
 	/** Whether this frame is the one to dump: frame dumpFrame, or with a negative dumpFrame, that many frames after the field first settled. */
 	private boolean dumpNow(LodField w) {

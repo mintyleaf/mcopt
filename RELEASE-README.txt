@@ -80,6 +80,15 @@ Estimated shadowed terrain now uses the same changing lightmap as captured terra
 sky RGB (which incorrectly scales ambient light). This improves colour consistency during End flashes and other
 environment changes while keeping captured skylight shadows. Sheltered faces can still receive less skylight.
 
+High flight can gradually shrink the fine LOD rings, by at most one tier, without changing horizon distance or
+discarding cached terrain. Clearance comes from nearby loaded heightmaps, including trees and structures, rather
+than absolute Y. The actual world rendering resolution and projection protect pixel detail when zooming; the
+full-terrain handoff is also protected. Unknown ground and ceiling dimensions retain normal detail. Render-list
+ownership, temporal history and background priority scans are refreshed together when detail changes. Mod Menu's
+Height-aware LOD detail (mcopt.lod.altitudeDetail, default true) disables/enables this behavior after a restart.
+
+JFR includes mcopt.LodDetail when mcopt.metal.jfr is enabled.
+
 With mcopt's LOD terrain enabled, singleplayer now progressively replaces estimated terrain with the world's actual
 populated chunks and lighting. Existing saved chunks are imported within 128 chunks; unexplored chunks are generated
 through vanilla FULL within 32 chunks, prioritizing the view ahead. Structure placement candidates are also scouted

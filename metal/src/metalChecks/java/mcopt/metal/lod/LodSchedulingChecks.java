@@ -253,9 +253,18 @@ public final class LodSchedulingChecks {
 		queue.drainTo(new ArrayList<>()); pending.clear(); set(field, "firstSeen", new HashMap<Long, Long>());
 		field.rdBlocks = 64;
 		Method scan = LodField.class.getDeclaredMethod("scanScreen", double.class, double.class, double.class, double.class,
-			double.class, org.joml.Matrix4f.class, int[].class, int[].class, LodSeam.ChunkMask.class); scan.setAccessible(true);
-		scan.invoke(field, 0., 0., 100., 31., 0., new org.joml.Matrix4f().ortho(-512, 512, -512, 512, -512, 512),
-			clip.winTx.clone(), clip.winTz.clone(), (LodSeam.ChunkMask)(x, z) -> false);
+			double.class, org.joml.Matrix4f.class, int[].class, int[].class, float[].class, LodSeam.ChunkMask.class); scan.setAccessible(true);
+		float[] switches=clip.switchDist.clone();
+		Object first=scan.invoke(field, 0., 0., 100., 31., 0., new org.joml.Matrix4f().ortho(-512, 512, -512, 512, -512, 512),
+			clip.winTx.clone(), clip.winTz.clone(), switches, (LodSeam.ChunkMask)(x, z) -> false);
+		// A render-thread quality change must not alter the background scan's captured tier boundaries.
+		try {
+			java.util.Arrays.fill(clip.switchDist,0);
+			Object after=scan.invoke(field, 0., 0., 100., 31., 0., new org.joml.Matrix4f().ortho(-512, 512, -512, 512, -512, 512),
+				clip.winTx.clone(), clip.winTz.clone(), switches, (LodSeam.ChunkMask)(x, z) -> false);
+			Method needed=first.getClass().getDeclaredMethod("needed");needed.setAccessible(true);
+			check(needed.invoke(first).equals(needed.invoke(after)),"Background scan read mutable live detail thresholds");
+		} finally {System.arraycopy(switches,0,clip.switchDist,0,switches.length);}
 		var scanned = new ArrayList<Comparable>(); queue.drainTo(scanned);
 		Field cacheMiss = jobType.getDeclaredField("cacheMiss"); cacheMiss.setAccessible(true);
 		Field key = jobType.getDeclaredField("key"); key.setAccessible(true);

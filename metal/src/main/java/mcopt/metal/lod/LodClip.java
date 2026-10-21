@@ -36,6 +36,8 @@ final class LodClip {
 	final short[][] slotMin, slotMax;
 	/** Per level: past this distance (blocks) the walk moves on to the next coarser level. */
 	final float[] switchDist;
+	/** Window-safe baseline; render thresholds may shrink without reallocating or discarding terrain. */
+	final float[] baseSwitchDist;
 	/** Bumped whenever a tile is written or cleared. */
 	long version;
 	/** Per level, per slot: bumped whenever the slot's words change (written, refreshed, cleared). */
@@ -186,6 +188,7 @@ final class LodClip {
 		this.levels = lv;
 		this.switchDist = new float[lv];
 		for (int l = 0; l < lv; l++) this.switchDist[l] = (float) ((n / 2.0 - TILE - MARGIN) * (1L << l));
+		this.baseSwitchDist = this.switchDist.clone();
 		this.levelWords = (long) n * n;
 		this.levelMipWords = (long) (n / 8) * (n / 8);
 		this.geomBuf = buffer(ctx, this.levelWords * 4 * lv);

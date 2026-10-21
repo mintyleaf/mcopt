@@ -28,6 +28,8 @@ To check it's working: press F3 (fn + F3 on a Mac keyboard); the bottom right sa
 
 F3 shows FPS and LOD generation/scouting statistics. The release does not include a separate FPS overlay.
 
+High flight gradually uses coarser LOD tiers, based on clearance above loaded terrain and projected size. Horizon distance stays the same; zoom and the full-terrain boundary protect detail. Mod Menu exposes **Height-aware LOD detail** (`mcopt.lod.altitudeDetail`, default true).
+
 ## Settings
 
 - The perf profile is on by default.

@@ -105,6 +105,25 @@ tasks.register('checkLodProjection', JavaExec) {
 	jvmArgs '--enable-native-access=ALL-UNNAMED'
 }
 
+tasks.register('checkLodAltitudeQuality', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.lod.LodAltitudeQualityChecks'
+}
+
+def altitudeCheck = layout.buildDirectory.file('metalChecks/lod-altitude')
+tasks.register('compileLodAltitudeChecks', Exec) {
+	inputs.file 'src/metalChecks/native/lod-altitude.m'
+	outputs.file altitudeCheck
+	doFirst { altitudeCheck.get().asFile.parentFile.mkdirs() }
+	commandLine 'clang', '-O2', '-Wall', '-fno-objc-arc', '-framework', 'Foundation', '-framework', 'Metal',
+		'-o', altitudeCheck.get().asFile, file('src/metalChecks/native/lod-altitude.m')
+}
+tasks.register('checkLodAltitudeGpu', Exec) {
+	dependsOn 'compileLodAltitudeChecks'
+	commandLine altitudeCheck.get().asFile, file('src/main/resources/mcopt/lod/columns.metal'), file('src/metalChecks/native/lod-altitude.metal')
+}
+
 tasks.register('checkLodHandoff', JavaExec) {
 	dependsOn 'metalChecksClasses'
 	classpath = sourceSets.metalChecks.runtimeClasspath

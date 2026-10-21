@@ -193,6 +193,9 @@ final class LodPk {
 
 	/** Set by the owner: the levels' switch distances (LodClip.switchDist). */
 	float @org.jspecify.annotations.Nullable [] switchDist;
+
+	/** Every sector must agree on tier ownership after a render-quality change. */
+	void detailChanged() { this.selSet = false; }
 	/** This frame's live ring (blocks from the selection camera), and the reach. */
 	private double liveRing, reach = Double.MAX_VALUE;
 	int statSkipped, statLive;
