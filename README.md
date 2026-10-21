@@ -30,6 +30,8 @@ F3 shows FPS and LOD generation/scouting statistics. The release does not includ
 
 High flight gradually uses coarser LOD tiers, based on clearance above loaded terrain and projected size. Horizon distance stays the same; zoom and the full-terrain boundary protect detail. Mod Menu exposes **Height-aware LOD detail** (`mcopt.lod.altitudeDetail`, default true).
 
+Litematica 0.29.1 colored schematic overlays combine consecutive compatible draws into fewer render passes while preserving their order. **Batch Litematica overlays** (`mcopt.compat.litematicaOverlayBatch`, default true) can disable the compatibility patch. Other versions or modified renderer bodies retain their original path.
+
 ## Settings
 
 - The perf profile is on by default.

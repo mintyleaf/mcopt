@@ -87,7 +87,11 @@ full-terrain handoff is also protected. Unknown ground and ceiling dimensions re
 ownership, temporal history and background priority scans are refreshed together when detail changes. Mod Menu's
 Height-aware LOD detail (mcopt.lod.altitudeDetail, default true) disables/enables this behavior after a restart.
 
-JFR includes mcopt.LodDetail when mcopt.metal.jfr is enabled.
+Litematica 0.29.1 colored overlays now combine consecutive compatible chunk draws into fewer render passes.
+Transparent draw order, model geometry, colors, depth behavior and per-chunk transforms are preserved; buffer
+storage is bounded and released after each scope. Unknown versions or modified renderer bodies retain the original
+path. Mod Menu exposes Batch Litematica overlays (mcopt.compat.litematicaOverlayBatch, default true).
+JFR includes mcopt.LodDetail and mcopt.LitematicaOverlayBatch when mcopt.metal.jfr is enabled.
 
 With mcopt's LOD terrain enabled, singleplayer now progressively replaces estimated terrain with the world's actual
 populated chunks and lighting. Existing saved chunks are imported within 128 chunks; unexplored chunks are generated

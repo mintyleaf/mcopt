@@ -111,6 +111,17 @@ tasks.register('checkLodAltitudeQuality', JavaExec) {
 	mainClass = 'mcopt.metal.lod.LodAltitudeQualityChecks'
 }
 
+tasks.register('checkLitematicaOverlays', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.compat.LitematicaOverlayChecks'
+	if (project.hasProperty('litematicaJar')) {
+		args project.property('litematicaJar')
+		classpath += files(project.property('litematicaJar'))
+	}
+	if (project.hasProperty('malilibJar')) classpath += files(project.property('malilibJar'))
+}
+
 def altitudeCheck = layout.buildDirectory.file('metalChecks/lod-altitude')
 tasks.register('compileLodAltitudeChecks', Exec) {
 	inputs.file 'src/metalChecks/native/lod-altitude.m'

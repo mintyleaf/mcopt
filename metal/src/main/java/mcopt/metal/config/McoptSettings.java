@@ -33,6 +33,7 @@ final class McoptSettings {
 		number("mcopt.lod.radius", "LOD distance (chunks)", "512", 32, 2048, "Terrain visibility distance. This does not increase structure scouting distance."),
 		bool("mcopt.lod.textures", "LOD block textures", "true", "Draw block textures on the finest LOD level."),
 		bool("mcopt.lod.altitudeDetail", "Height-aware LOD detail", "true", "Gradually use coarser terrain while flying high. Keeps the horizon, nearby terrain and zoom detail. Requires restarting Minecraft."),
+		bool("mcopt.compat.litematicaOverlayBatch", "Batch Litematica overlays", "true", "Combine compatible colored schematic overlay draws. Supports Litematica 0.29.1. Requires restarting Minecraft."),
 		bool("mcopt.lod.lighting", "Captured lighting", "true", "Preserve sky and block light from populated chunks."),
 		bool("mcopt.lod.overhangs", "Vertical layers", "true", "Preserve air gaps and floating surfaces from populated terrain."),
 		bool("mcopt.lod.waterTransition", "Water transition", "true", "Blend full terrain water into distant water."),

@@ -18,12 +18,21 @@ public final class CompatMixinPlugin implements IMixinConfigPlugin {
 		if (mixinClassName.endsWith(".DhRenderApiMixin")) return FabricLoader.getInstance().isModLoaded("distanthorizons");
 		if (mixinClassName.endsWith(".MoreCullingFaceMixin")) return FabricLoader.getInstance().isModLoaded("moreculling")
 			&& Boolean.parseBoolean(System.getProperty("mcopt.compat.moreCullingFace", "true"));
+		if (mixinClassName.endsWith(".LitematicaOverlayMixin")) return FabricLoader.getInstance().getModContainer("litematica")
+			.filter(mod -> mod.getMetadata().getVersion().getFriendlyString().equals("0.29.1")).isPresent()
+			&& Boolean.parseBoolean(System.getProperty("mcopt.compat.litematicaOverlayBatch", "true"));
 		return false;
 	}
 
 	@Override public void acceptTargets(Set<String> myTargets, Set<String> otherTargets) { }
 	@Override public List<String> getMixins() { return null; }
-	@Override public void preApply(String targetClassName, ClassNode targetClass, String mixinClassName, IMixinInfo mixinInfo) { }
+	@Override public void preApply(String targetClassName, ClassNode targetClass, String mixinClassName, IMixinInfo mixinInfo) {
+		if (mixinClassName.endsWith(".LitematicaOverlayMixin")) {
+			boolean verified = mcopt.metal.compat.LitematicaOverlayGuard.verify(targetClass);
+			mcopt.metal.compat.LitematicaOverlayGuard.verified = verified;
+			System.out.println("[mcopt] Litematica overlay batch: " + (verified ? "enabled" : "unchanged (unrecognized body)"));
+		}
+	}
 	@Override public void postApply(String targetClassName, ClassNode targetClass, String mixinClassName, IMixinInfo mixinInfo) {
 		if (mixinClassName.endsWith(".MoreCullingFaceMixin")) {
 			boolean optimized = mcopt.metal.compat.MoreCullingFaceOptimizer.optimize(targetClass);
