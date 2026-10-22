@@ -164,12 +164,23 @@ public final class OwnMesher {
 			: startedLayers != null ? translucent(startedLayers, builders, translucent) : Discard.INSTANCE;
 		// With Fabric API's renderer API loaded, blocks go through its renderer as Fabric API's own compile patch does
 		OwnApi.Mesher api = OwnApi.mesher(ambientOcclusion, blockColors, quads, () -> startedLayers != null ? translucent(startedLayers, builders, translucent) : Discard.INSTANCE);
+		mcopt.metal.compat.BetterGrassSnow.Api snow = mcopt.metal.compat.BetterGrassSnow.get();
 		// BlockPos.betweenClosed's order (x fastest, then y, then z) with its one mutable cursor, without the iterator
 		BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
 		int minX = minPos.getX(), minY = minPos.getY(), minZ = minPos.getZ();
 		for (int i = 0; i < 4096; i++) {
 			pos.set(minX + (i & 15), minY + (i >> 4 & 15), minZ + (i >> 8));
 			BlockState blockState = level.getBlockState(pos);
+			if (snow != null) {
+				BlockState ghost = snow.ghost(region, pos);
+				if (ghost != null) {
+					float x = i & 15, y = i >> 4 & 15, z = i >> 8;
+					if (api != null) api.block(x, y, z, region, pos, ghost, blockModelSet.get(ghost), ghost.getSeed(pos));
+					else blockRenderer.tesselateBlock(ModelBlockRenderer.forceOpaque(cutoutLeaves, ghost) ? opaqueQuadOutput : quadOutput,
+						x, y, z, region, pos, ghost, blockModelSet.get(ghost), ghost.getSeed(pos));
+				}
+				blockState = snow.snowy(region, pos, blockState);
+			}
 			if (OwnGridStat.ON || OwnQrStat.ON) OwnGridStat.block(blockState, quads);
 			if (OwnMaterials.ON) OwnMaterials.block(pos.getX(), pos.getY(), pos.getZ(), blockState);  // as OwnIntCompilerMixin's redirect
 			if (!blockState.isAir()) {
