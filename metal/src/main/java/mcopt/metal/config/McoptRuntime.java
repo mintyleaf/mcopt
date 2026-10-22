@@ -10,10 +10,10 @@ public final class McoptRuntime {
 		"mcopt.lod.refineRadius", "mcopt.lod.scoutRadius", "mcopt.lod.workload", "mcopt.lod.refineIntervalMs",
 		"mcopt.lod.importSaved", "mcopt.lod.importRadius", "mcopt.lod.threads", "mcopt.lod.altitudeDetail",
 		"mcopt.lod.altitudeStart", "mcopt.lod.altitudeRange", "mcopt.lod.altitudeMinPercent", "mcopt.lod.altitudePixels",
-		"mcopt.lod.reuseVisibility", "mcopt.lod.aoPixels", "mcopt.lod.haze", "mcopt.lod.debugHud");
+		"mcopt.lod.reuseVisibility", "mcopt.lod.aoPixels", "mcopt.lod.waterBlend", "mcopt.lod.haze", "mcopt.lod.debugHud");
 	private static final Set<String> VISUAL = Set.of("mcopt.lod.altitudeDetail", "mcopt.lod.altitudeStart",
 		"mcopt.lod.altitudeRange", "mcopt.lod.altitudeMinPercent", "mcopt.lod.altitudePixels", "mcopt.lod.reuseVisibility",
-		"mcopt.lod.aoPixels", "mcopt.lod.haze", "mcopt.lod.debugHud");
+		"mcopt.lod.aoPixels", "mcopt.lod.waterBlend", "mcopt.lod.haze", "mcopt.lod.debugHud");
 	public record State(long generation, Map<String, String> values) {
 		public State { values = Map.copyOf(values); }
 		public boolean flag(String key) { return Boolean.parseBoolean(values.get(key)); }

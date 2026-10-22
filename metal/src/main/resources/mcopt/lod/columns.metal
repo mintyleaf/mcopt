@@ -1109,7 +1109,7 @@ kernel void lod_seg_fill(constant ColFrame& f [[buffer(0)]],
 
 struct CompFrame {
     float4x4 viewProj;   // camera-relative world -> clip (the game's, GL convention)
-    float4 A, B, C;      // as ColFrame
+    float4 A, B, C;      // xyz as ColFrame; A.w enables water color filtering
     float4 screen;       // x W, y H, z R0, w R1
     float4 fogColor;     // rgb: the game's fog color; a: 1 (0: no fog)
     float4 fog;          // x start, y end (cylindrical, blocks), z environmental start, w environmental end (spherical)
@@ -1384,6 +1384,36 @@ static inline float compAoWeight(constant CompFrame& f, float3 rel) {
     return smoothstep(cutoff, 2.0 * cutoff, pixels);
 }
 
+// Filter only the appearance of a connected water sheet, never its geometry or captured light. Cell centers are
+// world-anchored, including negative coordinates; keep the camera-relative fractional bits at distant world origins.
+static inline half3 compWaterColor(constant CompFrame& f, float3 rel, uint level, device const uint* geom,
+                                   device const uint* color, device const uint* crowns, half3 fallback) {
+    int step = 1 << level, n = 1 << f.origin.w, m = n - 1;
+    float2 p = (float2(f.origin.xz & (step - 1)) + rel.xz + f.camFrac.xz) / float(step) - 0.5;
+    int2 base = (f.origin.xz >> int(level)) + int2(floor(p));
+    float2 uv = fract(p);
+    int height = f.origin.y + int(rint(rel.y + f.camFrac.y + WATER_SURFACE_DROP));
+    uint offset = level * uint(n * n);
+    float3 sum = float3(0.0);
+    for (int z = 0; z < 2; z++) for (int x = 0; x < 2; x++) {
+        int2 cell = base + int2(x, z);
+        uint idx = offset + uint(((cell.y & m) << f.origin.w) | (cell.x & m));
+        uint g = geom[idx];
+        half3 sample = fallback;
+        if ((g & GEOM_VALID) != 0u) {
+            if ((g & GEOM_CROWN) == 0u) {
+                if ((g & GEOM_WET) != 0u && GEOM_Y(g) == height) sample = comp565(color[idx] & 65535u);
+            } else if (level < uint(f.skyLight.w) / uint(n * n)) {
+                uint cr = crowns[idx];
+                if ((cr & (1u << 28)) != 0u && int(cr & 4095u) - 512 == height) sample = comp565(crownColor565(cr));
+            }
+        }
+        float weight = (x == 0 ? 1.0 - uv.x : uv.x) * (z == 0 ? 1.0 - uv.y : uv.y);
+        sum += float3(sample) * weight;
+    }
+    return half3(sum);
+}
+
 static inline bool compShade(constant CompFrame& f, uint2 v, device const uint* geom, device const uint* color, device const uint* crowns,
                              device const uint* texWords, device const PaletteEntry* palette, texture2d<half> atlas, sampler smp,
                              thread CompSurface& s);
@@ -1421,6 +1451,8 @@ static inline bool compShade(constant CompFrame& f, uint2 v, device const uint* 
     if (f.lightInfo.x > 0.0) s.light = f.lightmap[uint(round(float(s.levels.y) * 15.0)) * 16u].rgb;
     uint level = (v.y >> 20) & 15u;
     bool crownHit = (v.y & REC_CROWN) != 0u;
+    if (s.wet && !crownHit && s.face == FACE_TOP && f.A.w > 0.0)
+        s.albedo = compWaterColor(f, s.rel, level, geom, color, crowns, s.albedo);
     bool waterWall = s.wet && !crownHit && s.face >= FACE_XP && s.face <= FACE_ZN;
     s.waterPath = -1.0;
     if (waterWall) {

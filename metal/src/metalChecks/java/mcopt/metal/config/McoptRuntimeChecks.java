@@ -30,6 +30,13 @@ public final class McoptRuntimeChecks {
 			if(McoptRuntime.current().generation()!=visual.generation() || McoptRuntime.current().flag("mcopt.lod.reuseVisibility")
 				|| McoptRuntime.current().integer("mcopt.lod.aoPixels")!=0) throw new AssertionError("Render budget controls did not apply without world restart");
 			visual=McoptRuntime.current();
+			McoptRuntime.apply(Map.of("mcopt.lod.waterBlend", "false"));
+			if (McoptRuntime.current().generation() != visual.generation() || McoptRuntime.current().flag("mcopt.lod.waterBlend"))
+				throw new AssertionError("Water blend toggle restarted the world or failed to apply");
+			McoptRuntime.apply(Map.of("mcopt.lod.waterBlend", "true"));
+			if (McoptRuntime.current().generation() != visual.generation() || !McoptRuntime.current().flag("mcopt.lod.waterBlend"))
+				throw new AssertionError("Water blend could not be restored live");
+			visual=McoptRuntime.current();
 			McoptRuntime.apply(Map.of("mcopt.lod.small", "true", "profile", "none"));
 			if (McoptRuntime.current() != visual) throw new AssertionError("startup-only edit applied live");
 			Path file = dir.resolve("mcopt.properties");

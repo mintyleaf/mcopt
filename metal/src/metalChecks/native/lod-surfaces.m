@@ -101,7 +101,7 @@ static void walls(id<MTLDevice> d,id<MTLCommandQueue> queue,NSString *source) {
 	MTLTextureDescriptor *desc=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:1 height:1 mipmapped:NO];
 	desc.usage=MTLTextureUsageShaderRead;
 	id<MTLTexture> atlas=[d newTextureWithDescriptor:desc];
-	for(int mode=0;mode<6;mode++) {
+	for(int mode=0;mode<7;mode++) {
 		memset(g,0,256*4); memset(cr,0,256*4); memset(tw,0,4*256*4);
 		g[0]=(90+512)|0x6000u|(2u<<15); cr[0]=(80+512)|(0x3456u<<12)|(1u<<28);
 		tw[0]=tw[15]=0xC0000000u;
@@ -461,6 +461,79 @@ static void projectedAo(id<MTLDevice> d,id<MTLCommandQueue> queue,NSString *sour
 	puts("PASS: actual compShade preserves near AO, albedo and captured torch light while skipping fine AO below its pixel cutoff; zero cutoff retains legacy AO");
 }
 
+// Drive the actual fragment-shading helper across a two-biome water boundary, including clipmap wrap and roofs.
+static void waterBlend(id<MTLDevice> d,id<MTLCommandQueue> queue,NSString *source) {
+	source=[source stringByAppendingString:@"\n"
+		"kernel void water_blend_test(constant CompFrame& f [[buffer(0)]], device const uint* g [[buffer(1)]], "
+		"device const uint* color [[buffer(2)]], device const uint* crowns [[buffer(3)]], device const uint* tw [[buffer(4)]], "
+		"device float4* out [[buffer(5)]], device const PaletteEntry* pal [[buffer(6)]], constant float4* points [[buffer(7)]], "
+		"texture2d<half> atlas [[texture(0)]], uint i [[thread_position_in_grid]]) { "
+		"CompSurface s; s.rel=points[i].xyz; s.face=i==7u?FACE_XN:FACE_TOP; "
+		"constexpr sampler smp(coord::normalized); compShade(f,uint2(1u,as_type<uint>(points[i].w)),g,color,crowns,tw,pal,atlas,smp,s); "
+		"out[2u*i]=float4(float3(s.albedo),s.ao); out[2u*i+1u]=float4(float3(s.light),s.waterPath); }\n"];
+	id<MTLComputePipelineState> p=pipeline(d,library(d,source),@"water_blend_test");
+	NSArray<id<MTLBuffer>> *b=@[buffer(d,4096),buffer(d,12*256*4),buffer(d,12*256*4),buffer(d,12*256*4),
+		buffer(d,4*256*4),buffer(d,10*32),buffer(d,4096),buffer(d,10*16)];
+	float *f=b[0].contents;int *fi=b[0].contents;fi[55]=4;f[43]=12*256;f[40]=0.6;f[41]=0.7;f[42]=0.8;
+	f[56]=0.25;f[57]=0.125;f[58]=0.75;
+	uint32_t *g=b[1].contents,*colors=b[2].contents,*cr=b[3].contents;
+	MTLTextureDescriptor *td=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:1 height:1 mipmapped:NO];
+	id<MTLTexture> atlas=[d newTextureWithDescriptor:td];
+	const uint32_t blue=0x001Fu,cyan=0x07FFu,red=0xF800u;
+	const float locations[]={-0.5,-0.25,-0.0001,0,0.0001,0.25,0.5};
+	for(int origin=0;origin<3;origin++) for(int L=0;L<12;L++) for(int mode=0;mode<7;mode++) {
+		fi[52]=origin==0?0:origin==1?-173:29999983;fi[54]=origin==0?0:origin==1?-535:-29999957;
+		int step=1<<L,bx=(int)floor((double)fi[52]/step),bz=(int)floor((double)fi[54]/step);
+		memset(g,0,b[1].length);memset(colors,0,b[2].length);memset(cr,0,b[3].length);
+		for(int z=-2;z<=1;z++) for(int x=-2;x<=1;x++) {
+			int idx=L*256+(((bz+z)&15)<<4)+((bx+x)&15);BOOL right=x>=0;
+			g[idx]=(64+512)|0x3000u;uint32_t c=right?cyan:blue;
+			if(mode==1) c=blue;
+			if(right && mode==2) {g[idx]&=~0x1000u;c=red;} // Land must not tint the sea.
+			if(right && mode==3) g[idx]=(65+512)|0x3000u; // A separate water level.
+			if(right && mode>=4) {
+				g[idx]=(90+512)|0x6000u;cr[idx]=(64+512)|(cyan<<12)|(mode==4?1u<<28:0u);c=red;
+			}
+			if(right && mode==6) {g[idx]=0;cr[idx]=0;c=red;}
+			colors[idx]=c|(c<<16);
+		}
+		float *points=b[7].contents;
+		for(int i=0;i<10;i++) {
+			BOOL right=i<7 && locations[i]>=0;uint32_t c=right?cyan:blue,flags=(1u<<19)|(((uint32_t)L)<<20);
+			if(mode==1)c=blue;
+			if(right && (mode==2 || mode==5 || mode==6)) {c=mode==5?cyan:red;flags&=~(1u<<19);}
+			if(right && mode>=4)flags|=1u<<25; // REC_UNDER_CROWN
+			if(i==8) {c=red;flags=((uint32_t)L)<<20;}
+			if(i==9) {c=red;flags=(1u<<24)|(1u<<19)|(((uint32_t)L)<<20);} // REC_CROWN
+			points[i*4]=((float)(bx*step-fi[52]))+(i<7?locations[i]*step:-0.25*step)-f[56];
+			points[i*4+1]=(right&&mode==3?65:64)-f[57]-(1.0f/9.0f+0.001f);
+			points[i*4+2]=((float)(bz*step-fi[54]))-f[58];
+			((uint32_t*)points)[i*4+3]=c|flags;
+		}
+		float baseline[80];
+		for(int enabled=0;enabled<=1;enabled++) {
+			f[19]=enabled;
+			id<MTLCommandBuffer> cmd=[queue commandBuffer];id<MTLComputeCommandEncoder> enc=[cmd computeCommandEncoder];
+			[enc setComputePipelineState:p];for(int i=0;i<8;i++)[enc setBuffer:b[i] offset:0 atIndex:i];[enc setTexture:atlas atIndex:0];
+			[enc dispatchThreads:MTLSizeMake(10,1,1) threadsPerThreadgroup:MTLSizeMake(10,1,1)];finish(cmd,enc);
+			float *out=b[5].contents;
+			if(!enabled) {memcpy(baseline,out,sizeof baseline);continue;}
+			for(int i=0;i<10;i++) {
+				for(int k=3;k<8;k++)require(fabsf(out[i*8+k]-baseline[i*8+k])<0.0001,@"Water blend changed lighting, AO or absorption");
+				if(i>=7 || mode==1 || mode==2 || mode==3 || mode==5 || mode==6) {
+					for(int k=0;k<3;k++)require(fabsf(out[i*8+k]-baseline[i*8+k])<0.001,
+						[NSString stringWithFormat:@"Water blend crossed a land/height/roof boundary: L%d mode%d sample%d",L,mode,i]);
+				} else {
+					float blend=locations[i]+0.5;
+					require(fabsf(out[i*8])<0.001 && fabsf(out[i*8+1]-blend)<0.001 && fabsf(out[i*8+2]-1)<0.001,
+						[NSString stringWithFormat:@"Biome blend discontinuity: origin%d L%d mode%d sample%d RGB %f %f %f",origin,L,mode,i,out[i*8],out[i*8+1],out[i*8+2]]);
+				}
+			}
+		}
+	}
+	puts("PASS: actual water shading blends continuously at all 12 levels, negative/wrapped/30-million coordinates and beneath roofs; uniform water, land, different heights, dry lower surfaces, missing data, walls, crowns, lighting and absorption remain intact");
+}
+
 int main(int argc,const char **argv) {
 	@autoreleasepool {
 		require(argc==3,@"Expected columns.metal and seam.metal paths");
@@ -473,6 +546,7 @@ int main(int argc,const char **argv) {
 		require(seam!=nil,e.description);
 		lighting(d,q,columns);
 		projectedAo(d,q,columns);
+		waterBlend(d,q,columns);
 		changingAmbient(d,q,columns);
 		mipBorders(d,q,columns);
 		walls(d,q,columns);
