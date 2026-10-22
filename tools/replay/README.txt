@@ -74,6 +74,37 @@ Setup (from repository root)
    a climb from Y=180 to Y=320, descent, and stopping with zoom. It is currently an
    Overworld route; the server hook does not replay Nether/End dimension changes.
 
+Camera pans and leaf-culling probes
+---------------------------------
+
+A phase may specify yawTo as well as yaw. Position and yaw interpolate linearly
+over the phase; an omitted yawTo keeps the original fixed-direction behavior.
+Angles interpolate as written (70 to110 turns40 degrees;170 to-170 turns-340).
+Keep position fixed to isolate camera-turn culling from chunk streaming.
+
+The opt-in plan field "moreCullingProbe":true requires installed Fabric Indigo
+and MoreCulling. Before measurement, it emits vanilla oak/mangrove leaf models
+through the same Indigo API entry point as mcopt's OwnFrapi. Synthetic world
+neighbors cover isolated leaves, a canopy interior and an edge, without placing
+blocks or changing config. moreculling-probe.json compares emitted quad counts
+with the installed MoreCulling world-aware helper. This verifies that entry
+point, not every resource-pack/model path or every MoreCulling feature.
+
+Experimental owned-replay flag mcopt.replay.moreCullingContext=true wraps
+Indigo's state-only face check with MoreCulling's world-aware API using Indigo's
+current world/position/neighbor cursor. It respects useBlockStateCulling and the
+state's canCull guard. A successful probe must match the helper for every case.
+This is a benchmark prototype for the verified26.3/MoreCulling1.9.0 environment,
+not a shipped mcopt compatibility fix. It requires an active replay plan; keep
+it absent for baselines. The normal mcopt release never includes this adapter.
+
+For leaf-mode comparisons, restart each case with a specific MoreCulling config
+and hold cutoutLeaves=true, route, fixture, graphics and resolved time/weather
+constant. --graphics-from-source now includes cutoutLeaves. Record the actual
+mode/probe output and geometry work counts;60FPS under VSync is a ceiling and
+does not demonstrate equal GPU cost. Retained LOD-cache cases can have different
+readiness, and sequential runs do not reset thermal or filesystem history.
+
 Optional altitude and overlay fixtures
 --------------------------------------
 

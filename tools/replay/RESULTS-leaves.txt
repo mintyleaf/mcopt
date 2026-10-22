@@ -1,0 +1,73 @@
+Indigo / MoreCulling leaf-context audit (2026-10-23)
+==================================================
+
+Environment: Minecraft26.3, Fabric API0.164.0+26.3 / Indigo9.1.24,
+MoreCulling1.9.0, mcopt fork.9 own mesher with Fabric Renderer API enabled.
+
+Finding
+-------
+OwnFrapi uses Indigo's AltModelBlockRendererImpl. Its shouldCullFace calls
+Block.shouldRenderFace(state,neighbor,direction). MoreCulling's installed Fabric
+hook sends that call to CullingUtils with EmptyBlockGetter and BlockPos.ZERO.
+That preserves state-only rules but cannot evaluate surrounding-block modes
+against the actual terrain. This is a gap in the renderer/mod integration path;
+it is not evidence that every MoreCulling feature or renderer is broken.
+
+Actual loaded-renderer probe, opaque leaf cube models with transparent leaves:
+
+Mode        Isolated emitted/expected    Interior emitted/expected
+DEFAULT                  6/6                           6/6
+CHECK                    6/6                           6/0
+FAST                     6/6                           0/0
+CHECK + context          6/6                           0/0
+
+Both oak and mangrove leaves reproduced the mismatch. The opt-in replay adapter
+passes world/position/neighbor to the installed mod's own world-aware helper,
+respects global/state culling guards, and corrects the mismatch. Its six probe
+cases also retain all six faces for exposed-edge and isolated leaves. No blocks
+or mod settings are mutated by the synthetic probe.
+
+Replay evidence
+---------------
+Same immutable copied save, fixed camera position, 50s route with interpolated
+yaw, 30s warmup. VSync60, render distance12, LOD192, transparent leaves on,
+4GiB ZGC heap, M3, 5120x2762 drawable / 3840x2071 world target.
+Only the MoreCulling mode changed in the first four cases. Candidate also used
+the updated development harness with its world-context adapter enabled.
+
+Case              Mean cutout work slots/frame    Phase p95 range (ms)
+CHECK first                    534499                  17.13-17.33
+DEFAULT                        530808                  17.30-17.41
+FAST                           278027                  17.13-17.31
+CHECK repeat                   521915                  17.10-17.32
+CHECK + context                428297                  17.24-17.45
+
+Counts use only measured-interval diagnostic batches, excluding warmup.
+These are shader work slots, not exact visible leaves or GPU milliseconds.
+The context adapter reduced cutout slots17.9-19.9% against the two CHECK runs.
+FAST reduced them46.7-48.0%, with its more aggressive leaf-to-leaf face removal.
+All five completed with focus maintained, no route-position error, stable display
+setup, no frames over50ms, and the same production renderer/options/world hashes.
+
+Limits
+------
+The saved fixture is frozen at night. These runs did not reproduce the previously
+observed daylight/other-view slowdown; all remain near the60FPS ceiling. No FPS
+improvement or exact GPU time saving is established. LOD disk cache was retained
+while world contents reset each case; readiness, thermal history and filesystem
+caches can differ. The candidate harness differs from the earlier baseline harness
+by the experimental wrapper and additional edge probe. This is not a production
+patch, a broad resource-pack compatibility guarantee, or an upstream bug report.
+
+Next production work
+--------------------
+Integrate a guarded world-aware MoreCulling call in the used meshing paths, with
+coverage for global/state-disabled guards, missing/unsupported mod versions,
+non-FRAPI fallback and model/resource-pack behavior. Then compare the production
+change under the original failing view with identical weather, transparency,
+LOD reach and instrumentation. LOD GPU culling/shading remains a separate target.
+
+The experimental adapter is part of the development replay module only, requires
+an active owned replay plan plus mcopt.replay.moreCullingContext=true, and is absent
+from the released mcopt jar. After the audit its test flag was reset off. Normal
+pack configs/options/mods stayed unchanged; the source world was not opened by tests.

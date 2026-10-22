@@ -96,6 +96,17 @@ class ResetSafety(unittest.TestCase):
         with self.assertRaises(ValueError):
             MODULE.validate_plan(route)
 
+    def test_pan_endpoint_validated(self):
+        route = self.root / 'pan.json'
+        plan = json.loads((Path(__file__).parent / 'smoke.json').read_text())
+        plan['phases'][0]['yawTo'] = 135
+        MODULE.write_json(route, plan)
+        self.assertEqual(MODULE.validate_plan(route)['phases'][0]['yawTo'], 135)
+        plan['phases'][0]['yawTo'] = float('inf')
+        MODULE.write_json(route, plan)
+        with self.assertRaises(ValueError):
+            MODULE.validate_plan(route)
+
 
 if __name__ == '__main__':
     unittest.main()

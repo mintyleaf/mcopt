@@ -136,7 +136,7 @@ def validate_plan(path):
         for k in ('from', 'to'):
             if len(p[k]) != 3 or not all(math.isfinite(v) for v in p[k]):
                 raise ValueError('Invalid route point')
-        if not all(math.isfinite(p[k]) for k in ('seconds', 'yaw', 'pitch', 'fov')) or p['seconds'] <= 0 or not 30 <= p['fov'] <= 110 or abs(p['pitch']) > 90:
+        if not all(math.isfinite(p[k]) for k in ('seconds', 'yaw', 'pitch', 'fov')) or not math.isfinite(p.get('yawTo', p['yaw'])) or p['seconds'] <= 0 or not 30 <= p['fov'] <= 110 or abs(p['pitch']) > 90:
             raise ValueError('Invalid duration/view')
     if sum(p['seconds'] for p in phases) > 300:
         raise ValueError('Maximum measured duration is 300 seconds')
@@ -231,7 +231,7 @@ mcopt.own.arena.reserveMaxMiB=512
         'tutorialStep':'none','onboardAccessibility':'false','showSubtitles':'false','inactivityFpsLimit':'afk'}
     if args.graphics_from_source:
         graphics_keys = ('ao', 'enableVsync', 'maxFps', 'renderDistance', 'simulationDistance', 'guiScale',
-            'mipmapLevels', 'particles', 'renderClouds', 'cloudRange', 'biomeBlendRadius', 'entityDistanceScaling',
+            'mipmapLevels', 'cutoutLeaves', 'particles', 'renderClouds', 'cloudRange', 'biomeBlendRadius', 'entityDistanceScaling',
             'entityShadows', 'prioritizeChunkUpdates')
         source_options = dict(line.split(':', 1) for line in (source / '.minecraft/options.txt').read_text().splitlines() if ':' in line)
         options.update({k:source_options[k] for k in graphics_keys if k in source_options})

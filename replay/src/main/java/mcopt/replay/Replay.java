@@ -24,10 +24,10 @@ public final class Replay {
     private static final String WORLD = "mcopt-replay";
     private static final boolean ON = !PLAN.isEmpty();
     private record Pose(double x,double y,double z,float yaw,float pitch,int fov) { }
-    private record Segment(String name,double seconds,double[] from,double[] to,float yaw,float pitch,int fov,Map<String,String> edits) {
+    private record Segment(String name,double seconds,double[] from,double[] to,float yaw,float yawTo,float pitch,int fov,Map<String,String> edits) {
         Pose at(double fraction) {
             return new Pose(from[0]+(to[0]-from[0])*fraction,from[1]+(to[1]-from[1])*fraction,
-                from[2]+(to[2]-from[2])*fraction,yaw,pitch,fov);
+                from[2]+(to[2]-from[2])*fraction,(float)(yaw+(yawTo-yaw)*fraction),pitch,fov);
         }
     }
     private static final List<Segment> segments = new ArrayList<>();
@@ -38,7 +38,7 @@ public final class Replay {
     private static volatile boolean serverReady;
     private static volatile boolean loaded,finished;
     private static boolean opened,started;
-    private static boolean schematicFixture,captureImage,captureRequested;
+    private static boolean schematicFixture,captureImage,captureRequested,moreCullingProbe;
     private static volatile boolean captureFinished;
     private static volatile Exception captureError;
     private static double warmup,total;
@@ -80,6 +80,7 @@ public final class Replay {
         JsonObject plan=JsonParser.parseString(new String(bytes,StandardCharsets.UTF_8)).getAsJsonObject();
         schematicFixture=plan.has("schematicFixture") && plan.get("schematicFixture").getAsBoolean();
         captureImage=plan.has("captureImage") && plan.get("captureImage").getAsBoolean();
+        moreCullingProbe=plan.has("moreCullingProbe") && plan.get("moreCullingProbe").getAsBoolean();
         if(plan.has("maximize") && plan.get("maximize").getAsBoolean())org.lwjgl.sdl.SDLVideo.SDL_MaximizeWindow(mc.getWindow().handle());
         if(plan.get("schema").getAsInt()!=1) throw new IllegalArgumentException("Unsupported route schema");
         warmup=plan.get("warmupSeconds").getAsDouble();
@@ -92,7 +93,8 @@ public final class Replay {
             for(double v:a) if(!Double.isFinite(v)) throw new IllegalArgumentException("Non-finite position");
             for(double v:b) if(!Double.isFinite(v)) throw new IllegalArgumentException("Non-finite position");
             int fov=p.get("fov").getAsInt();float yaw=p.get("yaw").getAsFloat(),pitch=p.get("pitch").getAsFloat();
-            if(fov<30||fov>110||!Float.isFinite(yaw)||!Float.isFinite(pitch)||Math.abs(pitch)>90) throw new IllegalArgumentException("Invalid view");
+            float yawTo=p.has("yawTo")?p.get("yawTo").getAsFloat():yaw;
+            if(fov<30||fov>110||!Float.isFinite(yaw)||!Float.isFinite(yawTo)||!Float.isFinite(pitch)||Math.abs(pitch)>90) throw new IllegalArgumentException("Invalid view");
             Map<String,String> edits=new LinkedHashMap<>();
             if(p.has("mcopt")) for(var e:p.getAsJsonObject("mcopt").entrySet()) {
                 Class<?> controls=Class.forName("mcopt.metal.config.McoptRuntime");
@@ -100,7 +102,7 @@ public final class Replay {
                 edits.put(e.getKey(),e.getValue().getAsString());
             }
             liveControls|=!edits.isEmpty();
-            segments.add(new Segment(p.get("name").getAsString(),seconds,a,b,yaw,pitch,fov,Map.copyOf(edits)));total+=seconds;
+            segments.add(new Segment(p.get("name").getAsString(),seconds,a,b,yaw,yawTo,pitch,fov,Map.copyOf(edits)));total+=seconds;
         }
         if(segments.isEmpty()||segments.size()>32||total>300) throw new IllegalArgumentException("Route must have 1..32 phases, <=300 seconds");
         routeHash=HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
@@ -135,6 +137,7 @@ public final class Replay {
             }
             if(!started) {
                 if(schematicFixture)SchematicFixture.load(output);
+                if(moreCullingProbe)MoreCullingProbe.run(mc,output);
                 started=true;startedAt=now;measureAt=now+(long)(warmup*1e9);
                 setup=setup(mc);
                 JsonObject capture=new JsonObject();capture.addProperty("label","controlled_replay");capture.addProperty("pid",ProcessHandle.current().pid());
