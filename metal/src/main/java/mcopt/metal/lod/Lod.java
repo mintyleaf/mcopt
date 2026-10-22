@@ -9,6 +9,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import mcopt.metal.MetalBridge;
 import mcopt.metal.MetalHooks;
+import mcopt.metal.config.McoptRuntime;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
@@ -31,7 +32,7 @@ import org.jspecify.annotations.Nullable;
 import org.lwjgl.system.MemoryUtil;
 
 /**
- * Far terrain, -Dmcopt.lod=true: what the hooks call (LodMixinPlugin applies them only with the switch on). Owns the GPU
+ * Far terrain: runtime hooks create resources lazily while enabled. Owns the GPU
  * side and the current world's LodField. Once a frame, at the end of the level's opaque phase (right after the real
  * terrain): the column walk (columns.metal) is dispatched into the pre command buffer, and its composite drawn into the
  * open level pass, so the shaders-off look and the native shading pipeline's G-buffer both get it in the same pass as
@@ -44,9 +45,10 @@ public final class Lod {
 
 	/** Render-thread counters plus an immutable server snapshot, refreshed at most twice a second. */
 	public static java.util.List<String> debugLines() {
-		if (!LodConfig.ENABLED || !Boolean.parseBoolean(System.getProperty("mcopt.lod.debugHud", "true"))) return java.util.List.of();
+		if (!McoptRuntime.current().flag("mcopt.lod") || !McoptRuntime.current().flag("mcopt.lod.debugHud")) return java.util.List.of();
 		Lod l = instance;
-		if (l == null || l.field == null) return java.util.List.of("LOD: " + (failed ? "initialization failed (see log)" : "waiting for terrain"));
+		if (l == null || l.field == null) return java.util.List.of("LOD: " + (failed ? "initialization failed (see log)"
+			: l != null && (l.retiringWorld != null || !l.releaseLater.isEmpty()) ? "applying settings; preserving cache" : "waiting for terrain"));
 		long now = System.nanoTime();
 		if (now >= l.nextDebug) {
 			l.nextDebug = now + 500_000_000L;
@@ -102,6 +104,8 @@ public final class Lod {
 	private long altitudeSampleAt;
 	private float altitudeScale = 1;
 	private double reach;
+	private long settingsGeneration = -1;
+	private java.util.concurrent.CompletableFuture<long[]> retiringWorld;
 	/** -Dmcopt.lod.seam=DIR: the transition probe (LodSeam), else null. */
 	private final @Nullable LodSeam seam;
 	/** -Dmcopt.lod.taa: the far terrain's temporal filter (LodTaa), else null. */
@@ -185,7 +189,8 @@ public final class Lod {
 	}
 
 	private static @Nullable Lod get() {
-		if (instance != null || failed || !LodConfig.ENABLED) return instance;
+		if (!McoptRuntime.current().flag("mcopt.lod")) return null;
+		if (instance != null || failed) return instance;
 		try {
 			Object encoder = MetalBridge.encoder(((FrontendCommandEncoder) RenderSystem.getDevice().createCommandEncoder()).backend());
 			if (encoder == null) {
@@ -207,7 +212,7 @@ public final class Lod {
 	/** Reach in blocks while far terrain draws in the current level, else 0 (the camera's far plane and the fog follow it). */
 	public static float activeReach() {
 		Lod l = instance;
-		return l != null && l.worldOwner == Minecraft.getInstance().level ? activeReach : 0;
+		return McoptRuntime.current().flag("mcopt.lod") && l != null && l.worldOwner == Minecraft.getInstance().level ? activeReach : 0;
 	}
 
 	/**
@@ -217,7 +222,7 @@ public final class Lod {
 	 */
 	public static void adjustFog(FogData fog, FogType type) {
 		ClientLevel level = Minecraft.getInstance().level;
-		LodFog.adjust(fog, type, activeReach(), LodConfig.FOG_START, LodConfig.HAZE, false,
+		LodFog.adjust(fog, type, activeReach(), LodConfig.FOG_START, McoptRuntime.current().number("mcopt.lod.haze"), false,
 			level != null && (level.dimensionType().hasCeiling() || level.dimension() == net.minecraft.world.level.Level.END));
 	}
 
@@ -226,6 +231,58 @@ public final class Lod {
 		Lod l = get();
 		if (l == null) return;
 		l.begin(camera);
+	}
+
+	/** Frame retirement continues while LODs are off and while the player is in a menu. */
+	public static void clientFrame() {
+		Lod l = instance;
+		if (l == null) return;
+		l.frames++;
+		if (l.retiringWorld != null && l.retiringWorld.isDone()) {
+			try {
+				for (long buffer : l.retiringWorld.join()) l.releaseLater.add(new long[] {l.frames, buffer});
+			} catch (java.util.concurrent.CompletionException e) {
+				failed = true;
+				System.out.println("mcopt-lod: failed to retire LOD world: " + e.getCause());
+			}
+			l.retiringWorld = null;
+		}
+		while (!l.releaseLater.isEmpty() && l.frames - l.releaseLater.peek()[0] >= RING) LodNative.release(l.releaseLater.poll()[1]);
+		var settings = McoptRuntime.current();
+		if (l.field != null && (!settings.flag("mcopt.lod") || l.settingsGeneration != settings.generation()
+			|| Minecraft.getInstance().level == null)) l.retireWorld();
+	}
+
+	/** Detach first; drain captures and stop workers off the render thread before retiring shared GPU buffers. */
+	private void retireWorld() {
+		LodField oldField = this.field; LodMesh oldMesh = this.mesh; LodPk oldPk = this.pk; LodClip oldClip = this.clip;
+		this.field = null; this.mesh = null; this.pk = null; this.clip = null; this.worldOwner = null;
+		this.haveFrame = this.waterReady = this.seamArmed = false;
+		this.handoffOn = false; this.settledFrame = -1;
+		if (this.outBuf != 0) { this.releaseLater.add(new long[] {this.frames, this.outBuf}); this.outBuf = 0; this.outW = this.outH = 0; }
+		activeReach = 0; shadeReach(0);
+		this.edited.clear(); this.captureLoads.clear(); this.captureFreshness.clear(); this.handoff.reset();
+		this.debug = java.util.List.of(); this.nextDebug = 0;
+		this.cavernSelection.reset(); this.cavernY = LodCaverns.NONE;
+		this.altitudeQuality.reset(); this.altitudeSurface = Double.NaN; this.altitudeSampleAt = 0; this.altitudeScale = 1;
+		if (this.taa != null) this.taa.reset();
+		if (this.taaTile != null) this.taaTile.reset();
+		oldField.quiesce();
+		var future = new java.util.concurrent.CompletableFuture<long[]>();
+		this.retiringWorld = future;
+		Thread.ofPlatform().daemon().name("mcopt-lod-stop").start(() -> {
+			try {
+				oldField.close();
+				var buffers = new java.util.ArrayList<Long>();
+				if (oldMesh != null) { oldMesh.close(); for (long b : oldMesh.buffers()) buffers.add(b); }
+				if (oldPk != null) for (long b : oldPk.buffers()) buffers.add(b);
+				if (oldClip != null) {
+					oldClip.closeSnapshots();
+					for (long b : new long[] {oldClip.geomBuf, oldClip.colorBuf, oldClip.mipBuf, oldClip.crownBuf, oldClip.texBuf}) buffers.add(b);
+				}
+				future.complete(buffers.stream().mapToLong(Long::longValue).toArray());
+			} catch (Throwable e) { future.completeExceptionally(e); }
+		});
 	}
 
 	/** End of the level's opaque phase (after the real terrain and solid features): the far terrain. */
@@ -410,6 +467,9 @@ public final class Lod {
 	}
 
 	private void ensureWorld(Minecraft mc, double cameraY) {
+		if (this.retiringWorld != null || this.field == null && !this.releaseLater.isEmpty() || failed) return;
+		var settings = McoptRuntime.current();
+		if (this.field != null && this.settingsGeneration != settings.generation()) { this.retireWorld(); return; }
 		ClientLevel level = mc.level;
 		MinecraftServer server = mc.getSingleplayerServer();
 		Object owner = level == null || server == null ? null : level;
@@ -473,7 +533,8 @@ public final class Lod {
 		// tiles cached under other crown or tree levels lack (or carry) data these levels need: their own directory
 		if (LodConfig.CROWN_LEVELS != 1 || LodConfig.TREE_LEVELS != 1) cache = cache.resolve("c" + LodConfig.CROWN_LEVELS + "t" + LodConfig.TREE_LEVELS);
 		// Ceiling geometry is kept at every level. Bound its reach so this remains affordable on small unified-memory Macs.
-		this.reach = sl.dimensionType().hasCeiling() ? Math.min(LodConfig.reachBlocks(), 1024) : LodConfig.reachBlocks();
+		this.reach = settings.integer("mcopt.lod.radius") * 16.0;
+		if (sl.dimensionType().hasCeiling()) this.reach = Math.min(this.reach, 1024);
 		this.clip = new LodClip(this.ctx, LodConfig.N, this.reach, view != LodCaverns.NONE || noise.islands != null);
 		if (LodConfig.MESH) this.mesh = new LodMesh(this.ctx, this.clip);
 		if (this.mesh != null && LodPk.ENABLED) {
@@ -487,7 +548,8 @@ public final class Lod {
 			if (this.publish == null) this.publish = new LodPublish(this.ctx);
 			this.clip.publisher = this.publish;
 		}
-		this.field = new LodField(noise, this.clip, cache);
+		this.field = new LodField(noise, this.clip, cache, settings);
+		this.settingsGeneration = settings.generation();
 		if (LodConfig.CHUNKS) {
 			// The first world frame can arrive after its initial chunks. Their load hooks had no field to write to;
 			// queue those chunks too, otherwise old solid mushroom/build approximations survive a close visit.
@@ -510,11 +572,9 @@ public final class Lod {
 		if (w == null || clip == null || this.worldOwner != Minecraft.getInstance().level) return;
 		long start = System.nanoTime();
 		Minecraft mc = Minecraft.getInstance();
-		this.frames++;
 		clip.retireGpu(this.frames);
 		this.seamArmed = this.seam != null || this.taaTile != null;
 		w.frame = this.frames;
-		while (!this.releaseLater.isEmpty() && this.frames - this.releaseLater.peek()[0] >= RING) LodNative.release(this.releaseLater.poll()[1]);
 		w.integrate();
 		if (!this.edited.isEmpty() || !this.captureLoads.isEmpty()) this.resnapshot(mc, start);
 		long t1 = System.nanoTime();
@@ -1579,9 +1639,15 @@ public final class Lod {
 	public static java.util.Map<String, Object> report() {
 		java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
 		Lod l = instance;
+		m.put("enabled", McoptRuntime.current().flag("mcopt.lod"));
+		m.put("settingsGeneration", l == null ? -1 : l.settingsGeneration);
+		m.put("activeReach", activeReach());
+		m.put("worldActive", l != null && l.field != null);
+		m.put("retiring", l != null && l.retiringWorld != null);
+		m.put("pendingGpuReleases", l == null ? 0 : l.releaseLater.size());
 		if (l == null || l.field == null || l.clip == null) return m;
 		LodField w = l.field;
-		m.put("reachChunks", LodConfig.RADIUS_CHUNKS);
+		m.put("reachChunks", (int)Math.ceil(l.reach / 16));
 		m.put("n", l.clip.n);
 		m.put("levels", l.clip.levels);
 		m.put("clipMb", l.clip.bytes() / 1048576.0);
@@ -1593,7 +1659,7 @@ public final class Lod {
 		m.put("loadedFromDisk", w.loaded.get());
 		double settle = settleSeconds();
 		m.put("settleSeconds", Double.isNaN(settle) ? null : settle);
-		m.put("threads", LodConfig.THREADS);
+		m.put("threads", w.workerCount());
 		m.put("firstSettleSeconds", w.firstSettledNanos == 0 ? null : (w.firstSettledNanos - w.startNanos) / 1e9);
 		m.put("chunksSummarized", w.chunksSummarized.get());
 		if (LodField.CHUNK_TILES) {

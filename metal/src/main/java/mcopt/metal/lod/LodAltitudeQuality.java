@@ -2,7 +2,6 @@ package mcopt.metal.lod;
 
 /** Bounded render-only quality bias. Unknown ground, proximity and zoom always favor detail. */
 final class LodAltitudeQuality {
-	static final boolean ENABLED = Boolean.parseBoolean(System.getProperty("mcopt.lod.altitudeDetail", "true"));
 	private static final double PIXELS = Math.clamp(Double.parseDouble(System.getProperty("mcopt.lod.altitudePixels", "3")), 1, 16);
 	private double continuous = 1, demand = 1;
 	private float scale = 1;
@@ -17,7 +16,7 @@ final class LodAltitudeQuality {
 
 	float update(double cameraY, double surfaceY, double pixelsPerRadian, float fineRadius, float protectedRadius, long now) {
 		double target = target(cameraY, surfaceY, pixelsPerRadian, fineRadius, protectedRadius, PIXELS);
-		if (!Double.isFinite(surfaceY) || !ENABLED) {
+		if (!Double.isFinite(surfaceY) || !mcopt.metal.config.McoptRuntime.current().flag("mcopt.lod.altitudeDetail")) {
 			reset(); this.last = now; return this.scale;
 		}
 		double dt = this.last == 0 ? 0 : Math.clamp((now - this.last) / 1e9, 0, .25);

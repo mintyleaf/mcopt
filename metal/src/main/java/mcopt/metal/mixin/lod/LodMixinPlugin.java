@@ -7,15 +7,14 @@ import org.spongepowered.asm.mixin.extensibility.IMixinConfigPlugin;
 import org.spongepowered.asm.mixin.extensibility.IMixinInfo;
 
 /**
- * Far terrain's mixins apply only with -Dmcopt.lod=true (or -Dmcopt.lod.radius), the ground-truth ones only with
- * -Dmcopt.lod.truthRd: without them the game is byte-for-byte what it is without them. Reads the properties itself so nothing of mcopt.metal.lod loads before the game does.
+ * Keep the inexpensive runtime hooks installed so LODs can be enabled after startup.
+ * Ground-truth experiment hooks still require -Dmcopt.lod.truthRd.
  */
 public final class LodMixinPlugin implements IMixinConfigPlugin {
 	static {
 		mcopt.metal.Profile.apply(); // before any flag is read
 	}
 
-	private static final boolean ENABLED = Boolean.parseBoolean(System.getProperty("mcopt.lod", System.getProperty("mcopt.lod.radius") != null ? "true" : "false"));
 	/** -Dmcopt.lod.truthRd=N: ground-truth captures (real chunks past 32): only the LodTruth mixins, with or without far terrain. */
 	private static final boolean TRUTH = System.getProperty("mcopt.lod.truthRd") != null;
 	/** -Dmcopt.lod.fade=instant: Sodium's section fade-in off while far terrain draws (LodSodiumFadeMixin). */
@@ -32,8 +31,8 @@ public final class LodMixinPlugin implements IMixinConfigPlugin {
 
 	@Override
 	public boolean shouldApplyMixin(String targetClassName, String mixinClassName) {
-		if (mixinClassName.endsWith(".LodSodiumFadeMixin")) return ENABLED && FADE_INSTANT && net.fabricmc.loader.api.FabricLoader.getInstance().isModLoaded("sodium");
-		return mixinClassName.contains(".LodTruth") ? TRUTH : ENABLED;
+		if (mixinClassName.endsWith(".LodSodiumFadeMixin")) return FADE_INSTANT && net.fabricmc.loader.api.FabricLoader.getInstance().isModLoaded("sodium");
+		return mixinClassName.contains(".LodTruth") ? TRUTH : true;
 	}
 
 	@Override

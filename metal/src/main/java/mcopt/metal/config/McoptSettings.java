@@ -12,9 +12,10 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Properties;
 
-/** Startup settings editor. Saves only edited keys, preserving other settings and avoiding partial writes. */
+/** Saves edited keys atomically, then publishes the supported live controls. */
 final class McoptSettings {
 	record Option(String key, String label, String fallback, double min, double max, String hint, String... choices) {
+		boolean live() { return McoptRuntime.live(key); }
 		String validate(String value) {
 			if (choices.length > 0) {
 				for (String c : choices) if (c.equals(value)) return value;
@@ -29,10 +30,10 @@ final class McoptSettings {
 		}
 	}
 	static final Option[] OPTIONS = {
-		bool("mcopt.lod", "Distant terrain", "false", "Enable mcopt LOD terrain. Requires restarting Minecraft."),
+		bool("mcopt.lod", "Distant terrain", "false", "Enable mcopt LOD terrain. Turning it off also stops LOD background work and releases world buffers."),
 		number("mcopt.lod.radius", "LOD distance (chunks)", "512", 32, 2048, "Terrain visibility distance. This does not increase structure scouting distance."),
 		bool("mcopt.lod.textures", "LOD block textures", "true", "Draw block textures on the finest LOD level."),
-		bool("mcopt.lod.altitudeDetail", "Height-aware LOD detail", "true", "Gradually use coarser terrain while flying high. Keeps the horizon, nearby terrain and zoom detail. Requires restarting Minecraft."),
+		bool("mcopt.lod.altitudeDetail", "Height-aware LOD detail", "true", "Gradually use coarser terrain while flying high. Keeps the horizon, nearby terrain and zoom detail."),
 		bool("mcopt.compat.litematicaOverlayBatch", "Batch Litematica overlays", "true", "Combine compatible colored schematic overlay draws. Supports Litematica 0.29.1. Requires restarting Minecraft."),
 		bool("mcopt.lod.lighting", "Captured lighting", "true", "Preserve sky and block light from populated chunks."),
 		bool("mcopt.lod.overhangs", "Vertical layers", "true", "Preserve air gaps and floating surfaces from populated terrain."),
@@ -49,7 +50,7 @@ final class McoptSettings {
 		bool("mcopt.lod.structureDetail", "Structure detail", "true", "Keep vertical layers and lighting across distant detail levels."),
 		bool("mcopt.lod.cache", "Disk cache", "true", "Reuse per-world LOD terrain between sessions."),
 		bool("mcopt.lod.small", "Small GPU mode", "false", "Reduce clipmap memory and geometry. Explicit advanced clipmap settings take precedence."),
-		number("mcopt.lod.threads", "LOD worker threads", Integer.toString(Math.max(2, Runtime.getRuntime().availableProcessors() - 4)), 1, 16, "Background estimated-terrain workers; separate from vanilla FULL generation."),
+		number("mcopt.lod.threads", "LOD worker threads", Integer.toString(Math.clamp(Runtime.getRuntime().availableProcessors() - 4, 2, 16)), 1, 16, "Background estimated-terrain workers; separate from vanilla FULL generation."),
 		bool("mcopt.lod.trees", "Estimated trees", "true", "Approximate vegetation before populated terrain is available."),
 		bool("mcopt.lod.plants", "Small plants", "true", "Draw small plants on textured level-0 LODs."),
 		bool("mcopt.lod.debugHud", "F3 LOD statistics", "true", "Show tile queues, structure progress and reasons for waiting in F3."),
@@ -68,12 +69,16 @@ final class McoptSettings {
 	final Map<String, String> values = new LinkedHashMap<>(), original = new LinkedHashMap<>();
 
 	McoptSettings(Path path) throws IOException {
+		this(path, false);
+	}
+	McoptSettings(Path path, boolean showLiveValues) throws IOException {
 		this.path = path;
 		Properties file = read(path);
 		for (Option o : OPTIONS) {
 			String effective = System.getProperty(o.key.equals("profile") ? "mcopt.profile" : o.key, o.fallback);
 			if (o.key.equals("mcopt.lod") && System.getProperty(o.key) == null && System.getProperty("mcopt.lod.radius") != null) effective = "true";
 			String value = file.getProperty(o.key, effective);
+			if (showLiveValues && o.live()) value = McoptRuntime.current().value(o.key);
 			if (o.key.equals("profile") && value.isBlank()) value = "indie";
 			values.put(o.key, value); original.put(o.key, value);
 		}
@@ -85,17 +90,18 @@ final class McoptSettings {
 		Map<String, String> edits = new LinkedHashMap<>();
 		for (Option o : OPTIONS) if (!values.get(o.key).equals(original.get(o.key))) edits.put(o.key, o.validate(values.get(o.key).trim()));
 		if (edits.isEmpty()) return;
+		if (edits.containsKey("mcopt.lod.radius")) for (Option o : OPTIONS) if (o.key.equals("mcopt.lod"))
+			edits.putIfAbsent(o.key, o.validate(values.get(o.key).trim()));
 		Properties file = read(path); // Preserve unrelated keys, including edits made while the screen was open.
 		edits.forEach(file::setProperty);
-		// Setting a radius historically enabled LODs implicitly; keep an explicit off switch effective.
-		if (edits.containsKey("mcopt.lod.radius") && !edits.containsKey("mcopt.lod")) file.setProperty("mcopt.lod", values.get("mcopt.lod"));
 		Files.createDirectories(path.toAbsolutePath().getParent());
 		Path temp = Files.createTempFile(path.toAbsolutePath().getParent(), "mcopt-settings-", ".tmp");
 		try {
-			try (Writer out = Files.newBufferedWriter(temp, StandardCharsets.UTF_8)) { file.store(out, "mcopt settings. Changes apply after restarting Minecraft. JVM arguments take precedence."); }
+			try (Writer out = Files.newBufferedWriter(temp, StandardCharsets.UTF_8)) { file.store(out, "mcopt settings. Live controls apply on save; other settings require a restart. JVM arguments take precedence at startup."); }
 			try { Files.move(temp, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE); }
 			catch (AtomicMoveNotSupportedException ignored) { Files.move(temp, path, StandardCopyOption.REPLACE_EXISTING); }
 		} finally { Files.deleteIfExists(temp); }
+		McoptRuntime.apply(edits);
 	}
 
 	private static Properties read(Path path) throws IOException {

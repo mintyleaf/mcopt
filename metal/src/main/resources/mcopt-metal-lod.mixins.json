@@ -4,6 +4,6 @@
 	"plugin": "mcopt.metal.mixin.lod.LodMixinPlugin",
 	"compatibilityLevel": "JAVA_25",
 	"mixins": ["LodMaterialContextAccess", "LodTruthChunkMapMixin", "LodRefinementMixin"],
-	"client": ["LodAtlasMixin", "LodDebugMixin", "LodCameraMixin", "LodClientLevelMixin", "LodLightUpdateMixin", "LodFogMixin", "LodLevelRendererMixin", "LodTruthOptionsMixin"],
+	"client": ["LodRuntimeMixin", "LodAtlasMixin", "LodDebugMixin", "LodCameraMixin", "LodClientLevelMixin", "LodLightUpdateMixin", "LodFogMixin", "LodLevelRendererMixin", "LodTruthOptionsMixin"],
 	"injectors": { "defaultRequire": 1 }
 }

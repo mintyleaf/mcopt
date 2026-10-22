@@ -111,17 +111,23 @@ final class LodField {
 	}
 
 	LodField(LodNoise noise, LodClip clip, Path cache) {
+		this(noise, clip, cache, mcopt.metal.config.McoptRuntime.current());
+	}
+	private volatile boolean retiring;
+	private final mcopt.metal.config.McoptRuntime.State settings;
+	LodField(LodNoise noise, LodClip clip, Path cache, mcopt.metal.config.McoptRuntime.State settings) {
+		this.settings = settings;
 		this.noise = noise;
 		this.clip = clip;
 		this.cache = cache;
 		this.skyLight = noise.level.dimensionType().hasSkyLight();
 		this.forest = noise.level.dimensionType().hasCeiling() ? null : new LodForest(noise);
 		this.captures = new LodCaptures(cache, clip.levels, LodConfig.DISK_CACHE);
-		this.refinement = LodConfig.REFINE && LodConfig.CHUNKS
-			? new LodRefinement(noise.level, this.captures, this::refined, () -> this.results.size() >= 32 || this.captures.pendingCount() >= 32, noise.cavernY) : null;
+		this.refinement = settings.flag("mcopt.lod.refine") && LodConfig.CHUNKS
+			? new LodRefinement(noise.level, this.captures, this::refined, () -> this.results.size() >= 32 || this.captures.pendingCount() >= 32, noise.cavernY, settings) : null;
 		this.winTx = new int[clip.levels];
 		this.winTz = new int[clip.levels];
-		for (int i = 0; i < LodConfig.THREADS; i++) {
+		for (int i = 0; i < settings.integer("mcopt.lod.threads"); i++) {
 			Thread t = new Thread(this::work, "mcopt-lod-" + i);
 			t.setDaemon(true);
 			t.setPriority(Thread.MIN_PRIORITY + 1);
@@ -130,7 +136,14 @@ final class LodField {
 		}
 		System.out.println(String.format(java.util.Locale.ROOT,
 			"mcopt-lod: field ready: reach %d chunks, %d levels of %d x %d cells (%.0f MB), switch at %s, %d workers, cache %s",
-			(int)Math.ceil(clip.reach / 16), clip.levels, clip.n, clip.n, clip.bytes() / 1048576.0, java.util.Arrays.toString(clip.switchDist), LodConfig.THREADS, cache));
+			(int)Math.ceil(clip.reach / 16), clip.levels, clip.n, clip.n, clip.bytes() / 1048576.0, java.util.Arrays.toString(clip.switchDist), settings.integer("mcopt.lod.threads"), cache));
+	}
+
+	void quiesce() {
+		this.retiring = true;
+		if (this.refinement != null) this.refinement.pause();
+		if (this.scanner != null) this.scanner.shutdownNow();
+		LodYield.wake();
 	}
 
 	void close() {
@@ -141,6 +154,15 @@ final class LodField {
 		this.closed = true;
 		for (Thread t : this.threads) t.interrupt();
 		if (this.scanner != null) this.scanner.shutdownNow();
+		// The owner may now free shared clipmap snapshots: no worker may retain an address into them.
+		boolean interrupted = false;
+		for (Thread t : this.threads) while (t.isAlive()) try { t.join(); }
+		catch (InterruptedException e) { interrupted = true; }
+		if (this.scanner != null) while (!this.scanner.isTerminated()) try {
+			this.scanner.awaitTermination(1, java.util.concurrent.TimeUnit.SECONDS);
+		} catch (InterruptedException e) { interrupted = true; }
+		this.results.clear();
+		if (interrupted) Thread.currentThread().interrupt();
 	}
 
 	private void work() {
@@ -153,7 +175,7 @@ final class LodField {
 			}
 			long observed = LodYield.revision();
 			Job j = this.maintenance.poll();
-			if (j == null && !LodMemoryBudget.pressured()) j = this.jobs.poll(LodYield.available(this.clip.levels - 1, false),
+			if (j == null && !this.retiring && !LodMemoryBudget.pressured()) j = this.jobs.poll(LodYield.available(this.clip.levels - 1, false),
 				LodYield.available(0, true), LodYield.available(0, false));
 			if (j == null) {
 				if (this.jobs.isEmpty()) LodYield.awaitWork(observed);
@@ -1025,7 +1047,7 @@ final class LodField {
 		this.missingKeys.clear();
 		this.reqX = cx;
 		this.reqZ = cz;
-		double reach = LodConfig.reachBlocks();
+		double reach = this.clip.reach;
 		int needed = 0, missing = 0;
 		int top = this.clip.levels - 1;
 		java.util.HashMap<Long, Rank> again = new java.util.HashMap<>();
@@ -1165,7 +1187,7 @@ final class LodField {
 	private ScanResult scanScreen(double cx, double cz, double camY, double px, double pz, org.joml.Matrix4f viewProj, int[] winTx, int[] winTz,
 		float[] switches, LodSeam.ChunkMask masked) {
 		FrustumIntersection frustum = new FrustumIntersection(viewProj, false);
-		double reach = LodConfig.reachBlocks();
+		double reach = this.clip.reach;
 		int needed = 0, missing = 0;
 		int top = this.clip.levels - 1;
 		java.util.HashSet<Long> keys = new java.util.HashSet<>();
@@ -1302,6 +1324,7 @@ final class LodField {
 	}
 
 	int queuedLane(int lane) { return this.jobs.size(lane); }
+	int workerCount() { return this.threads.size(); }
 
 	java.util.List<String> debugLines() {
 		var lines = new java.util.ArrayList<String>();
@@ -1309,7 +1332,7 @@ final class LodField {
 		lines.add("LOD terrain: " + this.generated.get() + " generated, " + this.loaded.get() + " cached, " + this.chunksSummarized.get() + " chunk captures");
 		lines.add("LOD captures: " + this.captures.pendingCount() + " queued, " + this.captureFallbacks + " pressure fallbacks");
 		if (this.refinement != null) lines.addAll(this.refinement.debugLines());
-		else lines.add("LOD population: " + (LodConfig.REFINE ? "unavailable for this world" : "disabled"));
+		else lines.add("LOD population: " + (this.settings.flag("mcopt.lod.refine") ? "unavailable for this world" : "disabled"));
 		return java.util.List.copyOf(lines);
 	}
 

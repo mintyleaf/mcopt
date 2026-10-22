@@ -41,9 +41,11 @@ public final class LodRefinement implements AutoCloseable {
 	private final LodCaptures captures;
 	private final java.util.function.BiConsumer<LodChunks.Snapshot, Long> accept;
 	private final BooleanSupplier congested;
-	private final LodRefinePlan plan = new LodRefinePlan(LodConfig.REFINE_RADIUS);
+	private final mcopt.metal.config.McoptRuntime.State settings;
+	private final LodWorkload workload;
+	private final LodRefinePlan plan;
 	private final LinkedHashMap<Long, Request> requests = new LinkedHashMap<>();
-	private final LodRefineBudget budget = new LodRefineBudget();
+	private final LodRefineBudget budget;
 	private final LodHeap heap = new LodHeap();
 	private LodPoiPlan poi;
 	private int fullStarts;
@@ -75,17 +77,17 @@ public final class LodRefinement implements AutoCloseable {
 		Focus f = focus;
 		String state = closed ? "stopped" : !active(f) ? "waiting for player" : level.getServer().isPaused() ? "paused"
 			: !captures.indexed() ? "indexing saved captures" : congested.getAsBoolean() ? "waiting for capture/upload queue"
-			: LodConfig.REFINE_RADIUS == 0 ? "new generation disabled" : budget.reason();
+			: settings.integer("mcopt.lod.refineRadius") == 0 ? "new generation disabled" : budget.reason();
 		if (active(f) && budget.ready(now)) {
 			if (retiring.size() >= retireLimit()) state = "waiting for chunk unloading";
 			else if (level.getChunkSource().getLoadedChunksCount() > LodRefineBudget.chunkLimit(f.rd)) state = "waiting for player chunks";
 			else if (poi != null && poi.pending() >= footprintHighWater()) state = "building confirmed footprints; probes paused";
-			else if (LodConfig.REFINE_INTERVAL_MS > 0 && activeFull() < budget.fullLimit(now)
+			else if (settings.integer("mcopt.lod.refineIntervalMs") > 0 && activeFull() < budget.fullLimit(now)
 				&& !budget.generationReady(now, 0, f.rd)) state = "FULL start spacing; probes independent";
 		}
 		Runtime runtime = Runtime.getRuntime();
-		debug = List.of("LOD population: " + state + " (" + LodConfig.WORKLOAD.label() + "; admit " + budget.fullLimit(now) + " FULL/" + budget.probeLimit(now) + " probes)",
-			"LOD work: FULL " + activeFull() + "/" + LodConfig.WORKLOAD.full + ", probes " + activeProbes() + "/" + LodConfig.WORKLOAD.probes
+		debug = List.of("LOD population: " + state + " (" + workload.label() + "; admit " + budget.fullLimit(now) + " FULL/" + budget.probeLimit(now) + " probes)",
+			"LOD work: FULL " + activeFull() + "/" + workload.full + ", probes " + activeProbes() + "/" + workload.probes
 				+ "; import queue " + imports.size() + ", radius " + importRadius + "c",
 			"LOD structures: " + (poi == null ? 0 : poi.validated) + " probed, " + (poi == null ? 0 : poi.structures)
 				+ " confirmed, " + (poi == null ? 0 : poi.pending()) + " footprint chunks queued; radius " + scoutRadius + "c",
@@ -98,17 +100,25 @@ public final class LodRefinement implements AutoCloseable {
 	}
 
 	LodRefinement(ServerLevel level, LodCaptures captures, java.util.function.BiConsumer<LodChunks.Snapshot, Long> accept, BooleanSupplier congested, int cavernY) {
+		this(level, captures, accept, congested, cavernY, mcopt.metal.config.McoptRuntime.current());
+	}
+	LodRefinement(ServerLevel level, LodCaptures captures, java.util.function.BiConsumer<LodChunks.Snapshot, Long> accept,
+		BooleanSupplier congested, int cavernY, mcopt.metal.config.McoptRuntime.State settings) {
+		this.settings = settings;
+		this.workload = LodWorkload.parse(settings.value("mcopt.lod.workload"));
+		this.plan = new LodRefinePlan(settings.integer("mcopt.lod.refineRadius"));
+		this.budget = new LodRefineBudget(this.workload, settings.integer("mcopt.lod.refineIntervalMs"));
 		this.level = level; this.cavernY = cavernY; this.captures = captures; this.accept = accept; this.congested = congested;
-		reachRadius = effectiveRadius(Integer.MAX_VALUE, LodConfig.RADIUS_CHUNKS, level.dimensionType().hasCeiling());
-		scoutRadius = effectiveRadius(LodConfig.SCOUT_RADIUS, LodConfig.RADIUS_CHUNKS, level.dimensionType().hasCeiling());
-		importRadius = effectiveRadius(LodConfig.IMPORT_RADIUS, LodConfig.RADIUS_CHUNKS, level.dimensionType().hasCeiling());
+		reachRadius = effectiveRadius(Integer.MAX_VALUE, settings.integer("mcopt.lod.radius"), level.dimensionType().hasCeiling());
+		scoutRadius = effectiveRadius(settings.integer("mcopt.lod.scoutRadius"), settings.integer("mcopt.lod.radius"), level.dimensionType().hasCeiling());
+		importRadius = effectiveRadius(settings.integer("mcopt.lod.importRadius"), settings.integer("mcopt.lod.radius"), level.dimensionType().hasCeiling());
 		region = DimensionType.getStorageFolder(level.dimension(), level.getServer().getWorldPath(LevelResource.ROOT)).resolve("region");
 		reader = new Thread(this::readSaved, "mcopt-lod-saved-import");
 		reader.setDaemon(true); reader.setPriority(Thread.MIN_PRIORITY + 1);
 		ACTIVE.put(level, this);
-		if (LodConfig.IMPORT_SAVED && importRadius > 0) reader.start();
-		System.out.println("mcopt-lod: population " + LodConfig.WORKLOAD.label() + ": up to " + LodConfig.WORKLOAD.full + " FULL + "
-			+ LodConfig.WORKLOAD.probes + " probes, start spacing " + LodConfig.REFINE_INTERVAL_MS + "ms, scout " + scoutRadius + "c, import " + importRadius + "c");
+		if (settings.flag("mcopt.lod.importSaved") && importRadius > 0) reader.start();
+		System.out.println("mcopt-lod: population " + workload.label() + ": up to " + workload.full + " FULL + "
+			+ workload.probes + " probes, start spacing " + settings.integer("mcopt.lod.refineIntervalMs") + "ms, scout " + scoutRadius + "c, import " + importRadius + "c");
 	}
 
 	static int effectiveRadius(int configured, int reach, boolean ceiling) { return Math.max(0, Math.min(configured, Math.min(reach, ceiling ? 64 : Integer.MAX_VALUE))); }
@@ -133,8 +143,8 @@ public final class LodRefinement implements AutoCloseable {
 		long dx = (int)(key >> 32) - (long)f.x, dz = (int)key - (long)f.z;
 		return dx * dx + dz * dz <= (long)radius * radius;
 	}
-	private int retireLimit() { return 4 + LodConfig.WORKLOAD.full * 2; }
-	private int footprintHighWater() { return 32 * LodConfig.WORKLOAD.full; }
+	private int retireLimit() { return 4 + workload.full * 2; }
+	private int footprintHighWater() { return 32 * workload.full; }
 
 	private synchronized void tick() {
 		try { tickWork(); } finally { publishDebug(); }
@@ -142,7 +152,7 @@ public final class LodRefinement implements AutoCloseable {
 
 	private void tickWork() {
 		if (closed) return;
-		long now = System.nanoTime(), deadline = now + LodConfig.WORKLOAD.tickBudgetNanos;
+		long now = System.nanoTime(), deadline = now + workload.tickBudgetNanos;
 		Focus f = focus;
 		Runtime runtime = Runtime.getRuntime();
 		boolean running = active(f) && !level.getServer().isPaused() && !level.getServer().isStopped();
@@ -163,7 +173,7 @@ public final class LodRefinement implements AutoCloseable {
 				activeFull(), budget.fullLimit(now), activeProbes(), budget.probeLimit(now), imported, generated);
 		}
 		if (!captures.indexed() || congested.getAsBoolean()) return;
-		for (int i = 0; i < LodConfig.WORKLOAD.imports && budget.importReady(now) && System.nanoTime() < deadline; i++) {
+		for (int i = 0; i < workload.imports && budget.importReady(now) && System.nanoTime() < deadline; i++) {
 			Import item = imports.poll(); if (item == null) break;
 			if (!within(item.key, f, importRadius) || captures.stamp(item.key) != item.stamp) continue;
 			budget.imported();
@@ -174,7 +184,7 @@ public final class LodRefinement implements AutoCloseable {
 			} else { needsFull.add(item.key); saved.remove(item.key); }
 			if (closed) return;
 		}
-		if (LodConfig.REFINE_RADIUS == 0 || level.getServer().getTickCount() < nextStart || retiring.size() >= retireLimit()) return;
+		if (settings.integer("mcopt.lod.refineRadius") == 0 || level.getServer().getTickCount() < nextStart || retiring.size() >= retireLimit()) return;
 		int loaded = level.getChunkSource().getLoadedChunksCount();
 		if (!budget.ready(now) || loaded > LodRefineBudget.chunkLimit(f.rd)) return;
 		if (poi == null && scoutRadius > 0) poi = new LodPoiPlan(level, scoutRadius);
@@ -198,7 +208,7 @@ public final class LodRefinement implements AutoCloseable {
 			}
 			if (!r.gate.done()) continue;
 			// Always retire cancellation/error work; successful captures respect the bounded per-tick server budget.
-			if (!r.gate.cancelled() && !r.probe && (snapshots >= LodConfig.WORKLOAD.imports || System.nanoTime() >= deadline)) continue;
+			if (!r.gate.cancelled() && !r.probe && (snapshots >= workload.imports || System.nanoTime() >= deadline)) continue;
 			boolean wait = false;
 			try {
 				Object result = r.gate.result();
@@ -246,7 +256,7 @@ public final class LodRefinement implements AutoCloseable {
 			}
 			if (!within(key, f, reachRadius) || near(pos, f) || !level.getWorldBorder().isWithinBounds(pos)) continue;
 			if (!needsFull.contains(key) && (captures.has(key) || !structure && saved.contains(key))) continue;
-			start(pos, false, structure, structure ? Math.min(reachRadius, scoutRadius + 16) : Math.min(reachRadius, LodConfig.REFINE_RADIUS + 4), now);
+			start(pos, false, structure, structure ? Math.min(reachRadius, scoutRadius + 16) : Math.min(reachRadius, settings.integer("mcopt.lod.refineRadius") + 4), now);
 			fullStarts++; return;
 		}
 	}

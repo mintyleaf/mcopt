@@ -85,7 +85,18 @@ discarding cached terrain. Clearance comes from nearby loaded heightmaps, includ
 than absolute Y. The actual world rendering resolution and projection protect pixel detail when zooming; the
 full-terrain handoff is also protected. Unknown ground and ceiling dimensions retain normal detail. Render-list
 ownership, temporal history and background priority scans are refreshed together when detail changes. Mod Menu's
-Height-aware LOD detail (mcopt.lod.altitudeDetail, default true) disables/enables this behavior after a restart.
+Height-aware LOD detail (mcopt.lod.altitudeDetail, default true) can toggle this behavior while playing.
+
+Mod Menu > mcopt > Configure > Apply and close now applies these controls without restarting:
+LOD enablement/distance, population and scouting controls, saved-import controls, population workload and start
+spacing, estimated-terrain worker count, height-aware detail, haze and F3 statistics. Disabling LODs detaches the
+view immediately, stops background work, drains accepted captures off the render thread and retires world GPU
+buffers after in-flight frames. The disk cache is retained. Distance/workload changes rebuild the view from cache;
+terrain can briefly disappear and refill. Repeated edits share one retirement and use the latest settings.
+Controls marked * still require a restart, including renderer/profile switches, buffer formats and Litematica
+compatibility. JVM arguments win at startup; explicit live edits override the running values until the next launch.
+To reduce load, lower LOD distance, select low workload/one terrain worker, or disable population and scouting.
+Turning Distant terrain off stops LOD work; vanilla chunk generation still runs. Java may retain committed heap.
 
 Litematica 0.29.1 colored overlays now combine consecutive compatible chunk draws into fewer render passes.
 Transparent draw order, model geometry, colors, depth behavior and per-chunk transforms are preserved; buffer

@@ -1,14 +1,14 @@
 package mcopt.metal.lod;
 
 /**
- * Far terrain switches, all read once at startup. Off unless -Dmcopt.lod=true (or any -Dmcopt.lod.radius): then nothing of
- * this package loads and the mixins that call into it are rejected by LodMixinPlugin.
+ * Startup defaults and buffer-format switches. Runtime performance controls are published by McoptRuntime;
+ * workers snapshot those controls when their world is created. Disabled LODs allocate no world buffers.
  */
 public final class LodConfig {
 	/** -Dmcopt.lod=true: far terrain on. A radius alone turns it on too. */
 	public static final boolean ENABLED = Boolean.parseBoolean(System.getProperty("mcopt.lod", System.getProperty("mcopt.lod.radius") != null ? "true" : "false"));
 	/** Blend our near water into the opaque far-water approximation over the last two chunks. */
-	public static final boolean WATER_TRANSITION = ENABLED && !"false".equals(System.getProperty("mcopt.lod.waterTransition"));
+	public static final boolean WATER_TRANSITION = !"false".equals(System.getProperty("mcopt.lod.waterTransition"));
 	/** -Dmcopt.lod.handoffMs=200: dissolve LOD overlaps after near coverage arrives; 0 restores the instant handoff. */
 	public static final int HANDOFF_MS = Math.clamp(Integer.getInteger("mcopt.lod.handoffMs", 200), 0, 2000);
 	/** A lower surface and one floating solid layer in real chunks, using the existing crown buffers. */
@@ -16,12 +16,12 @@ public final class LodConfig {
 	/** Per-surface sky/block light on level 0. One extra four-byte word per level-0 cell. */
 	public static final boolean LIGHTING = !"false".equals(System.getProperty("mcopt.lod.lighting"));
 	/** Real distant terrain, singleplayer only: import saved chunks and refine unexplored chunks through vanilla FULL. */
-	public static final boolean REFINE = ENABLED && !"false".equals(System.getProperty("mcopt.lod.refine"));
+	public static final boolean REFINE = !"false".equals(System.getProperty("mcopt.lod.refine"));
 	public static final boolean IMPORT_SAVED = REFINE && !"false".equals(System.getProperty("mcopt.lod.importSaved"));
 	public static final int REFINE_RADIUS = Math.clamp(Integer.getInteger("mcopt.lod.refineRadius", 32), 0, 64);
 	/** Structure candidates and confirmed footprints use separate bounded request lanes. */
 	public static final int SCOUT_RADIUS = Math.clamp(Integer.getInteger("mcopt.lod.scoutRadius", 256), 0, 512);
-	public static final boolean STRUCTURE_DETAIL = REFINE && !"false".equals(System.getProperty("mcopt.lod.structureDetail"));
+	public static final boolean STRUCTURE_DETAIL = !"false".equals(System.getProperty("mcopt.lod.structureDetail"));
 	/** Optional minimum spacing between FULL starts; zero uses adaptive concurrency without a completion delay. */
 	public static final int REFINE_INTERVAL_MS = Math.clamp(Integer.getInteger("mcopt.lod.refineIntervalMs", 0), 0, 60_000);
 	static final LodWorkload WORKLOAD = LodWorkload.parse(System.getProperty("mcopt.lod.workload", "balanced"));

@@ -63,6 +63,12 @@ tasks.register('checkMcoptSettings', JavaExec) {
 	mainClass = 'mcopt.metal.config.McoptSettingsChecks'
 }
 
+tasks.register('checkMcoptRuntime', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.config.McoptRuntimeChecks'
+}
+
 ['checkLodExplicitOff': false, 'checkLodImplicitOn': true].each { taskName, enabled ->
 	tasks.register(taskName, JavaExec) {
 		dependsOn 'metalChecksClasses'

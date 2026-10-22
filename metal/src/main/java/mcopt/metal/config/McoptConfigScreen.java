@@ -23,7 +23,7 @@ public final class McoptConfigScreen extends Screen {
 	public McoptConfigScreen(Screen parent) {
 		super(Component.literal("mcopt settings"));
 		this.parent = parent;
-		try { settings = new McoptSettings(FabricLoader.getInstance().getConfigDir().resolve("mcopt.properties")); }
+		try { settings = new McoptSettings(FabricLoader.getInstance().getConfigDir().resolve("mcopt.properties"), true); }
 		catch (IOException | IllegalArgumentException e) { error = "Cannot read settings: " + e.getMessage(); }
 	}
 
@@ -39,17 +39,18 @@ public final class McoptConfigScreen extends Screen {
 			if (i >= McoptSettings.OPTIONS.length) break;
 			var o = McoptSettings.OPTIONS[i];
 			int x = left + slot % 2 * (w + gap), y = 52 + slot / 2 * 42;
-			labels.add(new Label(o.label(), x, y));
+			labels.add(new Label(o.label() + (o.live() ? "" : " *"), x, y));
+			String hint = o.hint() + (o.live() ? " Applies when saved. Distance and workload changes rebuild the LOD view using its disk cache." : " * Requires restarting Minecraft.");
 			if (o.choices().length > 0) {
 				addRenderableWidget(Button.builder(value(settings.values.get(o.key())), b -> {
 					String[] choices = o.choices(); int at = List.of(choices).indexOf(settings.values.get(o.key()));
 					String next = choices[(at + 1) % choices.length];
 					settings.values.put(o.key(), next); b.setMessage(value(next));
-				}).bounds(x, y + 12, w, 20).tooltip(Tooltip.create(Component.literal(o.hint()))).build());
+				}).bounds(x, y + 12, w, 20).tooltip(Tooltip.create(Component.literal(hint))).build());
 			} else {
 				EditBox box = new EditBox(font, x, y + 12, w, 20, Component.literal(o.label()));
 				box.setMaxLength(20); box.setValue(settings.values.get(o.key()));
-				box.setTooltip(Tooltip.create(Component.literal(o.hint())));
+				box.setTooltip(Tooltip.create(Component.literal(hint)));
 				box.setResponder(v -> settings.values.put(o.key(), v));
 				addRenderableWidget(box);
 			}
@@ -57,7 +58,7 @@ public final class McoptConfigScreen extends Screen {
 		addRenderableWidget(Button.builder(Component.literal("<"), b -> { page = (page + pages - 1) % pages; rebuildWidgets(); }).bounds(width / 2 - 80, height - 55, 30, 20).build());
 		addRenderableWidget(Button.builder(Component.literal(">"), b -> { page = (page + 1) % pages; rebuildWidgets(); }).bounds(width / 2 + 50, height - 55, 30, 20).build());
 		addRenderableWidget(Button.builder(Component.literal("Cancel"), b -> onClose()).bounds(width / 2 - 155, height - 28, 150, 20).build());
-		Button save = addRenderableWidget(Button.builder(Component.literal("Save and close"), b -> save()).bounds(width / 2 + 5, height - 28, 150, 20).build());
+		Button save = addRenderableWidget(Button.builder(Component.literal("Apply and close"), b -> save()).bounds(width / 2 + 5, height - 28, 150, 20).build());
 		save.active = settings != null;
 	}
 
@@ -70,7 +71,7 @@ public final class McoptConfigScreen extends Screen {
 	@Override public void extractRenderState(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
 		super.extractRenderState(g, mouseX, mouseY, partialTick);
 		g.centeredText(font, title, width / 2, 12, 0xFFFFFFFF);
-		g.centeredText(font, "Restart Minecraft to apply. JVM flags override saved settings.", width / 2, 29, 0xFFBBBBBB);
+		g.centeredText(font, "Live controls apply on save. * Requires restart.", width / 2, 29, 0xFFBBBBBB);
 		for (Label label : labels) g.text(font, label.text, label.x, label.y, 0xFFFFFFFF);
 		g.centeredText(font, (page + 1) + " / " + pages, width / 2, height - 49, 0xFFFFFFFF);
 		if (!error.isEmpty()) g.centeredText(font, error, width / 2, height - 69, 0xFFFF7777);

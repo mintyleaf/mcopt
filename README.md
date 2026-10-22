@@ -37,7 +37,9 @@ Litematica 0.29.1 colored schematic overlays combine consecutive compatible draw
 - The perf profile is on by default.
 - `profile=none` in `~/Library/Application Support/minecraft/config/mcopt.properties` (in Prism, the instance's
   `minecraft/config` folder) turns it off. The first launch writes that file.
-- With Mod Menu installed, use **mcopt > Configure** for LOD rendering, population/scouting, saved imports and performance settings. Population workload (`low`/`balanced`/`high`) controls background work; Optimization profile controls renderer defaults. Save and restart Minecraft to apply changes; JVM arguments take precedence.
+- With Mod Menu installed, use **mcopt > Configure > Apply and close**. LOD enablement, distance, population/scouting limits and workload, saved-import controls, terrain-worker count, altitude detail, haze and F3 statistics apply while playing. Disabling LODs stops their background work, drains accepted captures and releases world buffers; their disk cache is retained. Distance and workload edits rebuild the LOD view, so terrain can briefly disappear and refill from cache.
+- Options marked `*` require restarting Minecraft, including buffer formats, renderer/profile switches and Litematica compatibility. JVM arguments take precedence at startup; explicit live edits override their current values until the next launch. Population workload (`low`/`balanced`/`high`) controls background work independently of the renderer optimization profile.
+- For lower resource use, reduce **LOD distance**, set **Population workload** to `low` and **LOD worker threads** to `1`, or disable **Population and scouting**. Turn **Distant terrain** off to stop LOD work and free its world buffers. This does not stop Minecraft's own terrain generation or force Java to return committed heap immediately.
 - Far terrain is an experimental opt-in: `mcopt.lod=true` in the same file, for Macs with 10 or more GPU cores.
 
 Opt-in settings (in the same file, or as `-D` flags):
