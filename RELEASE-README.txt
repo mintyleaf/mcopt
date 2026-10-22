@@ -92,9 +92,18 @@ Mod Menu also applies the strength controls live, without rebuilding the world:
 - Minimum detail radius (mcopt.lod.altitudeMinPercent): default 25 percent, range 25..100.
 - Height detail pixel tolerance (mcopt.lod.altitudePixels): default 6 pixels, range 1..16; higher allows coarser cells.
 With defaults, full reduction is available 192 blocks above nearby terrain. Zoom, render resolution and the
-full-terrain boundary may require more detail than the chosen minimum. Clearance uses the highest nearby sample;
-the reduction does not track how much terrain a downward view exposes. The previous conservative behavior can be
-reproduced with start 64, span 192, minimum 50 and pixel tolerance 3. Settings are parsed only when edited, not per frame.
+full-terrain boundary may require more detail than the chosen minimum. Clearance uses the upper quartile of up to 25 nearby loaded samples, ignoring isolated roof/tower outliers
+while protecting broad ridges and canopies;
+the reduction does not track how much terrain a downward view exposes. The previous conservative strength limits are available with start 64, span 192, minimum 50 and pixel tolerance 3. Settings are parsed only when edited, not per frame.
+
+Stationary LOD views reuse GPU visibility lists only when the exact camera, projection, geometry, LOD tiers and
+full-terrain coverage are unchanged. Camera movement rebuilds them normally. Reuse stationary LOD visibility
+(mcopt.lod.reuseVisibility, default true) applies live; alternate PK/fence/debug-seam paths retain ordinary culling.
+Ready full-terrain interiors exclude LODs. The outgoing blend band is 16 blocks wide; the 200 ms arrival fade and
+missing-chunk fallback remain, so some boundary overlap is intentional. No cache reset is needed.
+LOD AO cutoff (pixels) (mcopt.lod.aoPixels, default 2, range 0..8) applies live. Fine AO fades between twice the
+cutoff and the cutoff, then skips neighborhood probes. Textures and captured sky/torch lighting remain unchanged.
+Set it to 0 for full AO at every distance.
 
 Mod Menu > mcopt > Configure > Apply and close now applies these controls without restarting:
 LOD enablement/distance, population and scouting controls, saved-import controls, population workload and start
