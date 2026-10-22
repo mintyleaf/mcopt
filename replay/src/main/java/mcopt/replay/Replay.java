@@ -24,13 +24,15 @@ public final class Replay {
     private static final String WORLD = "mcopt-replay";
     private static final boolean ON = !PLAN.isEmpty();
     private record Pose(double x,double y,double z,float yaw,float pitch,int fov) { }
-    private record Segment(String name,double seconds,double[] from,double[] to,float yaw,float pitch,int fov) {
+    private record Segment(String name,double seconds,double[] from,double[] to,float yaw,float pitch,int fov,Map<String,String> edits) {
         Pose at(double fraction) {
             return new Pose(from[0]+(to[0]-from[0])*fraction,from[1]+(to[1]-from[1])*fraction,
                 from[2]+(to[2]-from[2])*fraction,yaw,pitch,fov);
         }
     }
     private static final List<Segment> segments = new ArrayList<>();
+    private static final JsonArray liveStates = new JsonArray();
+    private static boolean liveControls;
     private static volatile Pose target;
     private static Pose warmPose;
     private static volatile boolean serverReady;
@@ -91,7 +93,14 @@ public final class Replay {
             for(double v:b) if(!Double.isFinite(v)) throw new IllegalArgumentException("Non-finite position");
             int fov=p.get("fov").getAsInt();float yaw=p.get("yaw").getAsFloat(),pitch=p.get("pitch").getAsFloat();
             if(fov<30||fov>110||!Float.isFinite(yaw)||!Float.isFinite(pitch)||Math.abs(pitch)>90) throw new IllegalArgumentException("Invalid view");
-            segments.add(new Segment(p.get("name").getAsString(),seconds,a,b,yaw,pitch,fov));total+=seconds;
+            Map<String,String> edits=new LinkedHashMap<>();
+            if(p.has("mcopt")) for(var e:p.getAsJsonObject("mcopt").entrySet()) {
+                Class<?> controls=Class.forName("mcopt.metal.config.McoptRuntime");
+                if(!(boolean)controls.getMethod("live",String.class).invoke(null,e.getKey()))throw new IllegalArgumentException("Not a live mcopt setting: "+e.getKey());
+                edits.put(e.getKey(),e.getValue().getAsString());
+            }
+            liveControls|=!edits.isEmpty();
+            segments.add(new Segment(p.get("name").getAsString(),seconds,a,b,yaw,pitch,fov,Map.copyOf(edits)));total+=seconds;
         }
         if(segments.isEmpty()||segments.size()>32||total>300) throw new IllegalArgumentException("Route must have 1..32 phases, <=300 seconds");
         routeHash=HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
@@ -159,6 +168,7 @@ public final class Replay {
                 Segment s=segments.get(selected);if(elapsed<offset+s.seconds)break;offset+=s.seconds;
             }
             if(selected==segments.size()) {
+                recordLiveState();
                 if(captureImage) {
                     if(marker!=null){marker.end();marker.commit();marker=null;}
                     captureRequested=true;lastFrame=0;
@@ -171,13 +181,36 @@ public final class Replay {
                 return;
             }
             if(selected!=phase) {
+                recordLiveState();
                 if(marker!=null) {marker.end();marker.commit();}
+                if(!segments.get(selected).edits.isEmpty())applyLiveEdits(mc,segments.get(selected).edits);
                 phase=selected;marker=new Marker();marker.phase=segments.get(phase).name;marker.routeSha256=routeHash;marker.begin();
                 System.out.println("[mcopt-replay] phase "+segments.get(phase).name);
             }
             target=segments.get(phase).at(Math.clamp((elapsed-offset)/segments.get(phase).seconds,0,1));
             applyPose();lastFrame=now;
         } catch(Exception error) {fail(mc,error);}
+    }
+
+    private static void recordLiveState() throws Exception {
+        if(!liveControls||phase<0)return;
+        JsonObject state=new JsonObject();state.addProperty("phase",segments.get(phase).name);
+        state.add("lod",JSON.toJsonTree(Class.forName("mcopt.metal.lod.Lod").getMethod("report").invoke(null)));
+        state.add("lodThreads",JSON.toJsonTree(Thread.getAllStackTraces().keySet().stream()
+            .filter(t->t.isAlive()&&t.getName().startsWith("mcopt-lod-")).map(Thread::getName).sorted().toList()));
+        liveStates.add(state);
+        Files.writeString(output.resolve("live-controls.json"),JSON.toJson(liveStates)+"\n");
+    }
+
+    /** Use the actual settings editor's save path; only the marker-owned instance config is edited. */
+    private static void applyLiveEdits(Minecraft mc,Map<String,String> edits) throws Exception {
+        Class<?> type=Class.forName("mcopt.metal.config.McoptSettings");
+        var constructor=type.getDeclaredConstructor(Path.class,boolean.class);constructor.setAccessible(true);
+        Object editor=constructor.newInstance(mc.gameDirectory.toPath().resolve("config/mcopt.properties"),true);
+        var field=type.getDeclaredField("values");field.setAccessible(true);
+        @SuppressWarnings("unchecked") Map<String,String> values=(Map<String,String>)field.get(editor);
+        values.putAll(edits);
+        var save=type.getDeclaredMethod("save");save.setAccessible(true);save.invoke(editor);
     }
 
     /** Applied after mouse/tick updates, before camera extraction, so input never drives the route. */

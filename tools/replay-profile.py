@@ -127,6 +127,9 @@ def validate_plan(path):
         raise ValueError('Expected 1..32 phases')
     names = set()
     for p in phases:
+        edits = p.get('mcopt', {})
+        if not isinstance(edits, dict) or not all(isinstance(k, str) and isinstance(v, (str, bool, int, float)) for k, v in edits.items()):
+            raise ValueError('mcopt phase edits must map setting names to primitive values')
         if p['name'] in names or not p['name'].replace('_', '').isalnum():
             raise ValueError('Phase names must be unique letters/digits/underscores')
         names.add(p['name'])
@@ -241,7 +244,8 @@ mcopt.own.arena.reserveMaxMiB=512
                 controlledOptions=(game / 'options.txt').read_text(),
                 controlledConfig=(config / 'mcopt.properties').read_text(), controlledExtraConfigs=extra_configs)
     write_json(game / MARKER, data)
-    base_cfg = {'InstanceType':'OneSix','name':'mcopt controlled replay','iconKey':'default','OverrideJavaLocation':'true',
+    label = 'mcopt profiling (disposable)' if args.instance == 'mcopt-replay-profile' else 'mcopt replay: ' + args.instance
+    base_cfg = {'InstanceType':'OneSix','name':label,'iconKey':'default','OverrideJavaLocation':'true',
         'JavaPath':java,'OverrideJavaArgs':'true','OverrideMemory':'true','MinMemAlloc':'512','MaxMemAlloc':'4096',
         'OverrideWindow':'true','MinecraftWinWidth':str(args.width),'MinecraftWinHeight':str(args.height),
         'LaunchMaximized':'false','OverrideCommands':'true','PreLaunchCommand':'','PostExitCommand':'','WrapperCommand':'',

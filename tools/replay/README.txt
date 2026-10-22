@@ -107,6 +107,15 @@ frame intervals; CPU scopes and GPU command-buffer spans are different metrics.
 Cache cases
 -----------
 
+live-settings.json tests initially-disabled startup, live enablement, distance/
+worker changes, visual-only edits, population, disable/resume and final shutdown.
+Prepare with mcopt.lod=false in the owned controlledConfig before this route.
+An optional phase "mcopt" object maps supported live keys to primitive values.
+The harness invokes the same settings-editor save path used by Mod Menu, editing
+only its disposable config. live-controls.json records each phase's final LOD
+status and surviving LOD thread names. This is a functional lifecycle test;
+generation and view rebuilding make it unsuitable as a pure rendering benchmark.
+
 cold:       reset world from fixture + empty mcopt LOD cache
 warm-lod:   reset world from fixture + retain LOD cache from previous run
 warm-world: retain saved world and LOD cache from previous run

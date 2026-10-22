@@ -1,0 +1,37 @@
+Live settings validation -- 2026-10-22
+=====================================
+
+Apple M3 MacBook Air, 8 GiB RAM, Java 25, Minecraft 26.3, Metal.
+Disposable seed-12345 fixture, 4 GiB ZGC heap, 1280x720 window,
+RenderScale 0.75 and the user's 62 installed mods copied read-only.
+Includes C2ME 0.4.2-alpha.0.106+26.3, Fabric API 0.164.0+26.3,
+Ixeris 4.6.10+26.3-fabric and the separate Atmospherics Fixes companion.
+No personal worlds, schematics, accounts or placements were copied.
+
+The live-settings.json route ran 15 seconds warmup plus 77 seconds of
+measurement. The final run used the same persistence model as Mod Menu:
+each phase edited the disposable config, saved atomically and published
+the supported runtime settings. All eight phases completed:
+
+  initial_off   No LOD world, workers or pending GPU releases.
+  enable        Started from disabled startup; 64 chunks, two terrain workers.
+  resize        Changed live to 128 chunks and one terrain worker.
+  visual        Haze/altitude-detail edits kept the same world generation.
+  population    Enabled population/imports with low workload and smaller radii.
+  off           No LOD world, workers or pending GPU releases after draining.
+  resume        Returned at 64 chunks/one terrain worker; 283 cached tiles loaded.
+  off_final     Again no LOD world, workers or pending GPU releases.
+
+This validates lifecycle and persistence; it is not an FPS comparison.
+The LOD controller and small reusable renderer state stay initialized.
+Java/Metal may retain committed or cached memory after world buffers retire.
+Disabling LODs does not stop vanilla/C2ME chunk work needed by the player.
+
+Automated checks passed for settings persistence, invalid/failed-save
+rollback, effective live values, immutable snapshots, concurrent readers,
+explicit-off/radius-only startup semantics, altitude policy and actual
+Metal tier ownership, dimensions, projection, adaptive refinement,
+scheduling, concurrent server generation/cancellation, Litematica overlay
+order/guards/accessors, survivor selection and near/LOD handoff.
+Replay reset/symlink safety checks also passed. Other renderer/buffer-format
+controls remain startup-only and are marked * in the configuration screen.

@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "seed": 12345,
+  "warmupSeconds": 15,
+  "phases": [
+    {"name":"initial_off","seconds":5,"from":[0,180,0],"to":[0,180,0],"yaw":-90,"pitch":12,"fov":70},
+    {"name":"enable","seconds":12,"from":[0,180,0],"to":[0,180,0],"yaw":-90,"pitch":12,"fov":70,"mcopt":{"mcopt.lod":"true","mcopt.lod.radius":"64","mcopt.lod.threads":"2","mcopt.lod.refine":"false"}},
+    {"name":"resize","seconds":10,"from":[0,180,0],"to":[0,180,0],"yaw":-90,"pitch":12,"fov":70,"mcopt":{"mcopt.lod.radius":"128","mcopt.lod.threads":"1"}},
+    {"name":"visual","seconds":3,"from":[0,180,0],"to":[0,180,0],"yaw":-90,"pitch":12,"fov":70,"mcopt":{"mcopt.lod.haze":"0.8","mcopt.lod.altitudeDetail":"false"}},
+    {"name":"population","seconds":15,"from":[0,180,0],"to":[0,180,0],"yaw":-90,"pitch":12,"fov":70,"mcopt":{"mcopt.lod.refine":"true","mcopt.lod.refineRadius":"4","mcopt.lod.scoutRadius":"32","mcopt.lod.importSaved":"true","mcopt.lod.importRadius":"32","mcopt.lod.workload":"low"}},
+    {"name":"off","seconds":10,"from":[0,180,0],"to":[0,180,0],"yaw":-90,"pitch":12,"fov":70,"mcopt":{"mcopt.lod":"false"}},
+    {"name":"resume","seconds":12,"from":[0,180,0],"to":[0,180,0],"yaw":-90,"pitch":12,"fov":70,"mcopt":{"mcopt.lod":"true","mcopt.lod.radius":"64","mcopt.lod.refine":"false"}},
+    {"name":"off_final","seconds":10,"from":[0,180,0],"to":[0,180,0],"yaw":-90,"pitch":12,"fov":70,"mcopt":{"mcopt.lod":"false"}}
+  ]
+}
