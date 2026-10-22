@@ -173,6 +173,23 @@ JFR profile recording still adds overhead and should match across comparisons.
 To analyze existing replay JFR phases again:
    python3 tools/replay-profile.py analyze /tmp/mcopt-cold-01
 
+Interactive GPU profiling (separate from controlled replays)
+---------------------------------------------------------
+
+For a manually held view, start Minecraft with mcopt.metal.jfr=true and
+mcopt.metal.passJfr=true, then use:
+   python3 tools/frame-profile.py capture --label platform_static --gpu-only --seconds 20
+   python3 tools/frame-profile.py capture --label platform_pan --gpu-only --seconds 20
+
+Keep position, window/rendering resolution, VSync, zoom and overlays unchanged.
+GPU-only mode records render-pass timestamps, command buffers, drawable/presentation
+waits, GC pauses and aggregate CPU load; it disables CPU stack/allocation samplers.
+Pass timestamps split encoders every fourth submit only while their JFR event is
+enabled. This adds diagnostic overhead: compare equally instrumented captures and
+use --no-gpu-passes for a lighter command-buffer comparison. Do not add overlapping
+GPU stage or command-buffer spans, or interpret them as GPU utilization.
+Capture mode and active mcopt startup properties are stored in capture.json.
+
 Cleanup and failure handling
 ----------------------------
 

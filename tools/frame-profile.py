@@ -5,6 +5,7 @@
   python3 tools/frame-profile.py capture --label far
   python3 tools/frame-profile.py capture --label zoom
   python3 tools/frame-profile.py capture --label flight --seconds 30
+  python3 tools/frame-profile.py capture --label platform_pan --gpu-only
   python3 tools/frame-profile.py analyze /tmp/mcopt-frames-floor-...
 
 Capture auto-detects a Prism Minecraft JVM. After the countdown, switch back to
@@ -102,6 +103,35 @@ def macos_memory_snapshot():
     return result
 
 
+def profile_configuration(java_home, gpu_only, gpu_passes):
+    if gpu_only:
+        configuration = ET.ElementTree(ET.Element("configuration", {
+            "version": "2.0", "label": "mcopt GPU timing", "description": "GPU and frame telemetry without CPU stack or allocation sampling", "provider": "mcopt"}))
+        for name in ("jdk.ExecutionSample", "jdk.NativeMethodSample", "jdk.ObjectAllocationSample",
+                     "jdk.ObjectAllocationInNewTLAB", "jdk.ObjectAllocationOutsideTLAB", "jdk.ThreadAllocationStatistics"):
+            event = ET.SubElement(configuration.getroot(), "event", {"name": name})
+            ET.SubElement(event, "setting", {"name": "enabled"}).text = "false"
+        for name in ("jdk.GCPhasePause", "jdk.ZAllocationStall", "jdk.CPULoad", "jdk.ThreadCPULoad"):
+            event = ET.SubElement(configuration.getroot(), "event", {"name": name})
+            ET.SubElement(event, "setting", {"name": "enabled"}).text = "true"
+            ET.SubElement(event, "setting", {"name": "stackTrace"}).text = "false"
+            if name.endswith("CPULoad"):
+                ET.SubElement(event, "setting", {"name": "period"}).text = "1 s"
+    else:
+        configuration = ET.parse(Path(java_home) / "lib/jfr/profile.jfc")
+    event = ET.SubElement(configuration.getroot(), "event", {"name": "mcopt.MetalOperation"})
+    for key, value in {"enabled": "true", "threshold": "0 ns", "stackTrace": "false"}.items():
+        ET.SubElement(event, "setting", {"name": key}).text = value
+    event = ET.SubElement(configuration.getroot(), "event", {"name": "mcopt.MetalGpuPass"})
+    ET.SubElement(event, "setting", {"name": "enabled"}).text = "true" if gpu_passes else "false"
+    event = ET.SubElement(configuration.getroot(), "event", {"name": "mcopt.OwnArenaGrowth"})
+    ET.SubElement(event, "setting", {"name": "enabled"}).text = "true"
+    for name in ("mcopt.MetalCommandBuffer", "mcopt.MetalPresentation", "mcopt.MetalDrawable", "mcopt.MetalPipelineCompile", "mcopt.LodScheduling", "mcopt.LodCaptureQueue", "mcopt.LodClientCapture", "mcopt.OwnArenaAllocation"):
+        event = ET.SubElement(configuration.getroot(), "event", {"name": name})
+        ET.SubElement(event, "setting", {"name": "enabled"}).text = "true"
+    return configuration
+
+
 def capture(args):
     pid, props = find_game(args.jcmd, args.pid)
     game = Path(props["user.dir"])
@@ -111,17 +141,7 @@ def capture(args):
         output.mkdir(parents=True, exist_ok=False)
     recording = "mcopt_" + uuid.uuid4().hex[:12]
     jfr = output / "recording.jfr"
-    configuration = ET.parse(Path(props["java.home"]) / "lib/jfr/profile.jfc")
-    event = ET.SubElement(configuration.getroot(), "event", {"name": "mcopt.MetalOperation"})
-    for key, value in {"enabled": "true", "threshold": "0 ns", "stackTrace": "false"}.items():
-        ET.SubElement(event, "setting", {"name": key}).text = value
-    event = ET.SubElement(configuration.getroot(), "event", {"name": "mcopt.MetalGpuPass"})
-    ET.SubElement(event, "setting", {"name": "enabled"}).text = "false" if args.no_gpu_passes else "true"
-    event = ET.SubElement(configuration.getroot(), "event", {"name": "mcopt.OwnArenaGrowth"})
-    ET.SubElement(event, "setting", {"name": "enabled"}).text = "true"
-    for name in ("mcopt.MetalCommandBuffer", "mcopt.MetalPresentation", "mcopt.MetalDrawable", "mcopt.MetalPipelineCompile", "mcopt.LodScheduling", "mcopt.LodCaptureQueue", "mcopt.LodClientCapture", "mcopt.OwnArenaAllocation"):
-        event = ET.SubElement(configuration.getroot(), "event", {"name": name})
-        ET.SubElement(event, "setting", {"name": "enabled"}).text = "true"
+    configuration = profile_configuration(props["java.home"], args.gpu_only, not args.no_gpu_passes)
     settings = output / "profile.jfc"
     configuration.write(settings, encoding="utf-8", xml_declaration=True)
     print(f"Minecraft PID {pid}; {args.label}: {args.seconds}s; output {output}", flush=True)
@@ -134,6 +154,7 @@ def capture(args):
         "label": args.label, "pid": pid, "seconds": args.seconds, "gameDirectory": str(game),
         "start": datetime.now().astimezone().isoformat(), "startEpoch": time.time(),
         "javaHome": props.get("java.home"), "javaVersion": props.get("java.version"),
+        "sampling": "gpu-only" if args.gpu_only else "profile",
         "mcoptProperties": {key: value for key, value in props.items() if key.startswith("mcopt.")},
         "macosMemoryBefore": macos_memory_snapshot(),
         "note": "Main/pre GPU spans can overlap; do not sum them. JFR stack samples are not GPU timings. Log excerpts include attach/drain margins.",
@@ -470,6 +491,7 @@ def main():
     cap.add_argument("--jcmd", default=shutil.which("jcmd") or "jcmd")
     cap.add_argument("--jfr", default=shutil.which("jfr") or "jfr")
     cap.add_argument("--no-gpu-passes", action="store_true", help="Keep diagnostic GPU pass splitting off; retain CPU and command-buffer timings")
+    cap.add_argument("--gpu-only", action="store_true", help="Record GPU/frame telemetry, pauses and aggregate CPU load without CPU stack or allocation sampling")
     analysis = sub.add_parser("analyze")
     analysis.add_argument("output", type=Path)
     analysis.add_argument("--jfr", default=shutil.which("jfr") or "jfr")
