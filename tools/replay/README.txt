@@ -190,6 +190,23 @@ use --no-gpu-passes for a lighter command-buffer comparison. Do not add overlapp
 GPU stage or command-buffer spans, or interpret them as GPU utilization.
 Capture mode and active mcopt startup properties are stored in capture.json.
 
+Allocation summaries on small-memory machines
+---------------------------------------------
+
+Avoid exporting every allocation stack to JSON: a compact JFR can expand into
+several GiB of text. The streaming consumer keeps analysis within a 256 MiB heap:
+
+   java -Xmx256m tools/replay/AllocationScan.java recording.jfr START_ISO END_ISO
+
+Use the measured interval from phase-summary.json, expressed as UTC/offset ISO
+instants (e.g. 2026-10-23T00:08:17+04:00). Bounds are optional; omitting them also
+includes warmup. Startup allocation-sample weights can include earlier activity,
+so use bounds when comparing measured allocation. The reader reports statistical
+sample weights by thread/site, overlapping inclusive LOD/renderer/Atmospherics
+contexts, heap summaries and concurrent collection durations. It does not print process command
+lines from the recording. Allocation-stall sites can be victims of
+pressure caused elsewhere and do not establish the sole source of that pressure.
+
 Cleanup and failure handling
 ----------------------------
 
