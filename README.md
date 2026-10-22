@@ -28,9 +28,18 @@ To check it's working: press F3 (fn + F3 on a Mac keyboard); the bottom right sa
 
 F3 shows FPS and LOD generation/scouting statistics. The release does not include a separate FPS overlay.
 
-High flight gradually uses coarser LOD tiers, based on clearance above loaded terrain and projected size. Horizon distance stays the same; zoom and the full-terrain boundary protect detail. Mod Menu exposes **Height-aware LOD detail** (`mcopt.lod.altitudeDetail`, default true).
+High flight gradually uses coarser LOD tiers, based on clearance above loaded terrain and projected size. Horizon distance stays the same; projected cell size and the full-terrain boundary protect detail. Mod Menu exposes **Height-aware LOD detail** (`mcopt.lod.altitudeDetail`, default true) and these live controls:
 
-Captured sky platforms preserve exterior air gaps beyond 128 blocks, including roofs near build height over the ocean. Water stays beneath the structure rather than entering its roof layers. Connected supports remain ordinary columns and can widen with coarser detail. Older captures stay visible during budgeted refresh from existing saved chunks; loading a structure up close also refreshes its capture.
+| Control | Property | Default | Effect |
+| --- | --- | --- | --- |
+| Height reduction starts (blocks) | `mcopt.lod.altitudeStart` | 32 | Clearance above nearby terrain before reduction starts. |
+| Height reduction span (blocks) | `mcopt.lod.altitudeRange` | 160 | Additional clearance to reach full reduction: 192 blocks with defaults. |
+| Minimum detail radius (%) | `mcopt.lod.altitudeMinPercent` | 25 | Smallest permitted detail-tier radius, relative to normal. Lower values allow stronger reduction; the range is 25–100. |
+| Height detail pixel tolerance | `mcopt.lod.altitudePixels` | 6 | Larger values allow coarser cells on screen; the range is 1–16. |
+
+These edits apply without restarting or rebuilding the world. Clearance uses the highest sampled nearby loaded surface, including trees and structures; it is not absolute Y and does not react to camera pitch. Default limits permit two tiers of reduction, but zoom, rendering resolution and the full-terrain handoff can require larger radii. Unknown ground and ceiling dimensions retain normal detail. To reproduce the earlier conservative limits, use start 64, span 192, minimum 50 and pixel tolerance 3.
+
+Captured sky platforms preserve exterior air gaps beyond 128 blocks, including roofs near build height over land or ocean. Water stays beneath the structure rather than entering its roof layers. At coarse levels, sparse continuous supports no longer fill an otherwise matching roof's whole footprint: at least 75% must share the roof/gap, supports may cover at most 12.5%, and the gap must be at least eight blocks tall. Supports spanning either axis retain the existing wall approximation. Close detail, broad walls and isolated towers retain their existing geometry; qualifying narrow supports can disappear at distance. This bounded capture reduction uses geometry, not special block types or structure generation. Coarse levels rebuild from the existing fine captures without a cache reset. Older captures stay visible during budgeted refresh from existing saved chunks; loading a structure up close also refreshes its capture.
 
 Litematica 0.29.1 colored schematic overlays combine consecutive compatible draws into fewer render passes while preserving their order. **Batch Litematica overlays** (`mcopt.compat.litematicaOverlayBatch`, default true) can disable the compatibility patch. Other versions or modified renderer bodies retain their original path.
 

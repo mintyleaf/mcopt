@@ -80,12 +80,21 @@ Estimated shadowed terrain now uses the same changing lightmap as captured terra
 sky RGB (which incorrectly scales ambient light). This improves colour consistency during End flashes and other
 environment changes while keeping captured skylight shadows. Sheltered faces can still receive less skylight.
 
-High flight can gradually shrink the fine LOD rings, by at most one tier, without changing horizon distance or
+High flight can gradually shrink the fine LOD rings, by up to two tiers, without changing horizon distance or
 discarding cached terrain. Clearance comes from nearby loaded heightmaps, including trees and structures, rather
 than absolute Y. The actual world rendering resolution and projection protect pixel detail when zooming; the
 full-terrain handoff is also protected. Unknown ground and ceiling dimensions retain normal detail. Render-list
 ownership, temporal history and background priority scans are refreshed together when detail changes. Mod Menu's
 Height-aware LOD detail (mcopt.lod.altitudeDetail, default true) can toggle this behavior while playing.
+Mod Menu also applies the strength controls live, without rebuilding the world:
+- Height reduction starts (mcopt.lod.altitudeStart): default 32 blocks of clearance, range 0..1024.
+- Height reduction span (mcopt.lod.altitudeRange): default 160 additional blocks, range 1..1024.
+- Minimum detail radius (mcopt.lod.altitudeMinPercent): default 25 percent, range 25..100.
+- Height detail pixel tolerance (mcopt.lod.altitudePixels): default 6 pixels, range 1..16; higher allows coarser cells.
+With defaults, full reduction is available 192 blocks above nearby terrain. Zoom, render resolution and the
+full-terrain boundary may require more detail than the chosen minimum. Clearance uses the highest nearby sample;
+the reduction does not track how much terrain a downward view exposes. The previous conservative behavior can be
+reproduced with start 64, span 192, minimum 50 and pixel tolerance 3. Settings are parsed only when edited, not per frame.
 
 Mod Menu > mcopt > Configure > Apply and close now applies these controls without restarting:
 LOD enablement/distance, population and scouting controls, saved-import controls, population workload and start
@@ -100,7 +109,14 @@ Turning Distant terrain off stops LOD work; vanilla chunk generation still runs.
 
 Sky platforms can now keep exterior air gaps taller than 128 blocks, bounded by the dimension's floor. Roof layers
 remain finite even near build height. Water below the structure stays in the lower surface instead of entering the
-roof's vertical intervals. Continuous scaffold/stone supports retain their ordinary column approximation.
+roof's vertical intervals. Continuous scaffold/stone supports retain their close-detail column approximation.
+Coarse captures now omit sparse supports only where at least 75 percent of the footprint agrees on a roof and
+exterior gap, the gap is at least eight blocks tall, and supports cover at most 12.5 percent of the cell. Supports
+spanning either axis keep the existing wall approximation. This prevents a thin connection from filling a whole
+coarse cell underneath the roof; qualifying thin supports disappear at distance. Broad walls and isolated towers
+retain their existing geometry. Land surfaces below the upper vertical encoding band remain separate from roofs.
+The bounded reduction uses existing fine capture data on workers, with no new generation, flood fill, GPU planes or
+cache format. Restarting into the new build recomputes coarse capture levels; caches do not need to be cleared.
 Compatible old captures stay visible while the existing budgeted saved-import worker refreshes their geometry;
 this refresh does not generate missing/pruned chunks or wipe the cache. With population/imports disabled, load the
 affected chunks up close to refresh them. Already bounded End captures retain their previous interpretation.
@@ -148,7 +164,7 @@ from the player, then candidates favor the view ahead. Confirmed pieces precede 
 set optional spacing between FULL starts; probes are independently paced. Existing explicit values are retained.
 
 Captured columns are reduced across each coarse cell's full footprint, combining their solid vertical spans and preserving
-the strongest known block light. A high roof edge no longer replaces neighboring walls with empty space. Water retains its
+the strongest known block light, except for the sparse-support simplification described above. A high roof edge no longer replaces neighboring walls with empty space. Water retains its
 existing shoreline approximation. Every detail level retains light and floating surfaces;
 nearby level-0 surfaces retain their existing directional lighting. Coarse light is approximate and has no per-floor
 shadow samples. Captured structures and trees retain three exact upper solid intervals within a 63-block band, or up to
