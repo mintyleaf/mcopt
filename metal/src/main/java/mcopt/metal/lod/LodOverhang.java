@@ -5,7 +5,7 @@ import java.util.function.IntUnaryOperator;
 
 /** Bounded extraction of a floating solid layer above a lower surface; shares the crown geometry format. */
 final class LodOverhang {
-	static final int MAX_THICKNESS = LodStructureLayers.RANGE, MAX_GAP = 128;
+	static final int MAX_THICKNESS = LodStructureLayers.RANGE;
 	record Layer(int bottom, int ground) { }
 	record Cap(int bottom, int ground, long occupied) { }
 
@@ -35,9 +35,10 @@ final class LodOverhang {
 		while (y >= minY && top - y < MAX_THICKNESS && occupied.test(y)) y--;
 		if (y < minY || occupied.test(y)) return null;
 		int bottom = y + 1;
-		int limit = Math.max(minY, y - MAX_GAP);
-		while (y >= limit && !occupied.test(y)) y--;
-		if (y < limit) return null;
+		// The empty gap is not part of the encoded roof's thickness. Bound it by the dimension,
+		// not 128 blocks: a sky platform can be close to build height above an ocean or valley.
+		while (y >= minY && !occupied.test(y)) y--;
+		if (y < minY) return null;
 		return new Layer(bottom, y);
 	}
 

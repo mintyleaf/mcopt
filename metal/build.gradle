@@ -319,6 +319,13 @@ tasks.register('checkLodSurfaces', JavaExec) {
 	jvmArgs '--enable-native-access=ALL-UNNAMED'
 }
 
+tasks.register('checkLodOceanPlatform', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.lod.LodOceanPlatformChecks'
+	jvmArgs '--enable-native-access=ALL-UNNAMED', '-Dmcopt.lod=true'
+}
+
 tasks.register('checkLodSurfaceCache', JavaExec) {
 	dependsOn 'metalChecksClasses'
 	classpath = sourceSets.metalChecks.runtimeClasspath

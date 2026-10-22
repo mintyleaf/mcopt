@@ -491,11 +491,14 @@ final class LodChunks {
 		short[] crownLo=s.crownLo.clone();int[] runs=s.crownRuns.clone();boolean[] segmented=new boolean[256];
 		if(LodConfig.STRUCTURE_DETAIL && s.sections!=null) for(int i=0;i<256;i++) {
 			if(s.crown[i]==null) continue;
-			int x=i&15,z=i>>4,upper=s.crownHi[i],base=Math.max(Math.max(s.minY,upper-LodStructureLayers.RANGE),s.height[i]);
+			int lower=s.water[i]!=LodTile.DRY?Math.max(s.height[i],s.water[i]):s.height[i];
+			int x=i&15,z=i>>4,upper=s.crownHi[i],base=Math.max(Math.max(s.minY,upper-LodStructureLayers.RANGE),lower);
 			java.util.function.IntPredicate solid=y -> {
 				int section=((y-s.minY)>>4)-s.secFirst;
 				if(section<0 || section>=s.sections.length || s.sections[section]==null) return false;
-				BlockState state=s.sections[section].get(x,(y-s.minY)&15,z);return !state.isAir() && !decoration(state);
+				BlockState state=s.sections[section].get(x,(y-s.minY)&15,z);
+				// Water below the roof is represented by the lower surface, not by roof-colored intervals.
+				return !state.isAir() && !decoration(state) && !(state.getBlock() instanceof net.minecraft.world.level.block.LiquidBlock);
 			};
 			while(base<upper && !solid.test(base)) base++;
 			int packed=LodStructureLayers.encode(base,upper,solid);

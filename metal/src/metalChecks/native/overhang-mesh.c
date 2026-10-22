@@ -76,6 +76,27 @@ int main(void) {
 		for(int k=0;k<3;k++) assert(tops[k]==256 && bottoms[k]==256);
 		assert(groundArea==256);
 	}
+	// Build-height roof over the ocean: the long empty gap is not a wall or an upper water interval.
+	for (int roof=200;roof<=319;roof+=119) {
+		for (int z=16;z<32;z++) for (int x=16;x<32;x++) {
+			int i=z*64+x;
+			geom[i]=(roof+1+512)|0x6000u|(1u<<15)|(1u<<24);
+			crown[i]=(63+512)|(1u<<28)|(1u<<30);runs[i]=1u<<30;
+		}
+		n=lm_mesh(&in,headers,quads,65536);topArea=bottomArea=groundArea=0;
+		for (int i=0;i<n;i++) {
+			uint32_t q=quads[2*i],h=quads[2*i+1];
+			int face=(q>>26)&7,kind=(q>>29)&3,y0=(h&4095)-512,y1=((h>>12)&4095)-512;
+			int area=(((q>>14)&63)+1)*(((q>>20)&63)+1);
+			if (kind==LM_K_CROWN) {
+				assert(y0>=roof && y0<=roof+1);
+				if (face==LM_F_TOP) {assert(y0==roof+1);topArea+=area;}
+				else if (face==LM_F_BOTTOM) {assert(y0==roof);bottomArea+=area;}
+				else assert(y1==roof+1);
+			} else if (kind==LM_K_WATER && face==LM_F_TOP && y0==63) groundArea+=area;
+		}
+		assert(topArea==256 && bottomArea==256 && groundArea==256);
+	}
 	free(geom); free(crown); free(runs); free(headers); free(quads);
 	puts("PASS: actual LOD mesh preserves roofs and three separate floors over dry/wet/finite ground, with no walls filling the air gaps");
 }

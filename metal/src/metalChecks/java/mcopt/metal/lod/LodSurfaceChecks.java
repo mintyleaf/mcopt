@@ -29,10 +29,15 @@ public final class LodSurfaceChecks {
 		blocks.clear();
 		blocks.set(20);
 		blocks.set(149);
-		layer(blocks, 149, 149, 20); // Maximum 128-block air gap.
+		layer(blocks, 149, 149, 20);
 		blocks.clear(149);
 		blocks.set(150);
-		if (LodOverhang.find(150, 0, blocks::get) != null) throw new AssertionError("Unbounded gap scan");
+		layer(blocks, 150, 150, 20);
+		var high=LodOverhang.find(319,-64,y->y==319 || y<=62);
+		if(high==null || high.bottom()!=319 || high.ground()!=62) throw new AssertionError("Build-height platform above ocean became a terrain column");
+		int[] gapProbes={0};
+		if(LodOverhang.find(319,-64,y->{gapProbes[0]++;return y==319;})!=null || gapProbes[0]>386)
+			throw new AssertionError("Gap scan crossed the dimension floor or invented a lower surface");
 		int[] probes = {0};
 		if (LodOverhang.find(300, -64, y -> { probes[0]++; return true; }) != null || probes[0] > 253)
 			throw new AssertionError("Solid terrain scan exceeded thickness budget");
