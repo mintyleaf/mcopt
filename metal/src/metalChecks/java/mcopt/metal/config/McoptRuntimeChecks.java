@@ -34,6 +34,24 @@ public final class McoptRuntimeChecks {
 			if (!editor.values.get("mcopt.lod").equals("true") || !editor.values.get("mcopt.lod.radius").equals("128")) throw new AssertionError("editor did not show effective live values");
 			editor.values.put("mcopt.lod.radius", "96"); editor.save();
 			if (McoptRuntime.current().integer("mcopt.lod.radius") != 96 || !Files.readString(file).contains("custom=preserved")) throw new AssertionError("save did not apply/preserve settings");
+			var heightEditor = new McoptSettings(file, true);
+			heightEditor.values.put("mcopt.lod.altitudeStart", "48");
+			heightEditor.values.put("mcopt.lod.altitudeRange", "96");
+			heightEditor.values.put("mcopt.lod.altitudeMinPercent", "40");
+			heightEditor.values.put("mcopt.lod.altitudePixels", "4.5");
+			long generation = McoptRuntime.current().generation(); heightEditor.save();
+			var height = McoptRuntime.current();
+			if (height.generation() != generation || height.integer("mcopt.lod.altitudeStart") != 48
+				|| height.integer("mcopt.lod.altitudeRange") != 96 || height.integer("mcopt.lod.altitudeMinPercent") != 40
+				|| height.number("mcopt.lod.altitudePixels") != 4.5) throw new AssertionError("height controls not applied visually");
+			var reopened = new McoptSettings(file);
+			if (!reopened.values.get("mcopt.lod.altitudePixels").equals("4.5")
+				|| !reopened.values.get("mcopt.lod.altitudeStart").equals("48")) throw new AssertionError("height controls did not persist");
+			for (String key : new String[]{"mcopt.lod.altitudeRange", "mcopt.lod.altitudeMinPercent", "mcopt.lod.altitudePixels"}) {
+				try { McoptRuntime.apply(Map.of("mcopt.lod.altitudeStart", "80", key, "0")); throw new AssertionError("invalid height control accepted"); }
+				catch (IllegalArgumentException expected) { }
+				if (McoptRuntime.current() != height) throw new AssertionError("invalid height edit partially published");
+			}
 			// A failed atomic replacement must leave the runtime unchanged.
 			var badEditor = new McoptSettings(dir.resolve("missing/config.properties"));
 			Files.writeString(dir.resolve("missing"), "not a directory");

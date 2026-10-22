@@ -9,8 +9,10 @@ public final class McoptRuntime {
 	private static final Set<String> LIVE = Set.of("mcopt.lod", "mcopt.lod.radius", "mcopt.lod.refine",
 		"mcopt.lod.refineRadius", "mcopt.lod.scoutRadius", "mcopt.lod.workload", "mcopt.lod.refineIntervalMs",
 		"mcopt.lod.importSaved", "mcopt.lod.importRadius", "mcopt.lod.threads", "mcopt.lod.altitudeDetail",
+		"mcopt.lod.altitudeStart", "mcopt.lod.altitudeRange", "mcopt.lod.altitudeMinPercent", "mcopt.lod.altitudePixels",
 		"mcopt.lod.haze", "mcopt.lod.debugHud");
-	private static final Set<String> VISUAL = Set.of("mcopt.lod.altitudeDetail", "mcopt.lod.haze", "mcopt.lod.debugHud");
+	private static final Set<String> VISUAL = Set.of("mcopt.lod.altitudeDetail", "mcopt.lod.altitudeStart",
+		"mcopt.lod.altitudeRange", "mcopt.lod.altitudeMinPercent", "mcopt.lod.altitudePixels", "mcopt.lod.haze", "mcopt.lod.debugHud");
 	public record State(long generation, Map<String, String> values) {
 		public State { values = Map.copyOf(values); }
 		public boolean flag(String key) { return Boolean.parseBoolean(values.get(key)); }

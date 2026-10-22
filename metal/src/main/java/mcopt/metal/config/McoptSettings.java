@@ -16,6 +16,7 @@ import java.util.Properties;
 final class McoptSettings {
 	record Option(String key, String label, String fallback, double min, double max, String hint, String... choices) {
 		boolean live() { return McoptRuntime.live(key); }
+		private boolean fractional() { return key.endsWith("haze") || key.equals("mcopt.lod.altitudePixels"); }
 		String validate(String value) {
 			if (choices.length > 0) {
 				for (String c : choices) if (c.equals(value)) return value;
@@ -23,8 +24,8 @@ final class McoptSettings {
 			}
 			try {
 				double n = Double.parseDouble(value);
-				if (Double.isFinite(n) && n >= min && n <= max && (key.endsWith("haze") || n == Math.rint(n)))
-					return key.endsWith("haze") ? Double.toString(n) : Long.toString((long)n);
+				if (Double.isFinite(n) && n >= min && n <= max && (fractional() || n == Math.rint(n)))
+					return fractional() ? Double.toString(n) : Long.toString((long)n);
 			} catch (NumberFormatException ignored) { }
 			throw new IllegalArgumentException(label + ": expected " + min + " to " + max);
 		}
@@ -34,6 +35,10 @@ final class McoptSettings {
 		number("mcopt.lod.radius", "LOD distance (chunks)", "512", 32, 2048, "Terrain visibility distance. This does not increase structure scouting distance."),
 		bool("mcopt.lod.textures", "LOD block textures", "true", "Draw block textures on the finest LOD level."),
 		bool("mcopt.lod.altitudeDetail", "Height-aware LOD detail", "true", "Gradually use coarser terrain while flying high. Keeps the horizon, nearby terrain and zoom detail."),
+		number("mcopt.lod.altitudeStart", "Height reduction starts (blocks)", "32", 0, 1024, "Clearance above nearby loaded terrain before detail starts decreasing. This is not absolute world Y."),
+		number("mcopt.lod.altitudeRange", "Height reduction span (blocks)", "160", 1, 1024, "Additional clearance to reach full reduction. With defaults, reduction runs from 32 to 192 blocks above terrain."),
+		number("mcopt.lod.altitudeMinPercent", "Minimum detail radius (%)", "25", 25, 100, "Lower values permit coarser terrain at altitude. 25 permits two tiers of reduction; 100 disables reduction. Zoom and the full-terrain boundary can require more detail."),
+		number("mcopt.lod.altitudePixels", "Height detail pixel tolerance", "6", 1, 16, "Higher values allow larger distant cells on screen and stronger height reduction. Uses actual rendering resolution. Lower values preserve more detail, especially when zoomed."),
 		bool("mcopt.compat.litematicaOverlayBatch", "Batch Litematica overlays", "true", "Combine compatible colored schematic overlay draws. Supports Litematica 0.29.1. Requires restarting Minecraft."),
 		bool("mcopt.lod.lighting", "Captured lighting", "true", "Preserve sky and block light from populated chunks."),
 		bool("mcopt.lod.overhangs", "Vertical layers", "true", "Preserve air gaps and floating surfaces from populated terrain."),
