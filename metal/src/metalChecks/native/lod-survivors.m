@@ -52,6 +52,16 @@ int main(int argc,const char** argv) { @autoreleasepool {
             require(id<257 && !seen[id],"Lost/duplicate survivor or partition overlap");seen[id]=true;
         }
         printf("PASS cap %u: %u opaque + %u handoff; all corners/info match prior vertex path, tails hidden, records unique; draw batches %u vs prior %u\n",caps[test],o,h,args[1]+args[113],2*((n+63)/64));
+		// Stationary visibility reuse consumes these lists in later command buffers without rebuilding them.
+		uint32_t savedArgs[128],savedRecords[300*4];memcpy(savedArgs,b[4].contents,sizeof savedArgs);memcpy(savedRecords,b[7].contents,sizeof savedRecords);
+		for(int replay=0;replay<4;replay++) {
+			*(uint32_t*)b[19].contents=0;id<MTLCommandBuffer> retained=[queue commandBuffer];id<MTLComputeCommandEncoder> draw=[retained computeCommandEncoder];
+			for(int i=0;i<31;i++)if(b[i])[draw setBuffer:b[i] offset:0 atIndex:i];[draw setBytes:params length:sizeof(params) atIndex:9];
+			for(int pass=0;pass<2;pass++){[draw setComputePipelineState:pass?handoff:opaque];[draw dispatchThreads:MTLSizeMake(((caps[test]+63)/64)*64*4,1,1) threadsPerThreadgroup:MTLSizeMake(64,1,1)];}
+			[draw endEncoding];[retained commit];[retained waitUntilCompleted];
+			require(retained.status==MTLCommandBufferStatusCompleted && *(uint32_t*)b[19].contents==0,"Retained visibility changed decoded geometry");
+			require(!memcmp(savedArgs,b[4].contents,sizeof savedArgs) && !memcmp(savedRecords,b[7].contents,sizeof savedRecords),"Retained draw mutated indirect arguments or survivor records");
+		}
     }
     // The depth-facet path uses the opaque vertex specialization with an unpartitioned list.
     uint32_t* facetArgs=b[4].contents;facetArgs[31]=0;facetArgs[14]=257;
@@ -62,6 +72,6 @@ int main(int argc,const char** argv) { @autoreleasepool {
     for(int pass=0;pass<2;pass++){[c setComputePipelineState:pass?handoff:opaque];[c dispatchThreads:MTLSizeMake(320*4,1,1) threadsPerThreadgroup:MTLSizeMake(64,1,1)];}
     [c endEncoding];[cmd commit];[cmd waitUntilCompleted];
     require(cmd.status==MTLCommandBufferStatusCompleted && *(uint32_t*)b[19].contents==0,"Depth-facet fallback differs from reference");
-    puts("PASS: no-handoff production shader compiles; unpartitioned depth facets preserve prior vertex behavior");
+    puts("PASS: retained visibility survives four later command buffers at every capacity; no-handoff shader and unpartitioned depth facets preserve prior vertex behavior");
     for(int i=0;i<31;i++)[b[i] release];[setup release];[append release];[finish release];[opaque release];[handoff release];[library release];[queue release];[device release];
 } return 0; }

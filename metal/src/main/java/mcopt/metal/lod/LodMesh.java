@@ -58,6 +58,7 @@ final class LodMesh implements LodClip.Listener {
 
 	private final long ctx;
 	private final LodClip clip;
+	final LodCullReuse cullReuse = new LodCullReuse();
 	private final int tps;
 	// the arena (words), its free ranges (offset -> length) and ranges waiting for frames in flight
 	private long arenaBuf, arenaAddr, arenaWords;
@@ -413,8 +414,8 @@ final class LodMesh implements LodClip.Listener {
 		long now=System.nanoTime();
 		if(now-this.healthAt>=30_000_000_000L) {
 			long quads=0;for(long[] level:this.len) for(long words:level) if(words>0) quads+=Math.max(0,(words-HDR_WORDS)/2);
-			mcopt.metal.DiagnosticLog.printf(java.util.Locale.ROOT,"mcopt-lod: render %.1f fps, mesh %d tiles / %d quads, pending %d, arena %.1f/%.0f MiB, reused %d meshes, unchanged %d cells, GPU copies %d%n",
-				this.healthFrames*1e9/(now-this.healthAt),this.installed,quads,this.pending(),this.usedMb(),this.arenaMb(),this.reusedMeshes,this.clip.unchangedCells,this.clip.pendingGpuCount());
+			mcopt.metal.DiagnosticLog.printf(java.util.Locale.ROOT,"mcopt-lod: render %.1f fps, mesh %d tiles / %d quads, pending %d, arena %.1f/%.0f MiB, reused %d meshes, unchanged %d cells, GPU copies %d, culls %d reused/%d encoded%n",
+				this.healthFrames*1e9/(now-this.healthAt),this.installed,quads,this.pending(),this.usedMb(),this.arenaMb(),this.reusedMeshes,this.clip.unchangedCells,this.clip.pendingGpuCount(),this.cullReuse.reused,this.cullReuse.dispatched);
 			this.healthAt=now;this.healthFrames=0;
 		}
 	}
@@ -521,6 +522,7 @@ final class LodMesh implements LodClip.Listener {
 		this.builtGeometry[level][slot] = this.clip.geometryVer[level][slot];
 		this.installed++;
 		long e = this.tableHost + ((long) level * this.tps * this.tps + slot) * 16;
+		this.visibilityRevision++;
 		MemoryUtil.memPutInt(e, (int) (at + 1));
 		MemoryUtil.memPutInt(e + 4, tx);
 		MemoryUtil.memPutInt(e + 8, tz);
@@ -570,6 +572,7 @@ final class LodMesh implements LodClip.Listener {
 	}
 
 	private void drop(int level, int slot) {
+		this.visibilityRevision++;
 		if (this.pk != null && this.key[level][slot] >= 0) {
 			long k = this.key[level][slot];
 			this.pk.tileChanged(level, LodTile.txOf(k), LodTile.tzOf(k));
@@ -699,6 +702,7 @@ final class LodMesh implements LodClip.Listener {
 	}
 
 	private long current;
+	long visibilityRevision;
 
 	/** The table copy this frame's cull used (the draw's vertex stage reads it too: skirt feet). */
 	long currentTable() {

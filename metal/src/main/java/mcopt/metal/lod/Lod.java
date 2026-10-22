@@ -664,8 +664,17 @@ public final class Lod {
 						pkBufs, pk.rebuilding(), pk.liveNow ? 2 : 1, mesh.blocks());
 					pk.encoded(this.camX, this.camY, this.camZ);
 				} else {
-					LodNative.meshCull(this.lod, enc, mesh.frame, LodMesh.FRAME_BYTES, this.compFrame, COMP_FRAME_BYTES, table, mesh.arena(), maskBuf, mesh.argsBuf,
-						mesh.instBuf, mesh.plantBuf, mesh.survBuf, mesh.horizonBuf, mesh.listBuf, clip.geomBuf, clip.crownBuf, mesh.blocks(), LodMesh.FENCES);
+					boolean reusable = pk == null && !LodMesh.FENCES && this.seam == null
+						&& McoptRuntime.current().flag("mcopt.lod.reuseVisibility");
+					LodCullReuse cache = mesh.cullReuse;
+					if (!reusable) cache.invalidate();
+					int[] visibleMask = this.handoffOn ? this.handoff.mask : this.mask;
+					int words = this.maskOn ? this.maskSize * this.maskWords : 0;
+					if (!reusable || !cache.matches(mesh.frame, this.compFrame, mesh.visibilityRevision, clip.version, mesh.arena(), visibleMask, words)) {
+						LodNative.meshCull(this.lod, enc, mesh.frame, LodMesh.FRAME_BYTES, this.compFrame, COMP_FRAME_BYTES, table, mesh.arena(), maskBuf, mesh.argsBuf,
+							mesh.instBuf, mesh.plantBuf, mesh.survBuf, mesh.horizonBuf, mesh.listBuf, clip.geomBuf, clip.crownBuf, mesh.blocks(), LodMesh.FENCES);
+						if (reusable) cache.remember(mesh.frame, this.compFrame, mesh.visibilityRevision, clip.version, mesh.arena(), visibleMask, words);
+					}
 				}
 				if (timed) {
 					pk.timedPath(slot, listsRan);

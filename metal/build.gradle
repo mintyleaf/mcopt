@@ -117,6 +117,13 @@ tasks.register('checkLodAltitudeQuality', JavaExec) {
 	mainClass = 'mcopt.metal.lod.LodAltitudeQualityChecks'
 }
 
+tasks.register('checkLodCullReuse', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.lod.LodCullReuseChecks'
+	jvmArgs '--enable-native-access=ALL-UNNAMED'
+}
+
 tasks.register('checkLitematicaOverlays', JavaExec) {
 	dependsOn 'metalChecksClasses'
 	classpath = sourceSets.metalChecks.runtimeClasspath
