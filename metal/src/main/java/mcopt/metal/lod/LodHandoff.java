@@ -41,7 +41,7 @@ final class LodHandoff {
 		long f = ++this.frame;
 		// Finish restoring the fallback before the near renderer's section-distance test can remove any chunk.
 		this.outer = Math.max(16, (distance - 1) * 16);
-		this.inner = Math.max(0, this.outer - 32);
+		this.inner = Math.max(0, this.outer - 16);
 		this.nearestFar = Math.max(0, (size / 2 - 1) * 16.0);
 		for (int z = 0; z < size; z++) for (int x = 0; x < size; x++) {
 			int wx = x0 + x, wz = z0 + z;

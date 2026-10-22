@@ -18,8 +18,9 @@ public final class LodHandoffChecks {
 		h.update(ready, x0, z0, size, words, 8, 8, 12, t + 200_000_000L);
 		equal(1, h.arrivals[32 * size + 32], "arrival finishes");
 		if (!covered(h, 32, 32, words)) throw new AssertionError("Interior LOD stays over complete near terrain");
+		if (!covered(h, 41, 32, words)) throw new AssertionError("Complete inner chunk retained the old two-chunk overlap band");
 		if (covered(h, 42, 32, words)) throw new AssertionError("Culled LOD inside outgoing blend band");
-		if (h.nearestFar < 120 || h.nearestFar > 150) throw new AssertionError("Unsafe nearest-far distance: " + h.nearestFar);
+		if (h.nearestFar < h.inner - 16*Math.sqrt(2) || h.nearestFar > h.inner) throw new AssertionError("Unsafe nearest-far distance: " + h.nearestFar);
 		if (!Arrays.equals(ready, original)) throw new AssertionError("Modified cached near readiness");
 		// The window moves while the same world chunk stays ready: no restart, including across negative coordinates.
 		h.update(ready, x0 - 1, z0, size, words, 7.9, 8, 12, t + 210_000_000L);
