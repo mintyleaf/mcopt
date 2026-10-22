@@ -48,6 +48,38 @@ public final class LodScoutingChecks {
 			if(!wall[0]) throw new AssertionError("Roof edge erased neighboring wall at level "+level);
 			if((coarse[0][0]&LodClip.GEOM_CLEAR)==0) throw new AssertionError("Non-occluding fine geometry became a trusted coarse occluder");
 		}
+		// A connected pillar is not a whole coarse wall. Test dry, wet and finite lower surfaces.
+		for(int mode=0;mode<3;mode++) {
+			Arrays.fill(p[LodCaptures.GEOM],LodClip.crownGeomWord(200,4,false));
+			Arrays.fill(p[LodCaptures.CROWN],LodClip.crownWord(64,0x889977)
+				|(mode==1?LodClip.CROWN_WET:mode==2?LodClip.CROWN_BOUNDED:0));
+			Arrays.fill(p[LodCaptures.RUNS],mode==2?(32+512)|((196+512)<<12):0);
+			p[LodCaptures.GEOM][0]=LodClip.geomWord(200,false);
+			p[LodCaptures.CROWN][0]=mode==2?(32+512)|LodClip.CROWN_BOUNDED:0;
+			p[LodCaptures.MATERIAL][0]=LodClip.TEX_LIGHT;p[LodCaptures.LIGHT][0]=13;
+			for(int level=2;level<=4;level++) {
+				var coarse=LodCaptureMips.reduce(p,level);
+				if(occupied(coarse,100) || !occupied(coarse,198) || !occupied(coarse,63))
+					throw new AssertionError("Sparse support fills a coarse gap mode="+mode+" level="+level);
+				if(mode==1 && (coarse[LodCaptures.CROWN][0]&LodClip.CROWN_WET)==0)
+					throw new AssertionError("Support simplification lost the water material");
+				if(mode==2 && occupied(coarse,0)) throw new AssertionError("Support simplification lost finite underside");
+				if((coarse[LodCaptures.CROWN][0]&LodClip.CROWN_LIT)==0 || (coarse[LodCaptures.CROWN][0]>>>24&15)!=13)
+					throw new AssertionError("Simplified support lost its captured block light");
+			}
+		}
+		p[LodCaptures.MATERIAL][0]=0;
+		// Full-width walls and substantial support coverage retain their volume, even with the roof at equal height.
+		for(boolean wall:new boolean[]{false,true}) {
+			Arrays.fill(p[LodCaptures.GEOM],LodClip.crownGeomWord(200,4,false));
+			Arrays.fill(p[LodCaptures.CROWN],LodClip.crownWord(64,0x889977));
+			Arrays.fill(p[LodCaptures.RUNS],0);
+			for(int z=0;z<16;z++) for(int x=0;x<16;x++) if(wall?z==0:x<8) {
+				p[LodCaptures.GEOM][z*16+x]=LodClip.geomWord(200,false);
+				p[LodCaptures.CROWN][z*16+x]=0;
+			}
+			if(!occupied(LodCaptureMips.reduce(p,4),100)) throw new AssertionError("Broad or boundary-spanning wall was erased");
+		}
 		// Four separated shelves and a thick floating roof previously fell back to a single solid column.
 		int sampled=LodStructureLayers.encode(80,140,y->y<100 || y==112 || y==124 || y>=136);
 		if(sampled==0 || (sampled>>>30)!=0 || (sampled & 1<<13)!=0 || (sampled & 1<<20)!=0
@@ -72,5 +104,10 @@ public final class LodScoutingChecks {
 		}
 		if(LodRefinement.probeTicketRadius()>=0) throw new AssertionError("Structure probe requests FULL terrain");
 		System.out.println("PASS: off-corner towers and small lights survive four reductions; invalid light stays unknown; interval metadata and three widely separated floors survive compact packing; probes use partial tickets");
+	}
+	private static boolean occupied(int[][] p,int y) {
+		boolean[] result={false};
+		LodIntervals.visit(p[LodCaptures.GEOM][0],p[LodCaptures.CROWN][0],p[LodCaptures.RUNS][0],(lo,hi)->result[0]|=lo<=y && hi>y);
+		return result[0];
 	}
 }
