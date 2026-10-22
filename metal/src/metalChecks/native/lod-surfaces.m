@@ -427,6 +427,40 @@ static void islandVisibility(id<MTLDevice> d,id<MTLCommandQueue> queue,NSString 
 	puts("PASS: production mesh cull preserves distant terrain below floating islands at four camera heights, with/without real occlusion; solid terrain remains an occluder");
 }
 
+static void projectedAo(id<MTLDevice> d,id<MTLCommandQueue> queue,NSString *source) {
+	source=[source stringByAppendingString:@"\n"
+		"kernel void projected_ao_test(constant CompFrame& f [[buffer(0)]], device const uint* g [[buffer(1)]], "
+		"device const uint* t [[buffer(2)]], device float4* out [[buffer(3)]], device const PaletteEntry* pal [[buffer(4)]], "
+		"texture2d<half> atlas [[texture(0)]], uint i [[thread_position_in_grid]]) { "
+		"CompSurface s; s.rel=float3(i==0u?0.25:1008.25,64.0,0.25); s.face=FACE_TOP; "
+		"constexpr sampler smp(coord::normalized); compShade(f,uint2(1u,0x7BEFu),g,g,g,t,pal,atlas,smp,s); "
+		"out[2u*i]=float4(s.ao,float3(s.light)); out[2u*i+1u]=float4(float3(s.albedo),1); }\n"];
+	id<MTLComputePipelineState> p=pipeline(d,library(d,source),@"projected_ao_test");
+	NSArray<id<MTLBuffer>> *b=@[buffer(d,4096),buffer(d,256*4),buffer(d,4*256*4),buffer(d,64),buffer(d,4096)];
+	float *f=b[0].contents;((int*)f)[55]=4;f[60]=0.001f;f[64]=f[65]=f[66]=1;
+	__fp16 *lut=(__fp16*)((char*)b[0].contents+272);
+	for(int i=0;i<256;i++) {lut[i*4]=0.5;lut[i*4+1]=(i&15)/15.f;lut[i*4+2]=(i>>4)/15.f;lut[i*4+3]=1;}
+	uint32_t *g=b[1].contents,*tw=b[2].contents;
+	for(int i=0;i<256;i++) g[i]=(65+512)|0x2000u;
+	g[0]=(64+512)|0x2000u;tw[0]=0x80000000u;tw[3*256]=0xF7F7F7F7u;
+	MTLTextureDescriptor *td=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:1 height:1 mipmapped:NO];
+	id<MTLTexture> atlas=[d newTextureWithDescriptor:td];float legacy[16];
+	for(int mode=0;mode<2;mode++) {
+		f[49]=mode==0?1:3;
+		id<MTLCommandBuffer> cmd=[queue commandBuffer];id<MTLComputeCommandEncoder> enc=[cmd computeCommandEncoder];
+		[enc setComputePipelineState:p];for(int i=0;i<5;i++)[enc setBuffer:b[i] offset:0 atIndex:i];[enc setTexture:atlas atIndex:0];
+		[enc dispatchThreads:MTLSizeMake(2,1,1) threadsPerThreadgroup:MTLSizeMake(2,1,1)];finish(cmd,enc);
+		float *out=b[3].contents;
+		if(mode==0) {memcpy(legacy,out,sizeof legacy);require(out[0]<0.99 && out[8]<0.99,@"AO fixture has no actual occlusion");}
+		else {
+			require(fabsf(out[0]-legacy[0])<0.0001 && out[8]==1.0f,@"Projected AO changed nearby detail or retained subpixel occlusion");
+			for(int i=0;i<16;i++) if(i!=8) require(fabsf(out[i]-legacy[i])<0.0001,@"AO cutoff changed light or albedo");
+			require(fabsf(out[2]-7.f/15)<0.002 && fabsf(out[10]-7.f/15)<0.002,@"AO cutoff discarded captured torch light");
+		}
+	}
+	puts("PASS: actual compShade preserves near AO, albedo and captured torch light while skipping fine AO below its pixel cutoff; zero cutoff retains legacy AO");
+}
+
 int main(int argc,const char **argv) {
 	@autoreleasepool {
 		require(argc==3,@"Expected columns.metal and seam.metal paths");
@@ -438,6 +472,7 @@ int main(int argc,const char **argv) {
 		NSString *seam=[NSString stringWithContentsOfFile:@(argv[2]) encoding:NSUTF8StringEncoding error:&e];
 		require(seam!=nil,e.description);
 		lighting(d,q,columns);
+		projectedAo(d,q,columns);
 		changingAmbient(d,q,columns);
 		mipBorders(d,q,columns);
 		walls(d,q,columns);

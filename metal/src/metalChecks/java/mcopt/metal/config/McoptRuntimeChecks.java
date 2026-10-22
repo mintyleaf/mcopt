@@ -26,6 +26,10 @@ public final class McoptRuntimeChecks {
 			McoptRuntime.apply(Map.of("mcopt.lod.haze", "1.5", "mcopt.lod.altitudeDetail", "false"));
 			if (McoptRuntime.current().generation() != on.generation()) throw new AssertionError("visual edit restarted world");
 			var visual = McoptRuntime.current();
+			McoptRuntime.apply(Map.of("mcopt.lod.reuseVisibility", "false", "mcopt.lod.aoPixels", "0"));
+			if(McoptRuntime.current().generation()!=visual.generation() || McoptRuntime.current().flag("mcopt.lod.reuseVisibility")
+				|| McoptRuntime.current().integer("mcopt.lod.aoPixels")!=0) throw new AssertionError("Render budget controls did not apply without world restart");
+			visual=McoptRuntime.current();
 			McoptRuntime.apply(Map.of("mcopt.lod.small", "true", "profile", "none"));
 			if (McoptRuntime.current() != visual) throw new AssertionError("startup-only edit applied live");
 			Path file = dir.resolve("mcopt.properties");

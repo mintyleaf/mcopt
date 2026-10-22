@@ -35,6 +35,7 @@ final class McoptSettings {
 		number("mcopt.lod.radius", "LOD distance (chunks)", "512", 32, 2048, "Terrain visibility distance. This does not increase structure scouting distance."),
 		bool("mcopt.lod.textures", "LOD block textures", "true", "Draw block textures on the finest LOD level."),
 		bool("mcopt.lod.reuseVisibility", "Reuse stationary LOD visibility", "true", "Reuse GPU visibility results while camera, projection, geometry and near coverage are unchanged. Movement or changes rebuild them immediately."),
+		number("mcopt.lod.aoPixels", "LOD AO cutoff (pixels)", "2", 0, 8, "Fade fine ambient occlusion below twice this projected block size; skip it below the cutoff. Lighting and textures remain. 0 keeps full fine AO."),
 		bool("mcopt.lod.altitudeDetail", "Height-aware LOD detail", "true", "Gradually use coarser terrain while flying high. Keeps the horizon, nearby terrain and zoom detail."),
 		number("mcopt.lod.altitudeStart", "Height reduction starts (blocks)", "32", 0, 1024, "Clearance above nearby loaded terrain before detail starts decreasing. This is not absolute world Y."),
 		number("mcopt.lod.altitudeRange", "Height reduction span (blocks)", "160", 1, 1024, "Additional clearance to reach full reduction. With defaults, reduction runs from 32 to 192 blocks above terrain."),

@@ -1047,7 +1047,7 @@ public final class Lod {
 		// covers the frustum's corners): early depth testing drops what real terrain hides
 		Vector4d q = this.m.transform(new Vector4d(this.forward.x * dMin * 0.5, this.forward.y * dMin * 0.5, this.forward.z * dMin * 0.5, 1));
 		MemoryUtil.memPutFloat(c + 192, (float) Math.clamp(q.z / q.w, 0, 1));
-		MemoryUtil.memPutFloat(c + 196, LodConfig.NEAR_DETAIL ? 1 : 0);
+		MemoryUtil.memPutFloat(c + 196, LodConfig.NEAR_DETAIL ? 1 + McoptRuntime.current().integer("mcopt.lod.aoPixels") : 0);
 		MemoryUtil.memPutFloat(c + 200, (float) LodConfig.CROWN_SHADE);
 		MemoryUtil.memPutFloat(c + 204, clip.crownLevels > 0 ? 1 : 0);
 		MemoryUtil.memPutInt(c + 208, bx);

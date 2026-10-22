@@ -1115,7 +1115,7 @@ struct CompFrame {
     float4 fog;          // x start, y end (cylindrical, blocks), z environmental start, w environmental end (spherical)
     float4 skyLight;     // rgb: the game's lightmap at sky 15 / block 0; w: crown-run word offset
     float4 faceShade;    // x up, y down, z north/south, w east/west
-    float4 quadDepth;    // x: the depth the quad is drawn at (the nearest far terrain could be): early depth test; y: 1 = near detail
+    float4 quadDepth;    // x: the depth the quad is drawn at; y: 0 disables near detail, otherwise 1 + AO pixel cutoff
                          // (smooth-lighting AO, fringes, under-top colors) on level-0 hits; z: sky light factor under crowns;
                          // w: 1 when level 0 has crown words (the colors under top blocks)
     int4 origin;         // floor(camera) xyz, w: log2 N
@@ -1376,6 +1376,14 @@ static inline void compPlant(constant CompFrame& f, device const uint* geom, dev
 
 // The rest of a surface once its position, depth and face are known: its record word (color and flags, as the walk writes
 // it) and the near detail looked up in the clipmap. Shared by the walk's composite and the mesh's fragment stages.
+// Fine AO gradients need several pixels per block. Keep textures and captured light even where these probes are skipped.
+static inline float compAoWeight(constant CompFrame& f, float3 rel) {
+    float cutoff = max(0.0, f.quadDepth.y - 1.0);
+    if (cutoff == 0.0) return 1.0;
+    float pixels = 1.0 / max(length(rel) * f.tex.x, 1e-9);
+    return smoothstep(cutoff, 2.0 * cutoff, pixels);
+}
+
 static inline bool compShade(constant CompFrame& f, uint2 v, device const uint* geom, device const uint* color, device const uint* crowns,
                              device const uint* texWords, device const PaletteEntry* palette, texture2d<half> atlas, sampler smp,
                              thread CompSurface& s);
@@ -1560,8 +1568,10 @@ static inline bool compShade(constant CompFrame& f, uint2 v, device const uint* 
         s.albedo = compTexture(f, palette, atlas, smp, s.face == FACE_TOP ? (tw & 1023u) : ((tw >> 10) & 1023u), s.face == FACE_TOP, cuv, s.rel, nrm, s.albedo);
         return true;
     }
+    float aoWeight = compAoWeight(f, s.rel);
     if (s.face == FACE_TOP) {
         s.albedo = compTexture(f, palette, atlas, smp, tw & 1023u, true, float2(fx, fz), s.rel, nrm, s.albedo);
+        if (aoWeight == 0.0) return true;
 #ifdef MESH_BENCH_NOAO
         return true;
 #endif
@@ -1572,7 +1582,7 @@ static inline bool compShade(constant CompFrame& f, uint2 v, device const uint* 
         bool sw = compOccupied(f, geom, crowns, gx - 1, gz + 1, top), se = compOccupied(f, geom, crowns, gx + 1, gz + 1, top);
         float a00 = compVertexAo(w, nn, nw), a10 = compVertexAo(e, nn, ne), a01 = compVertexAo(w, so, sw), a11 = compVertexAo(e, so, se);
         float u = clamp(fx, 0.0, 1.0), vv = clamp(fz, 0.0, 1.0);
-        s.ao = mix(mix(a00, a10, u), mix(a01, a11, u), vv);
+        s.ao = mix(1.0, mix(mix(a00, a10, u), mix(a01, a11, u), vv), aoWeight);
         return true;
     }
     if (s.face == FACE_BOTTOM) return true;
@@ -1584,19 +1594,21 @@ static inline bool compShade(constant CompFrame& f, uint2 v, device const uint* 
     float along = fxo != 0 ? fz : fx;
     int b = int(floor(y));
     float fy = y - float(b);
+    if (aoWeight > 0.0) {
 #ifdef MESH_BENCH_NOAO
-    bool belowFront = false, aboveFront = false, sideM = false, sideP = false, cMb = false, cPb = false, cMt = false, cPt = false;
+        bool belowFront = false, aboveFront = false, sideM = false, sideP = false, cMb = false, cPb = false, cMt = false, cPt = false;
 #else
-    bool3 front = compOccupiedTriplet(f, geom, crowns, ox, oz, b);
-    bool3 minus = compOccupiedTriplet(f, geom, crowns, ox - ux, oz - uz, b);
-    bool3 plus = compOccupiedTriplet(f, geom, crowns, ox + ux, oz + uz, b);
-    bool belowFront = front.x, aboveFront = front.z, sideM = minus.y, sideP = plus.y;
-    bool cMb = minus.x, cPb = plus.x, cMt = minus.z, cPt = plus.z;
+        bool3 front = compOccupiedTriplet(f, geom, crowns, ox, oz, b);
+        bool3 minus = compOccupiedTriplet(f, geom, crowns, ox - ux, oz - uz, b);
+        bool3 plus = compOccupiedTriplet(f, geom, crowns, ox + ux, oz + uz, b);
+        bool belowFront = front.x, aboveFront = front.z, sideM = minus.y, sideP = plus.y;
+        bool cMb = minus.x, cPb = plus.x, cMt = minus.z, cPt = plus.z;
 #endif
-    float a00 = compVertexAo(belowFront, sideM, cMb), a10 = compVertexAo(belowFront, sideP, cPb);
-    float a01 = compVertexAo(aboveFront, sideM, cMt), a11 = compVertexAo(aboveFront, sideP, cPt);
-    float u = clamp(along, 0.0, 1.0), vv = clamp(fy, 0.0, 1.0);
-    s.ao = mix(mix(a00, a10, u), mix(a01, a11, u), vv);
+        float a00 = compVertexAo(belowFront, sideM, cMb), a10 = compVertexAo(belowFront, sideP, cPb);
+        float a01 = compVertexAo(aboveFront, sideM, cMt), a11 = compVertexAo(aboveFront, sideP, cPt);
+        float u = clamp(along, 0.0, 1.0), vv = clamp(fy, 0.0, 1.0);
+        s.ao = mix(1.0, mix(mix(a00, a10, u), mix(a01, a11, u), vv), aoWeight);
+    }
     // the top block's side (with its fringe) for the upper block, what is under it below
     float depth = float(top) - y;
     float2 wuv = float2(along, 1.0 - fy);
