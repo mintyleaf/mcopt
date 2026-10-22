@@ -105,12 +105,6 @@ LOD AO cutoff (pixels) (mcopt.lod.aoPixels, default 2, range 0..8) applies live.
 cutoff and the cutoff, then skips neighborhood probes. Textures and captured sky/torch lighting remain unchanged.
 Set it to 0 for full AO at every distance.
 
-Blend LOD water colors (mcopt.lod.waterBlend, default true) applies live, including existing cached terrain.
-Four neighboring water-color samples at the same height smooth stepped ocean/river biome boundaries. Land,
-roof colors and different water levels are excluded. Geometry and captured lighting remain unchanged. This
-filter scales with cell size rather than exactly reproducing vanilla biome blending. It adds bounded fragment
-lookups on water surfaces, with no new GPU buffers or cache format changes.
-
 Mod Menu > mcopt > Configure > Apply and close now applies these controls without restarting:
 LOD enablement/distance, population and scouting controls, saved-import controls, population workload and start
 spacing, estimated-terrain worker count, height-aware detail, haze and F3 statistics. Disabling LODs detaches the

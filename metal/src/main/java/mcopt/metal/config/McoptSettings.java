@@ -34,7 +34,6 @@ final class McoptSettings {
 		bool("mcopt.lod", "Distant terrain", "false", "Enable mcopt LOD terrain. Turning it off also stops LOD background work and releases world buffers."),
 		number("mcopt.lod.radius", "LOD distance (chunks)", "512", 32, 2048, "Terrain visibility distance. This does not increase structure scouting distance."),
 		bool("mcopt.lod.textures", "LOD block textures", "true", "Draw block textures on the finest LOD level."),
-		bool("mcopt.lod.waterBlend", "Blend LOD water colors", "true", "Smooth colors between neighboring water cells at the same height. Keeps land, roof colors, water geometry and lighting separate. Applies to existing caches."),
 		bool("mcopt.lod.reuseVisibility", "Reuse stationary LOD visibility", "true", "Reuse GPU visibility results while camera, projection, geometry and near coverage are unchanged. Movement or changes rebuild them immediately."),
 		number("mcopt.lod.aoPixels", "LOD AO cutoff (pixels)", "2", 0, 8, "Fade fine ambient occlusion below twice this projected block size; skip it below the cutoff. Lighting and textures remain. 0 keeps full fine AO."),
 		bool("mcopt.lod.altitudeDetail", "Height-aware LOD detail", "true", "Gradually use coarser terrain while flying high. Keeps the horizon, nearby terrain and zoom detail."),

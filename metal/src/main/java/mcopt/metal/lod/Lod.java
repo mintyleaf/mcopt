@@ -1020,7 +1020,6 @@ public final class Lod {
 		long c = this.compFrame;
 		this.viewProj.getToAddress(c);
 		putD(c + 64, this.A);
-		MemoryUtil.memPutFloat(c + 76, McoptRuntime.current().flag("mcopt.lod.waterBlend") ? 1 : 0);
 		putD(c + 80, this.B);
 		putD(c + 96, this.C);
 		MemoryUtil.memPutFloat(c + 112, width);
