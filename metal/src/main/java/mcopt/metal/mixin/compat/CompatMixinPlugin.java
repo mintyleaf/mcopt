@@ -18,6 +18,16 @@ public final class CompatMixinPlugin implements IMixinConfigPlugin {
 		if (mixinClassName.endsWith(".DhRenderApiMixin")) return FabricLoader.getInstance().isModLoaded("distanthorizons");
 		if (mixinClassName.endsWith(".MoreCullingFaceMixin")) return FabricLoader.getInstance().isModLoaded("moreculling")
 			&& Boolean.parseBoolean(System.getProperty("mcopt.compat.moreCullingFace", "true"));
+		if (mixinClassName.endsWith(".PolytoneIndigoMixin")) {
+			var loader = FabricLoader.getInstance();
+			if (loader.getModContainer("polytone").filter(mod -> mod.getMetadata().getVersion().getFriendlyString().equals("26.3-6.8.6")).isEmpty()
+				|| loader.getModContainer("fabric-renderer-indigo").filter(mod -> mod.getMetadata().getVersion().getFriendlyString().equals("9.1.24+b9d63e335d")).isEmpty()
+				|| !Boolean.parseBoolean(System.getProperty("mcopt.compat.polytoneOffset", "true"))) return false;
+			try {
+				return mcopt.metal.compat.PolytoneIndigoGuard.verify(org.spongepowered.asm.service.MixinService.getService()
+					.getBytecodeProvider().getClassNode(targetClassName));
+			} catch (java.io.IOException | ClassNotFoundException unavailable) { return false; }
+		}
 		if (mixinClassName.endsWith(".MoreCullingIndigoMixin")) {
 			// Selection must use metadata/bytecode only: resolving the API here bootstraps Minecraft before mixins are ready.
 			var loader = FabricLoader.getInstance();
@@ -38,6 +48,11 @@ public final class CompatMixinPlugin implements IMixinConfigPlugin {
 	@Override public void acceptTargets(Set<String> myTargets, Set<String> otherTargets) { }
 	@Override public List<String> getMixins() { return null; }
 	@Override public void preApply(String targetClassName, ClassNode targetClass, String mixinClassName, IMixinInfo mixinInfo) {
+		if (mixinClassName.endsWith(".PolytoneIndigoMixin")) {
+			boolean verified = mcopt.metal.compat.PolytoneIndigoGuard.verify(targetClass);
+			mcopt.metal.compat.PolytoneIndigoGuard.verified = verified;
+			System.out.println("[mcopt] Polytone Indigo offset: " + (verified ? "enabled" : "unchanged (unrecognized Indigo body)"));
+		}
 		if (mixinClassName.endsWith(".MoreCullingIndigoMixin")) {
 			boolean verified = mcopt.metal.compat.MoreCullingIndigoGuard.verify(targetClass);
 			mcopt.metal.compat.MoreCullingIndigoGuard.verified = verified;
