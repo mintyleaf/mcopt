@@ -10,6 +10,15 @@ public final class LodAltitudeQualityChecks {
 		return LodAltitudeQuality.target(y, ground, pixels, 956, protect, 6, 32, 160, .25);
 	}
 	public static void main(String[] args) {
+		int[] samples=new int[25];java.util.Arrays.fill(samples,63);samples[12]=191;
+		check(LodAltitudeGround.surface(samples,25)==63,"Farm roof suppressed high-flight reduction over ocean");
+		check(target(164.62,LodAltitudeGround.surface(samples,25),1156,304)<1,"Farm-camera clearance still retained full detail");
+		java.util.Arrays.fill(samples,63);java.util.Arrays.fill(samples,18,25,300);
+		check(LodAltitudeGround.surface(samples,25)==300,"Broad ridge lost its detail protection");
+		java.util.Arrays.fill(samples,300);
+		check(LodAltitudeGround.surface(samples,25)==300,"High plateau mistaken for low ground");
+		java.util.Arrays.fill(samples,-48);
+		check(LodAltitudeGround.surface(samples,13)==-48 && Double.isNaN(LodAltitudeGround.surface(samples,12)),"Sparse or negative-height samples mishandled");
 		check(target(320, 300, 1156, 304) == 1, "Absolute build height reduced nearby mountain detail");
 		check(target(96, 64, 1156, 304) == 1, "Near terrain detail changed");
 		double handoff = 304.0 / 956;

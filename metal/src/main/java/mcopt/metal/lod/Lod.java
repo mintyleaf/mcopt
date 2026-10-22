@@ -100,6 +100,7 @@ public final class Lod {
 	private int cavernY = LodCaverns.NONE;
 	private final LodCaverns.Selection cavernSelection = new LodCaverns.Selection();
 	private final LodAltitudeQuality altitudeQuality = new LodAltitudeQuality();
+	private final int[] altitudeHeights = new int[LodAltitudeGround.CAPACITY];
 	private double altitudeSurface = Double.NaN, altitudeX, altitudeZ;
 	private long altitudeSampleAt;
 	private float altitudeScale = 1;
@@ -707,16 +708,15 @@ public final class Lod {
 			this.altitudeSurface = Double.NaN;
 			// Read loaded heightmaps only. Never load/generate chunks to decide visual detail.
 			if (level != null && !level.dimensionType().hasCeiling()) {
-				int x = (int)Math.floor(this.camX), z = (int)Math.floor(this.camZ), samples = 0, highest = Integer.MIN_VALUE;
+				int x = (int)Math.floor(this.camX), z = (int)Math.floor(this.camZ), samples = 0;
 				for (int dz = -64; dz <= 64; dz += 32) for (int dx = -64; dx <= 64; dx += 32) {
 					LevelChunk chunk = level.getChunkSource().getChunk((x + dx) >> 4, (z + dz) >> 4, false);
 					if (chunk == null) continue;
 					int y = chunk.getHeight(Heightmap.Types.MOTION_BLOCKING, (x + dx) & 15, (z + dz) & 15);
 					if (y < level.getMinY()) continue;
-					highest = Math.max(highest, y + 1); samples++;
+					this.altitudeHeights[samples++] = y + 1;
 				}
-				// Near trees, peaks and tall structures, the highest sample conservatively keeps detail.
-				if (samples >= 13) this.altitudeSurface = highest;
+				this.altitudeSurface = LodAltitudeGround.surface(this.altitudeHeights, samples);
 			}
 		}
 		// The projection's vertical row norm removes camera rotation (including pitch) from the focal length.
