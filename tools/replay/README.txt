@@ -90,13 +90,14 @@ blocks or changing config. moreculling-probe.json compares emitted quad counts
 with the installed MoreCulling world-aware helper. This verifies that entry
 point, not every resource-pack/model path or every MoreCulling feature.
 
-Experimental owned-replay flag mcopt.replay.moreCullingContext=true wraps
-Indigo's state-only face check with MoreCulling's world-aware API using Indigo's
-current world/position/neighbor cursor. It respects useBlockStateCulling and the
-state's canCull guard. A successful probe must match the helper for every case.
-This is a benchmark prototype for the verified26.3/MoreCulling1.9.0 environment,
-not a shipped mcopt compatibility fix. It requires an active replay plan; keep
-it absent for baselines. The normal mcopt release never includes this adapter.
+From fork.11 the world-context adapter is in the production mcopt compatibility
+layer, enabled by default for the verified MoreCulling1.9.0 / Indigo9.1.24 body.
+The experimental replay adapter was removed to avoid double wrapping. The probe
+reports the production guard's status and requires every emitted face count to
+match the helper when it is active. Disable the production adapter with startup
+property mcopt.compat.moreCullingContext=false for a baseline. Unknown APIs or
+Indigo bodies keep the original caller; the global/state culling switches remain
+authoritative. The replay jar itself no longer changes culling behavior.
 
 For leaf-mode comparisons, restart each case with a specific MoreCulling config
 and hold cutoutLeaves=true, route, fixture, graphics and resolved time/weather

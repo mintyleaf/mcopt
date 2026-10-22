@@ -68,10 +68,14 @@ final class MoreCullingProbe {
         report.put("leavesMode",config.getClass().getField("leavesCullingMode").get(config).toString());
         report.put("blockStateCulling",config.getClass().getField("useBlockStateCulling").get(config));
         report.put("cutoutLeaves",mc.options.cutoutLeaves().get());report.put("cases",cases);
-        report.put("worldContextAdapter",MoreCullingContext.ENABLED);
+        boolean contextEnabled=false;
+        try { contextEnabled=Class.forName("mcopt.metal.compat.MoreCullingIndigoGuard").getField("verified").getBoolean(null); }
+        catch(ClassNotFoundException ignored) { }
+        report.put("worldContextAdapter",contextEnabled);
+        report.put("adapterSource",contextEnabled?"production mcopt":"none");
         report.put("note","Same Indigo API entry point as OwnFrapi; vanilla cube leaf models. Synthetic proxy only; no world/config mutations. Counts compare emitted model quads with the installed MoreCulling world-aware helper.");
         Files.writeString(output.resolve("moreculling-probe.json"),new GsonBuilder().setPrettyPrinting().create().toJson(report)+"\n");
-        if(MoreCullingContext.ENABLED && cases.stream().anyMatch(row->!Boolean.TRUE.equals(row.get("matches"))))
+        if(contextEnabled && cases.stream().anyMatch(row->!Boolean.TRUE.equals(row.get("matches"))))
             throw new IllegalStateException("World-context adapter differs from installed MoreCulling rules; inspect moreculling-probe.json");
         System.out.println("[mcopt-replay] MoreCulling probe "+report.get("leavesMode")+": "+cases);
     }

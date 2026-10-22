@@ -71,3 +71,24 @@ The experimental adapter is part of the development replay module only, requires
 an active owned replay plan plus mcopt.replay.moreCullingContext=true, and is absent
 from the released mcopt jar. After the audit its test flag was reset off. Normal
 pack configs/options/mods stayed unchanged; the source world was not opened by tests.
+
+Production follow-up
+--------------------
+Fork.11 moves the adapter into mcopt's optional compatibility layer, default-on
+for the verified MoreCulling1.9.0 / Indigo9.1.24 method and API. It preserves
+global/state-disabled fallbacks and rejects changed method bodies or unavailable
+APIs. The replay prototype was removed; its probe now reports the production guard.
+The earlier benchmarks above remain historical prototype measurements, not a new
+production FPS claim. See tools/replay/README.txt for the production opt-out flag.
+
+Production validation used the original-save fixture with the experimental replay
+adapter removed, CHECK mode, transparent leaves, and no adapter property override.
+All six oak/mangrove isolated/interior/edge cases matched the installed helper
+(6/0/6 faces per species). The 15-second warmup plus 10-second stationary replay
+completed with 597 measured frames, no unfocused frames and zero position error.
+It had one frame gap above50ms; this short functional check is not a performance
+comparison. Default activation and startup with ModernFix/C2ME were verified.
+API resolution stays lazy until rendering; loading its Minecraft dependencies
+during mixin selection caused an early-bootstrap failure in the first attempt.
+Unit checks cover fallback/global/state switches, argument/result/exception
+forwarding and rejection of a modified Indigo body or incompatible world field.

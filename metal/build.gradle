@@ -2,7 +2,7 @@ plugins {
 	id 'net.fabricmc.fabric-loom' version "${loom_version}"
 }
 
-version = '0.3.0-alpha.2-fork.9'
+version = '0.3.0-alpha.2-fork.11'
 
 repositories { maven { url = 'https://maven.terraformersmc.com/releases/' } }
 
@@ -199,6 +199,13 @@ tasks.register('checkMoreCullingFaces', JavaExec) {
 	mainClass = 'mcopt.metal.compat.MoreCullingFaceChecks'
 	jvmArgs '-XX:-DoEscapeAnalysis'
 	if (project.hasProperty('moreCullingBlock')) args rootProject.file(project.property('moreCullingBlock')).absolutePath
+}
+
+tasks.register('checkMoreCullingContext', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.compat.MoreCullingContextChecks'
+	if (project.hasProperty('moreCullingIndigo')) args rootProject.file(project.property('moreCullingIndigo')).absolutePath
 }
 
 tasks.register('checkLodStaging', JavaExec) {

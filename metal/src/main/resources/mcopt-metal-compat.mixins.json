@@ -6,6 +6,7 @@
 	"client": [
 		"DhRenderApiMixin",
 		"MoreCullingFaceMixin",
+		"MoreCullingIndigoMixin",
 		"LitematicaOverlayMixin"
 	],
 	"injectors": {

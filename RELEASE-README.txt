@@ -20,6 +20,8 @@ Install
 
 No Sodium needed: mcopt won't start alongside it (Fabric says so), so take Sodium out of the mods folder.
 Fabric API isn't required; keep it if your other mods need it.
+When MoreCulling 1.9.0 and the supported Fabric Indigo renderer are installed, its leaf culling modes are honored by
+default. Your MoreCulling and leaf-transparency settings are preserved. Unsupported versions retain their original path.
 Mods that require Sodium (for example Better Block Entities or Iris) can't be used with this build.
 Distant Horizons runs on the Metal renderer next to mcopt's own terrain. With DH set to its OpenGL renderer, mcopt
 switches its renderer off for it.
