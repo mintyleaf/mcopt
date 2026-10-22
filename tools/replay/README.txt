@@ -259,3 +259,38 @@ profiling to avoid contention; no normal installation is modified or replaced.
 
 Safety checks:
    python3 -m unittest discover -s tools/replay -p 'test_*.py' -v
+
+Terrain compatibility visual probes
+-----------------------------------
+
+compat-visual.json opts into compatFixture and captureImage. In the disposable
+world only, the server places snow, pink-petal and moss-carpet panels around
+fences, plus offset stone and unaffected granite blocks, at Y300. It also fixes
+time to noon and clears weather. The source fixture remains immutable.
+The example seed is12345; set it to your immutable fixture's seed in a local
+copy before running. It does not need to match for the panels' block choices,
+but the runner requires a matching seed to prevent loading the wrong fixture.
+
+Requires BetterGrassify1.8.8+fabric.26.3 (Better Snow LAMBDA), Polytone26.3-6.8.6
+and Indigo9.1.24. Zip the contents of compat-pack (pack.mcmeta at zip root), put
+it in the owned instance's resourcepacks and enable it in controlledOptions.
+It sets a Polytone xyz offset for stone only. Never install this fixture pack
+or copy its settings/world edits into the normal game instance.
+
+With LODs off and otherwise identical settings, capture separate restarted runs:
+  - Baseline: mcopt.compat.betterGrassSnow=false and mcopt.compat.polytoneOffset=false
+  - Production defaults: neither override set
+  - Snow reference: mcopt.own.mesh=false, production Polytone adapter active
+
+The harness writes view.png and terrain-compat-probe.json after warmup. The probe
+compares ghost states/snowy ground with BetterGrassify's installed helpers and
+compares actual Indigo vertex bounds with raw model bounds plus expected offsets
+for stone, granite and short grass. The stone override must be nonzero, so a
+missing/invalid fixture resource pack cannot silently pass. Disabled adapters
+record the expected baseline differences. Screenshots verify the compile-loop
+integration; the synthetic probes alone do not establish every model path.
+
+The production bridges are default-on only for the inspected mod/API versions.
+They are optional: neither dependency is bundled. Changed Polytone Indigo method
+bodies retain the original offset call. Runtime mod settings remain authoritative;
+the properties above are startup opt-outs, not substitutes for those settings.

@@ -2,7 +2,7 @@ plugins {
 	id 'net.fabricmc.fabric-loom' version "${loom_version}"
 }
 
-version = '0.3.0-alpha.2-fork.11'
+version = '0.3.0-alpha.2-fork.12'
 
 repositories { maven { url = 'https://maven.terraformersmc.com/releases/' } }
 
@@ -205,6 +205,13 @@ tasks.register('checkMoreCullingContext', JavaExec) {
 	dependsOn 'metalChecksClasses'
 	classpath = sourceSets.metalChecks.runtimeClasspath
 	mainClass = 'mcopt.metal.compat.MoreCullingContextChecks'
+	if (project.hasProperty('moreCullingIndigo')) args rootProject.file(project.property('moreCullingIndigo')).absolutePath
+}
+
+tasks.register('checkTerrainCompat', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.compat.TerrainCompatChecks'
 	if (project.hasProperty('moreCullingIndigo')) args rootProject.file(project.property('moreCullingIndigo')).absolutePath
 }
 

@@ -38,7 +38,7 @@ public final class Replay {
     private static volatile boolean serverReady;
     private static volatile boolean loaded,finished;
     private static boolean opened,started;
-    private static boolean schematicFixture,captureImage,captureRequested,moreCullingProbe;
+    private static boolean schematicFixture,compatFixture,captureImage,captureRequested,moreCullingProbe;
     private static volatile boolean captureFinished;
     private static volatile Exception captureError;
     private static double warmup,total;
@@ -79,6 +79,7 @@ public final class Replay {
         byte[] bytes=Files.readAllBytes(Path.of(PLAN));
         JsonObject plan=JsonParser.parseString(new String(bytes,StandardCharsets.UTF_8)).getAsJsonObject();
         schematicFixture=plan.has("schematicFixture") && plan.get("schematicFixture").getAsBoolean();
+        compatFixture=plan.has("compatFixture") && plan.get("compatFixture").getAsBoolean();
         captureImage=plan.has("captureImage") && plan.get("captureImage").getAsBoolean();
         moreCullingProbe=plan.has("moreCullingProbe") && plan.get("moreCullingProbe").getAsBoolean();
         if(plan.has("maximize") && plan.get("maximize").getAsBoolean())org.lwjgl.sdl.SDLVideo.SDL_MaximizeWindow(mc.getWindow().handle());
@@ -149,7 +150,10 @@ public final class Replay {
             }
             if(now<measureAt) { target=warmPose;applyPose();return; }
             // Effective distance can still be negotiating with the integrated server at initial world entry.
-            if(phase<0) { setup=setup(mc);setup.addProperty("sampledAfterWarmup",true); }
+            if(phase<0) {
+                if(compatFixture)TerrainCompatFixture.probe(mc,output);
+                setup=setup(mc);setup.addProperty("sampledAfterWarmup",true);
+            }
             int rd=mc.options.getEffectiveRenderDistance();minRenderDistance=Math.min(minRenderDistance,rd);maxRenderDistance=Math.max(maxRenderDistance,rd);
             stableSetup &= rd==setup.get("renderDistance").getAsInt()
                 && mc.getWindow().getWidth()==setup.get("framebufferWidth").getAsInt()
@@ -234,6 +238,7 @@ public final class Replay {
         for(var player:level.players()) {
             if(!serverReady) {
                 if(schematicFixture)SchematicFixture.populate(level);
+                if(compatFixture)TerrainCompatFixture.populate(level);
                 player.setGameMode(GameType.SPECTATOR);
                 level.getServer().getGameRules().set(GameRules.ADVANCE_TIME,false,level.getServer());
                 level.getServer().getGameRules().set(GameRules.ADVANCE_WEATHER,false,level.getServer());

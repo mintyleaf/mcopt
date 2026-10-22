@@ -1,0 +1,68 @@
+Terrain compatibility probes, 2026-10-23
+======================================
+
+Fork.12 restores BetterGrassify compile-loop additions in OwnMesher and Polytone
+block offsets in Indigo. Both are optional/default-on for the inspected APIs.
+
+Inputs and method
+-----------------
+Minecraft26.3, Fabric API0.164.0+26.3 / Indigo9.1.24+b9d63e335d,
+BetterGrassify1.8.8+fabric.26.3 (Better Snow LAMBDA), Polytone26.3-6.8.6,
+MoreCulling1.9.0 with the fork.11 world-context adapter retained.
+Three restarted runs in one marker-owned instance, with the same saved-world
+fixture restored each time, a synthetic panel at Y300, noon/clear weather,
+15-second warmup, 8-second stationary view, LODs off, VSync60 and render scale0.75.
+The render target was2880x1620, final screenshots3840x2160.
+
+The owned-only resource pack gives stone an xyz offset. Granite has no override.
+Snow, pink petals and moss carpet surround three fences. A solid-block control
+must produce no ghost layer. No source-save writes or normal-pack test inputs.
+The tracked route is an example seed; actual per-run route/input manifests are
+kept with the local captures. The source world seed is not part of this report.
+
+Results
+-------
+Both adapters off: reproduced all three missing ghost layers and snowy=false
+where the installed helper expects true. Stone emitted minimum(0,0,0) despite
+a custom offset; ordinary short-grass offsets still worked.
+
+Production defaults: all four ghost/control cases match the installed helper,
+snowy ground matches, and all three emitted-offset cases match. Stone minimum
+(-0.1166666597,-0.0933333263,0.0500000119) matches the requested translation to
+float precision. Granite remains unshifted; short grass retains its vanilla
+offset. API/guard activation was checked explicitly, not inferred from visuals.
+
+Original chunk compiler reference (own.mesh=false, Polytone fix active): probes
+pass and screenshot pixels match the production run exactly in all five named
+panel regions and the encompassing panel rectangle. This retains mcopt's terrain
+renderer and Fabric API; it is a compiler reference, not an entirely vanilla game.
+
+Baseline versus production changed2280 pixels in the snow region,1235 in the
+petal region,4441 in the moss region and41167 in the offset-stone region
+(maximum RGB-channel difference >2). The granite control changed zero pixels.
+Production versus compiler reference: zero differing pixels and zero mean channel
+difference in each panel region. Bounds comparisons also test unmodified granite
+and ordinary short grass independently of screenshot pixel locations.
+
+All three accepted replays completed, remained focused and had zero route error.
+The first attempt was rejected because the test resource pack was not enabled;
+the nonzero-override assertion caught it before any successful result was claimed.
+These short static runs establish the tested compatibility behavior, not an FPS
+gain, flight/streaming performance or correctness of every custom model/pack.
+
+Validation and delivery
+-----------------------
+checkTerrainCompat verifies rejection before costly neighbor search, nullable
+offset fallback, replacement manager, argument/result/exception forwarding,
+unsupported versions/APIs and rejection of a changed Indigo method body/owner.
+checkMoreCullingContext still passes; all10 replay safety checks pass.
+Fork.12 was installed with fork.11 backed up. Normal config/options and other
+mods were hash-verified unchanged. Test resource pack and launch flags were
+removed from the owned instance; its regular controlled settings were restored.
+
+Local artifacts (ignored out directory):
+  terrain-compat-visual-20261023/off-pack-enabled/view.png
+  terrain-compat-visual-20261023/on/view.png
+  terrain-compat-visual-20261023/vanilla/view.png
+  Each capture includes terrain-compat-probe.json, report.json and run.json.
+  pixel-comparison.json, inputs-*.json, source-before.json, installation.json

@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "seed": 12345,
+  "warmupSeconds": 15,
+  "compatFixture": true,
+  "captureImage": true,
+  "phases": [
+    {
+      "name": "panels",
+      "seconds": 8,
+      "from": [12, 309, 23],
+      "to": [12, 309, 23],
+      "yaw": 180,
+      "pitch": 30,
+      "fov": 60
+    }
+  ]
+}
