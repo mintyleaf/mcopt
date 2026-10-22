@@ -2,7 +2,7 @@ plugins {
 	id 'net.fabricmc.fabric-loom' version "${loom_version}"
 }
 
-version = '0.3.0-alpha.2-fork.5'
+version = '0.3.0-alpha.2-fork.6'
 
 repositories { maven { url = 'https://maven.terraformersmc.com/releases/' } }
 
