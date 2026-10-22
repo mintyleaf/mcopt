@@ -26,7 +26,7 @@ import java.util.zip.InflaterInputStream;
 final class LodCaptures implements AutoCloseable {
 	static final int CELLS = 256, PLANES = 9, MEMORY_CHUNKS = 256;
 	static final int GEOM = 0, COLOR = 1, CROWN = 2, MATERIAL = 3, LIGHT = 4, RUNS = 5, PLANT_A = 6, PLANT_B = 7, COARSE_COLOR = 8;
-	private static final int MAGIC = 0x4D434350, FORMAT = 6;
+	private static final int MAGIC = 0x4D434350, FORMAT = 7;
 
 	/** Packed fine columns plus the coarse wall color; no live chunk, block-state array or biome retained. */
 	static final class Capture {
@@ -447,8 +447,23 @@ final class LodCaptures implements AutoCloseable {
 				|| (p[CROWN][i]&(LodClip.CROWN_WET|LodClip.CROWN_SEGMENTED))==(LodClip.CROWN_WET|LodClip.CROWN_SEGMENTED)) {
 				legacyGap=true;break;
 			}
+			// A rejected internal room or truncated lower-floor search can leave a partial-block deck as
+			// infinite ground. Keep it visible until saved imports refresh it; ordinary terrain is unaffected.
+			if (format < 7 && !legacyGap) for (int i=0;i<CELLS;i++) {
+				int g=p[GEOM][i],cr=p[CROWN][i],t=p[MATERIAL][i];
+				if ((g&LodClip.GEOM_WET)!=0 || (cr&LodClip.CROWN_BOUNDED)!=0) continue;
+				if (partialDeck(t>>>20&1023) || (g&LodClip.GEOM_CROWN)==0 && partialDeck(t&1023)) {
+					legacyGap=true;break;
+				}
+			}
 			return new Capture(x, z, p, legacyGap);
 		}
+	}
+	private static boolean partialDeck(int id) {
+		var state=LodPalette.stateOf(id);
+		return state!=null && (state.getBlock() instanceof net.minecraft.world.level.block.SlabBlock
+			|| state.getBlock() instanceof net.minecraft.world.level.block.TrapDoorBlock
+			|| state.getBlock() instanceof net.minecraft.world.level.block.StairBlock);
 	}
 
 	private static int remap(int[] palette, int i) throws IOException {

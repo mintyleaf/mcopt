@@ -67,12 +67,34 @@ public final class LodCaptureChecks {
 			checkLegacyChorus(root.resolve("legacy-chorus"));
 			checkLegacyOverhang(root.resolve("legacy-overhang"));
 			checkLegacyGapRefresh(root.resolve("legacy-gap"));
+			checkLegacyDeckRefresh(root.resolve("legacy-deck"));
 			System.out.println("PASS: phantom canopies replaced by real ground; structures/material/light/plant data survive memory eviction, disk restart, coarse levels and latest edits; late generation cannot overwrite a visit; capture payloads remain bounded");
 		} finally {
 			try (var files = Files.walk(root)) {
 				for (Path path : files.sorted(java.util.Comparator.reverseOrder()).toList()) Files.delete(path);
 			}
 		}
+	}
+	private static void checkLegacyDeckRefresh(Path root) throws Exception {
+		for(int kind=0;kind<4;kind++) {
+			Path dir=root.resolve("kind"+kind);int[][] p=LodCaptures.pack(summary(0,0,191)).planes();
+			int deck=LodPalette.id(kind==1?Blocks.OAK_TRAPDOOR.defaultBlockState():Blocks.COBBLESTONE_SLAB.defaultBlockState());
+			if(kind!=2) for(int i=0;i<256;i++) {
+				p[LodCaptures.MATERIAL][i]=LodPalette.word(deck,deck,kind==1?deck:0);
+				if(kind==1) {p[LodCaptures.GEOM][i]=LodClip.crownGeomWord(320,1,false);p[LodCaptures.CROWN][i]=LodClip.crownWord(102,0x123456);}
+			}
+			try(var store=new LodCaptures(dir,5,true)) {store.put(new LodCaptures.Capture(0,0,p));}
+			Path file=dir.resolve("real-chunks/0.0.lodc");byte[] data;
+			try(var in=new java.util.zip.InflaterInputStream(Files.newInputStream(file))) {data=in.readAllBytes();}
+			if(kind!=3) java.nio.ByteBuffer.wrap(data).putInt(4,6);
+			try(var out=new java.util.zip.DeflaterOutputStream(Files.newOutputStream(file))) {out.write(data);}
+			try(var store=new LodCaptures(dir,5,true)) {
+				int[][] tile=tile();store.overlay(LodTile.key(0,0,0),tile[0],tile[1],tile[2],tile[3],tile[4],tile[5]);
+				if(!store.has(LodForest.chunkKey(0,0)) || store.refreshNeeded(LodForest.chunkKey(0,0))!=(kind<2))
+					throw new AssertionError("Old deck refresh or current/ordinary capture classification failed kind="+kind);
+			}
+		}
+		System.out.println("PASS: v6 slab/trapdoor deck captures stay visible during saved-only refresh; ordinary terrain and current captures do not repeat it");
 	}
 	private static void checkLegacyGapRefresh(Path root) throws Exception {
 		try(var store=new LodCaptures(root,5,true)) {
