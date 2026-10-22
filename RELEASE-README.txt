@@ -120,6 +120,11 @@ cache format. Restarting into the new build recomputes coarse capture levels; ca
 Compatible old captures stay visible while the existing budgeted saved-import worker refreshes their geometry;
 this refresh does not generate missing/pruned chunks or wipe the cache. With population/imports disabled, load the
 affected chunks up close to refresh them. Already bounded End captures retain their previous interpretation.
+Underside detection now continues past unlit internal rooms to an exterior air gap, instead of extending a farm's
+trapdoor/slab deck down as solid terrain. Fully sealed cavities remain closed; the upper-body budget still applies.
+The lower-ground search is dimension-bounded, separately from the 252-block upper interval range, so a tall build's
+lower deck does not become its foundation when the ocean lies beyond that range. Older partial-block deck captures
+stay visible during saved-only refresh. Capture version 7 retains the existing nine-plane layout.
 
 Litematica 0.29.1 colored overlays now combine consecutive compatible chunk draws into fewer render passes.
 Transparent draw order, model geometry, colors, depth behavior and per-chunk transforms are preserved; buffer

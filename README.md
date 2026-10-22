@@ -41,6 +41,8 @@ These edits apply without restarting or rebuilding the world. Clearance uses the
 
 Captured sky platforms preserve exterior air gaps beyond 128 blocks, including roofs near build height over land or ocean. Water stays beneath the structure rather than entering its roof layers. At coarse levels, sparse continuous supports no longer fill an otherwise matching roof's whole footprint: at least 75% must share the roof/gap, supports may cover at most 12.5%, and the gap must be at least eight blocks tall. Supports spanning either axis retain the existing wall approximation. Close detail, broad walls and isolated towers retain their existing geometry; qualifying narrow supports can disappear at distance. This bounded capture reduction uses geometry, not special block types or structure generation. Coarse levels rebuild from the existing fine captures without a cache reset. Older captures stay visible during budgeted refresh from existing saved chunks; loading a structure up close also refreshes its capture.
 
+Enclosed rooms inside floating builds no longer stop underside detection: it continues through internal gaps until it finds an exterior gap, while sealed underground cavities remain closed. Lower terrain searches use the dimension floor independently of the upper-layer encoding range. Older slab, stair and trapdoor deck captures refresh from saved terrain without deleting the cache.
+
 Litematica 0.29.1 colored schematic overlays combine consecutive compatible draws into fewer render passes while preserving their order. **Batch Litematica overlays** (`mcopt.compat.litematicaOverlayBatch`, default true) can disable the compatibility patch. Other versions or modified renderer bodies retain their original path.
 
 ## Settings
