@@ -66,10 +66,53 @@ public final class LodCaptureChecks {
 			checkStructureCaptures(root.resolve("structures"));
 			checkLegacyChorus(root.resolve("legacy-chorus"));
 			checkLegacyOverhang(root.resolve("legacy-overhang"));
+			checkLegacyGapRefresh(root.resolve("legacy-gap"));
 			System.out.println("PASS: phantom canopies replaced by real ground; structures/material/light/plant data survive memory eviction, disk restart, coarse levels and latest edits; late generation cannot overwrite a visit; capture payloads remain bounded");
 		} finally {
 			try (var files = Files.walk(root)) {
 				for (Path path : files.sorted(java.util.Comparator.reverseOrder()).toList()) Files.delete(path);
+			}
+		}
+	}
+	private static void checkLegacyGapRefresh(Path root) throws Exception {
+		try(var store=new LodCaptures(root,5,true)) {
+			store.put(LodCaptures.pack(summary(0,0,80)));store.put(LodCaptures.pack(summary(4,4,70)));
+		}
+		Path file=root.resolve("real-chunks/0.0.lodc");byte[] data;
+		try(var in=new java.util.zip.InflaterInputStream(Files.newInputStream(file))) {data=in.readAllBytes();}
+		java.nio.ByteBuffer.wrap(data).putInt(4,5);
+		try(var out=new java.util.zip.DeflaterOutputStream(Files.newOutputStream(file))) {out.write(data);}
+		long key=LodForest.chunkKey(0,0);
+		try(var store=new LodCaptures(root,5,true,1)) {
+			checkOverlay(store,0,0,80);
+			checkOverlay(store,4,4,70); // Eviction must not lose the refresh flag in the existing disk index.
+			if(!store.has(key) || !store.refreshNeeded(key)) throw new AssertionError("Legacy gap refresh discarded the old visit or did not request saved data");
+			store.put(LodCaptures.pack(summary(0,0,90)));store.close();
+			if(store.refreshNeeded(key)) throw new AssertionError("Fresh capture retained its legacy refresh request");
+		}
+		try(var store=new LodCaptures(root,5,true)) {
+			checkOverlay(store,0,0,90);
+			if(store.refreshNeeded(key)) throw new AssertionError("Current capture repeatedly refreshes across restarts");
+		}
+		System.out.println("PASS: legacy unbounded columns stay visible during saved-only refresh; fresh captures clear the request across restart");
+		for(boolean water:new boolean[]{false,true}) {
+			Path kind=root.resolve(water?"water":"bounded");
+			int[][] p=LodCaptures.pack(summary(0,0,80)).planes();
+			for(int i=0;i<256;i++) {
+				if(water) {
+					p[LodCaptures.GEOM][i]=LodClip.crownGeomWord(221,1,false);
+					p[LodCaptures.CROWN][i]=LodClip.crownWord(63,0x123456,true)|LodClip.CROWN_SEGMENTED;
+					p[LodCaptures.RUNS][i]=1<<30;
+				} else p[LodCaptures.CROWN][i]|=LodClip.CROWN_BOUNDED;
+			}
+			try(var store=new LodCaptures(kind,5,true)) {store.put(new LodCaptures.Capture(0,0,p));}
+			Path old=kind.resolve("real-chunks/0.0.lodc");
+			try(var in=new java.util.zip.InflaterInputStream(Files.newInputStream(old))) {data=in.readAllBytes();}
+			java.nio.ByteBuffer.wrap(data).putInt(4,5);
+			try(var out=new java.util.zip.DeflaterOutputStream(Files.newOutputStream(old))) {out.write(data);}
+			try(var store=new LodCaptures(kind,5,true)) {
+				int[][] destination=tile();store.overlay(LodTile.key(0,0,0),destination[0],destination[1],destination[2],destination[3],destination[4],destination[5]);
+				if(!store.has(key) || store.refreshNeeded(key)!=water) throw new AssertionError("Legacy wet roof/bounded-island refresh classification");
 			}
 		}
 	}

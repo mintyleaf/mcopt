@@ -26,17 +26,21 @@ import java.util.zip.InflaterInputStream;
 final class LodCaptures implements AutoCloseable {
 	static final int CELLS = 256, PLANES = 9, MEMORY_CHUNKS = 256;
 	static final int GEOM = 0, COLOR = 1, CROWN = 2, MATERIAL = 3, LIGHT = 4, RUNS = 5, PLANT_A = 6, PLANT_B = 7, COARSE_COLOR = 8;
-	private static final int MAGIC = 0x4D434350, FORMAT = 5;
+	private static final int MAGIC = 0x4D434350, FORMAT = 6;
 
 	/** Packed fine columns plus the coarse wall color; no live chunk, block-state array or biome retained. */
 	static final class Capture {
 		final int x,z;
 		final int[][] planes;
+		private final boolean legacyGap;
 		private final int[][][] mips=new int[5][][];
 		Capture(int x,int z,int[][] planes) {
+			this(x,z,planes,false);
+		}
+		private Capture(int x,int z,int[][] planes,boolean legacyGap) {
 			if (planes.length != PLANES) throw new IllegalArgumentException("Capture planes");
 			for (int[] plane : planes) if (plane.length != CELLS) throw new IllegalArgumentException("Capture cells");
-			this.x=x;this.z=z;this.planes=planes;
+			this.x=x;this.z=z;this.planes=planes;this.legacyGap=legacyGap;
 		}
 		int x() { return this.x; } int z() { return this.z; } int[][] planes() { return this.planes; }
 		synchronized int[][] atLevel(int level) {
@@ -67,7 +71,9 @@ final class LodCaptures implements AutoCloseable {
 	private final LinkedHashMap<Long, Capture> memory = new LinkedHashMap<>(32, 0.75F, true);
 	private final Object[] readers = new Object[64];
 	private final AtomicLong diskReads = new AtomicLong();
-	private final java.util.Set<Long> indexed = ConcurrentHashMap.newKeySet();
+	/** Existing disk index also stores whether an older decoded capture needs a saved-only refresh. */
+	private final ConcurrentHashMap<Long, Boolean> indexed = new ConcurrentHashMap<>();
+	boolean refreshNeeded(long key) { return Boolean.TRUE.equals(this.indexed.get(key)); }
 	private final ConcurrentHashMap<Long, Long> revisions = new ConcurrentHashMap<>();
 	private final AtomicLong serial = new AtomicLong();
 	private final ConcurrentHashMap<Long, Long> stamps = new ConcurrentHashMap<>();
@@ -156,7 +162,7 @@ final class LodCaptures implements AutoCloseable {
 		});
 	}
 
-	boolean has(long key) { return this.indexed.contains(key) || this.pending.containsKey(key); }
+	boolean has(long key) { return this.indexed.containsKey(key) || this.pending.containsKey(key); }
 	long stamp(long key) { return this.stamps.getOrDefault(key, 0L); }
 	int pendingCount() { return this.pending.size() + this.writePendingCount(); }
 	synchronized int rawPendingCount() { return this.rawPending; }
@@ -195,7 +201,7 @@ final class LodCaptures implements AutoCloseable {
 				for (Path path : files) {
 					String[] p = path.getFileName().toString().replace(".lodc", "").split("\\.");
 					if (p.length != 2) continue;
-					try { this.indexed.add(LodForest.chunkKey(Integer.parseInt(p[0]), Integer.parseInt(p[1]))); }
+					try { this.indexed.putIfAbsent(LodForest.chunkKey(Integer.parseInt(p[0]), Integer.parseInt(p[1])), false); }
 					catch (NumberFormatException ignored) { }
 				}
 			}
@@ -231,7 +237,7 @@ final class LodCaptures implements AutoCloseable {
 			// Install the pending write and new revision together. Readers never reopen an evicted, older disk revision.
 			if (this.disk) this.writes.put(key, data);
 			synchronized (this.memory) {
-				this.memory.put(key, data); this.indexed.add(key);
+				this.memory.put(key, data); this.indexed.put(key, data.legacyGap);
 				long version = this.serial.incrementAndGet();
 				for (int l = 0; l < this.levels; l++) this.revisions.put(tileKey(l, data.x, data.z), version);
 				this.trim();
@@ -314,7 +320,7 @@ final class LodCaptures implements AutoCloseable {
 	}
 
 	private Capture load(long key) {
-		while (this.indexed.contains(key)) {
+		while (this.indexed.containsKey(key)) {
 			synchronized (this.memory) {
 				Capture data = this.memory.get(key);
 				if (data != null) return data;
@@ -343,6 +349,7 @@ final class LodCaptures implements AutoCloseable {
 				// Another reader can evict the new entry while this disk read is in flight. Never reinsert an older file.
 				if (this.revision(tile) != revision) continue;
 				this.memory.put(key, data);
+				if (data.legacyGap) this.indexed.replace(key, true);
 				this.trim();
 			}
 			return data;
@@ -432,7 +439,15 @@ final class LodCaptures implements AutoCloseable {
 				throw new IOException("Legacy finite capture requires complete lower-body refresh");
 			if(format<5) for(int g:p[GEOM]) if((g&(LodClip.GEOM_CROWN|LodClip.GEOM_WET))==0 && (g>>>25)>0 && (g>>>25)<127)
 				throw new IOException("Legacy finite surface run requires overhang refresh");
-			return new Capture(x, z, p);
+			// Keep old visits visible while the budgeted saved-import lane rechecks potentially unbounded columns.
+			// Their packed height alone cannot tell an ordinary surface from a roof whose long gap was rejected.
+			boolean legacyGap = false;
+			if (format < 6) for (int i=0;i<CELLS;i++) if (
+				((p[GEOM][i] & (LodClip.GEOM_CROWN|LodClip.GEOM_WET))==0 && (p[CROWN][i]&LodClip.CROWN_BOUNDED)==0)
+				|| (p[CROWN][i]&(LodClip.CROWN_WET|LodClip.CROWN_SEGMENTED))==(LodClip.CROWN_WET|LodClip.CROWN_SEGMENTED)) {
+				legacyGap=true;break;
+			}
+			return new Capture(x, z, p, legacyGap);
 		}
 	}
 

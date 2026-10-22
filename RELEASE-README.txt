@@ -98,6 +98,13 @@ compatibility. JVM arguments win at startup; explicit live edits override the ru
 To reduce load, lower LOD distance, select low workload/one terrain worker, or disable population and scouting.
 Turning Distant terrain off stops LOD work; vanilla chunk generation still runs. Java may retain committed heap.
 
+Sky platforms can now keep exterior air gaps taller than 128 blocks, bounded by the dimension's floor. Roof layers
+remain finite even near build height. Water below the structure stays in the lower surface instead of entering the
+roof's vertical intervals. Continuous scaffold/stone supports retain their ordinary column approximation.
+Compatible old captures stay visible while the existing budgeted saved-import worker refreshes their geometry;
+this refresh does not generate missing/pruned chunks or wipe the cache. With population/imports disabled, load the
+affected chunks up close to refresh them. Already bounded End captures retain their previous interpretation.
+
 Litematica 0.29.1 colored overlays now combine consecutive compatible chunk draws into fewer render passes.
 Transparent draw order, model geometry, colors, depth behavior and per-chunk transforms are preserved; buffer
 storage is bounded and released after each scope. Unknown versions or modified renderer bodies retain the original

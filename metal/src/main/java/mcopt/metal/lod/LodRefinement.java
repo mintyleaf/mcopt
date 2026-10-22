@@ -328,7 +328,7 @@ public final class LodRefinement implements AutoCloseable {
 					if (this.closed || Thread.currentThread().isInterrupted()) return;
 					Focus current = this.focus;
 					if (!active(current) || Math.abs(current.x - f.x) > 32 || Math.abs(current.z - f.z) > 32) break;
-					if (this.captures.has(key) && !this.needsFull.contains(key)) continue;
+					if (this.captures.has(key) && !this.captures.refreshNeeded(key) && !this.needsFull.contains(key)) continue;
 					while (!this.closed && (!this.backgroundAllowed || this.imports.remainingCapacity() == 0 || this.congested.getAsBoolean())) {
 						LockSupport.parkNanos(50_000_000L);
 						if (Thread.currentThread().isInterrupted()) return;
@@ -336,12 +336,13 @@ public final class LodRefinement implements AutoCloseable {
 					if (this.closed) return;
 					if (!active(this.focus)) break;
 					if (!within(key, this.focus, this.importRadius)) continue;
-					if (this.captures.has(key) && !this.needsFull.contains(key)) continue; // a live capture may have arrived during backpressure
+					if (this.captures.has(key) && !this.captures.refreshNeeded(key) && !this.needsFull.contains(key)) continue; // a live capture may have arrived during backpressure
 					long stamp = this.captures.stamp(key);
 					LodChunks.Snapshot snapshot;
 					try { snapshot = window.snapshot((int)(key >> 32), (int)key); }
 					catch (java.io.IOException | RuntimeException e) { snapshot = null; }
 					if (snapshot == null) {
+						if (this.captures.has(key)) continue; // A legacy refresh never generates a missing/pruned saved chunk.
 						this.needsFull.add(key);
 						this.saved.remove(key);
 						continue;
