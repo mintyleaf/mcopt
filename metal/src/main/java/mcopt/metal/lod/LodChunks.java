@@ -296,13 +296,11 @@ final class LodChunks {
 					}
 				}
 				if (cavity == null && LodConfig.OVERHANGS && crown[i] == null && !s.is(BlockTags.LEAVES) && !snowOnLeaves && s.getFluidState().isEmpty() && !s.isAir()) {
-					LodOverhang.Layer floating = LodOverhang.find(y, minY, cy -> {
+					LodOverhang.Layer floating = LodOverhang.findExterior(y, minY, cy -> {
 						BlockState b = state(chunk, blocks, pos.set(px, cy, pz));
 						return !b.isAir() && (b.canOcclude() || !decoration(b));
-					});
-					if (floating != null && (!skyLight || LodOverhang.exposedGap(
-						lighting.sky().applyAsInt(pos.set(px, floating.bottom() - 1, pz)),
-						lighting.sky().applyAsInt(pos.set(px, floating.ground() + 1, pz))))) {
+					}, cy -> !skyLight || lighting.sky().applyAsInt(pos.set(px, cy, pz)) > 0);
+					if (floating != null) {
 						BlockState floor = state(chunk, blocks, pos.set(px, floating.ground(), pz));
 						if (floor.getFluidState().isEmpty() || floor.getFluidState().is(FluidTags.WATER)) {
 							crown[i] = s;
@@ -336,7 +334,8 @@ final class LodChunks {
 					if(k>bottom && k<crownHi[i]) {y=k-1;s=state(chunk, blocks, pos.set(px,y,pz));}
 				}
 				if(LodConfig.STRUCTURE_DETAIL && !islands && cavity==null && overhang[i] && !s.isAir()) {
-					int limit=Math.max(minY,crownHi[i]-LodStructureLayers.RANGE);
+					// The upper interval budget bounds encoded floors, not the search for real lower terrain.
+					int limit=minY;
 					int floor=LodStructureLayers.ground(y,limit,cy -> {
 						BlockState b=state(chunk, blocks, pos.set(px,cy,pz));return !b.isAir() && !decoration(b);
 					});

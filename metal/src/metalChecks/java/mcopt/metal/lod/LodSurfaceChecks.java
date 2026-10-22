@@ -43,6 +43,13 @@ public final class LodSurfaceChecks {
 			throw new AssertionError("Solid terrain scan exceeded thickness budget");
 		var negative = LodOverhang.find(-10, -64, y -> y == -10 || y <= -30);
 		if (negative == null || negative.bottom() != -10 || negative.ground() != -30) throw new AssertionError("Negative world height");
+		var farm=LodOverhang.findExterior(190,-64,y->y==190 || y==189 || y==187 || y<=62,y->y<187);
+		if(farm==null || farm.bottom()!=187 || farm.ground()!=62) throw new AssertionError("Unlit internal farm room hid the exterior gap");
+		if(LodOverhang.findExterior(190,-64,y->y==190 || y==189 || y==187 || y<=62,y->false)!=null)
+			throw new AssertionError("Fully sealed cave became an exterior farm gap");
+		int[] exteriorProbes={0};
+		if(LodOverhang.findExterior(319,-64,y->{exteriorProbes[0]++;return y%2==0 || y<=62;},y->false)!=null || exteriorProbes[0]>1100)
+			throw new AssertionError("Repeated unlit gaps exceeded the upper-body scan budget");
 		// Shapes from the saved world's red mushroom: a three-block edge and a one-block dome over air, beside its stem.
 		var edge = LodOverhang.find(99, -64, y -> y >= 97 && y <= 99 || y <= 93);
 		var dome = LodOverhang.find(100, -64, y -> y == 100 || y <= 93);

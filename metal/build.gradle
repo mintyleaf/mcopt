@@ -326,6 +326,14 @@ tasks.register('checkLodOceanPlatform', JavaExec) {
 	jvmArgs '--enable-native-access=ALL-UNNAMED', '-Dmcopt.lod=true'
 }
 
+tasks.register('checkLodFarmPlatform', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.lod.LodFarmPlatformChecks'
+	if (project.hasProperty('farmColumns')) args rootProject.file(project.property('farmColumns')).absolutePath
+	jvmArgs '--enable-native-access=ALL-UNNAMED', '-Dmcopt.lod=true'
+}
+
 tasks.register('checkLodSurfaceCache', JavaExec) {
 	dependsOn 'metalChecksClasses'
 	classpath = sourceSets.metalChecks.runtimeClasspath

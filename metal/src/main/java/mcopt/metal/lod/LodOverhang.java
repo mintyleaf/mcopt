@@ -42,6 +42,19 @@ final class LodOverhang {
 		return new Layer(bottom, y);
 	}
 
+	/** An unlit room inside a floating build is not its underside. Continue to the next gap, while
+	 * retaining the total upper-body budget and requiring actual exterior light before opening it. */
+	static Layer findExterior(int top, int minY, IntPredicate occupied, IntPredicate exposed) {
+		int surface = top;
+		while (surface >= minY && top - surface < MAX_THICKNESS) {
+			Layer layer = find(surface, minY, occupied);
+			if (layer == null || top - layer.bottom() >= MAX_THICKNESS) return null;
+			if (exposed.test(layer.bottom() - 1) || exposed.test(layer.ground() + 1)) return layer;
+			surface = layer.ground();
+		}
+		return null;
+	}
+
 	/** 1: mushroom cap, 0: air/decoration/leaves, 2: supporting surface (including water). */
 	static Cap mushroom(int top, int minY, IntUnaryOperator material) {
 		int bottom = top;
