@@ -168,58 +168,61 @@ public final class OwnMesher {
 		// BlockPos.betweenClosed's order (x fastest, then y, then z) with its one mutable cursor, without the iterator
 		BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
 		int minX = minPos.getX(), minY = minPos.getY(), minZ = minPos.getZ();
-		for (int i = 0; i < 4096; i++) {
-			pos.set(minX + (i & 15), minY + (i >> 4 & 15), minZ + (i >> 8));
-			BlockState blockState = level.getBlockState(pos);
-			if (snow != null) {
-				BlockState ghost = snow.ghost(region, pos);
-				if (ghost != null) {
-					float x = i & 15, y = i >> 4 & 15, z = i >> 8;
-					if (api != null) api.block(x, y, z, region, pos, ghost, blockModelSet.get(ghost), ghost.getSeed(pos));
-					else blockRenderer.tesselateBlock(ModelBlockRenderer.forceOpaque(cutoutLeaves, ghost) ? opaqueQuadOutput : quadOutput,
-						x, y, z, region, pos, ghost, blockModelSet.get(ghost), ghost.getSeed(pos));
+		try {
+			for (int i = 0; i < 4096; i++) {
+				pos.set(minX + (i & 15), minY + (i >> 4 & 15), minZ + (i >> 8));
+				BlockState blockState = level.getBlockState(pos);
+				if (snow != null) {
+					BlockState ghost = snow.ghost(region, pos);
+					if (ghost != null) {
+						float x = i & 15, y = i >> 4 & 15, z = i >> 8;
+						if (api != null) api.block(x, y, z, region, pos, ghost, blockModelSet.get(ghost), ghost.getSeed(pos));
+						else blockRenderer.tesselateBlock(ModelBlockRenderer.forceOpaque(cutoutLeaves, ghost) ? opaqueQuadOutput : quadOutput,
+							x, y, z, region, pos, ghost, blockModelSet.get(ghost), ghost.getSeed(pos));
+					}
+					blockState = snow.snowy(region, pos, blockState);
 				}
-				blockState = snow.snowy(region, pos, blockState);
-			}
-			if (OwnGridStat.ON || OwnQrStat.ON) OwnGridStat.block(blockState, quads);
-			if (OwnMaterials.ON) OwnMaterials.block(pos.getX(), pos.getY(), pos.getZ(), blockState);  // as OwnIntCompilerMixin's redirect
-			if (!blockState.isAir()) {
-				try {
-					if (blockState.isSolidRender()) {
-						if (ownVis != null) ownVis.setOpaque(i & 15, i >> 4 & 15, i >> 8);
-						else visGraph.setOpaque(pos);
+				if (OwnGridStat.ON || OwnQrStat.ON) OwnGridStat.block(blockState, quads);
+				if (OwnMaterials.ON) OwnMaterials.block(pos.getX(), pos.getY(), pos.getZ(), blockState);  // as OwnIntCompilerMixin's redirect
+				if (!blockState.isAir()) {
+					try {
+						if (blockState.isSolidRender()) {
+							if (ownVis != null) ownVis.setOpaque(i & 15, i >> 4 & 15, i >> 8);
+							else visGraph.setOpaque(pos);
+						}
+						if (blockState.hasBlockEntity() && startedLayers != null) {
+							BlockEntity blockEntity = region.getBlockEntity(pos);
+							if (blockEntity != null) results.blockEntities.add(blockEntity);
+						}
+						FluidState fluidState = blockState.getFluidState();
+						if (!fluidState.isEmpty()) fluidRenderer.tesselate(level, pos, fluidOutput, blockState, fluidState);
+						if (blockState.getRenderShape() == RenderShape.MODEL && api != null) {
+							// vanilla's region, not OwnRegion: Fabric API extends RenderSectionRegion (block entity render data, biomes) for FRAPI models
+							api.block(SectionPos.sectionRelative(pos.getX()), SectionPos.sectionRelative(pos.getY()), SectionPos.sectionRelative(pos.getZ()), region, pos,
+								blockState, blockModelSet.get(blockState), blockState.getSeed(pos));
+						} else if (blockState.getRenderShape() == RenderShape.MODEL && ownRenderer != null) {
+							ownRenderer.tesselateBlock(ModelBlockRenderer.forceOpaque(cutoutLeaves, blockState) ? opaqueQuadOutput : quadOutput,
+								SectionPos.sectionRelative(pos.getX()), SectionPos.sectionRelative(pos.getY()), SectionPos.sectionRelative(pos.getZ()), own, pos,
+								blockState, blockModelSet.get(blockState), blockState.getSeed(pos));
+						} else if (blockState.getRenderShape() == RenderShape.MODEL) {
+							blockRenderer.tesselateBlock(ModelBlockRenderer.forceOpaque(cutoutLeaves, blockState) ? opaqueQuadOutput : quadOutput,
+								SectionPos.sectionRelative(pos.getX()), SectionPos.sectionRelative(pos.getY()), SectionPos.sectionRelative(pos.getZ()), level, pos,
+								blockState, blockModelSet.get(blockState), blockState.getSeed(pos));
+						}
+					} catch (Throwable t) {
+						CrashReport report = CrashReport.forThrowable(t, "Tesselating block in world");
+						CrashReportCategory category = report.addCategory("Block being tesselated");
+						CrashReportCategory.populateBlockDetails(category, region, pos, blockState);
+						throw new ReportedException(report);
 					}
-					if (blockState.hasBlockEntity() && startedLayers != null) {
-						BlockEntity blockEntity = region.getBlockEntity(pos);
-						if (blockEntity != null) results.blockEntities.add(blockEntity);
-					}
-					FluidState fluidState = blockState.getFluidState();
-					if (!fluidState.isEmpty()) fluidRenderer.tesselate(level, pos, fluidOutput, blockState, fluidState);
-					if (blockState.getRenderShape() == RenderShape.MODEL && api != null) {
-						// vanilla's region, not OwnRegion: Fabric API extends RenderSectionRegion (block entity render data, biomes) for FRAPI models
-						api.block(SectionPos.sectionRelative(pos.getX()), SectionPos.sectionRelative(pos.getY()), SectionPos.sectionRelative(pos.getZ()), region, pos,
-							blockState, blockModelSet.get(blockState), blockState.getSeed(pos));
-					} else if (blockState.getRenderShape() == RenderShape.MODEL && ownRenderer != null) {
-						ownRenderer.tesselateBlock(ModelBlockRenderer.forceOpaque(cutoutLeaves, blockState) ? opaqueQuadOutput : quadOutput,
-							SectionPos.sectionRelative(pos.getX()), SectionPos.sectionRelative(pos.getY()), SectionPos.sectionRelative(pos.getZ()), own, pos,
-							blockState, blockModelSet.get(blockState), blockState.getSeed(pos));
-					} else if (blockState.getRenderShape() == RenderShape.MODEL) {
-						blockRenderer.tesselateBlock(ModelBlockRenderer.forceOpaque(cutoutLeaves, blockState) ? opaqueQuadOutput : quadOutput,
-							SectionPos.sectionRelative(pos.getX()), SectionPos.sectionRelative(pos.getY()), SectionPos.sectionRelative(pos.getZ()), level, pos,
-							blockState, blockModelSet.get(blockState), blockState.getSeed(pos));
-					}
-				} catch (Throwable t) {
-					CrashReport report = CrashReport.forThrowable(t, "Tesselating block in world");
-					CrashReportCategory category = report.addCategory("Block being tesselated");
-					CrashReportCategory.populateBlockDetails(category, region, pos, blockState);
-					throw new ReportedException(report);
 				}
 			}
+			// (verify reads it too: our visibility is compared with vanilla's)
+			results.visibilitySet = ownVis != null ? ownVis.resolve() : visGraph.resolve();
+		} finally {
+			try { if (api != null) api.release(); }
+			finally { BlockModelLighter.clearCache(); if (own != null) own.release(); }
 		}
-		BlockModelLighter.clearCache();
-		if (own != null) own.release();
-		// (verify reads it too: our visibility is compared with vanilla's)
-		results.visibilitySet = ownVis != null ? ownVis.resolve() : visGraph.resolve();
 	}
 
 	private static VertexConsumer translucent(Map<ChunkSectionLayer, BufferBuilder> startedLayers, SectionBufferBuilderPack builders, VertexConsumer[] cache) {

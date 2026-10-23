@@ -2,6 +2,7 @@ package mcopt.metal.own;
 
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import java.util.function.Supplier;
+import net.fabricmc.loader.api.FabricLoader;
 import net.fabricmc.fabric.api.client.renderer.v1.Renderer;
 import net.fabricmc.fabric.api.client.renderer.v1.mesh.MutableQuadView;
 import net.fabricmc.fabric.api.client.renderer.v1.mesh.QuadEmitter;
@@ -17,8 +18,8 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * Our mesher's FRAPI path (OwnApi): what Fabric API's own SectionCompiler patch does, with our quads as the destination. Per
- * section a new block tesselator from the active renderer (Renderer.altModelBlockRenderer, as Fabric API's patch makes one
- * per compile: the renderer culls, lights (AO or flat, emissive), tints and offsets each quad); per worker one quad emitter
+ * worker a block tesselator from the verified Indigo renderer (other implementations retain a new renderer
+ * per compile): the renderer culls, lights (AO or flat, emissive), tints and offsets each quad; per worker one quad emitter
  * whose emit writes the finished quad as compact quads for solid and cutout (the bytes OwnTerrain.store makes of what
  * Fabric API's patch would have put in vanilla's BufferBuilder: same floats, ABGR colour, packed light) or, translucent,
  * with QuadView.buffer into the translucent BufferBuilder, as Fabric API's patch does. The layer is the quad's own (QuadView.chunkLayer: FRAPI's blend mode).
@@ -27,8 +28,14 @@ import org.jspecify.annotations.Nullable;
 final class OwnFrapi implements OwnApi.Mesher {
 	private static final ThreadLocal<OwnFrapi> LOCAL = ThreadLocal.withInitial(OwnFrapi::new);
 
-	private final QuadEmitter emitter = Renderer.get().quadEmitter(this::emitted);
+	private final Renderer renderer = Renderer.get();
+	private final QuadEmitter emitter = this.renderer.quadEmitter(this::emitted);
+	private final boolean reusable = this.renderer.getClass().getName().equals("net.fabricmc.fabric.impl.client.indigo.renderer.IndigoRenderer")
+		&& FabricLoader.getInstance().getModContainer("fabric-renderer-indigo")
+			.filter(mod -> mod.getMetadata().getVersion().getFriendlyString().equals("9.1.24+b9d63e335d")).isPresent();
 	private @Nullable AltModelBlockRenderer blocks;
+	private boolean ambientOcclusion;
+	private @Nullable BlockColors colors;
 	private @Nullable OwnQuads quads;
 	private @Nullable Supplier<VertexConsumer> translucent;
 	private @Nullable VertexConsumer translucentSink;
@@ -40,11 +47,21 @@ final class OwnFrapi implements OwnApi.Mesher {
 
 	static OwnApi.Mesher get(boolean ambientOcclusion, BlockColors blockColors, OwnQuads quads, Supplier<VertexConsumer> translucent) {
 		OwnFrapi f = LOCAL.get();
-		f.blocks = Renderer.get().altModelBlockRenderer(ambientOcclusion, true, blockColors);
+		if (!f.reusable || f.blocks == null || f.ambientOcclusion != ambientOcclusion || f.colors != blockColors) {
+			f.blocks = f.renderer.altModelBlockRenderer(ambientOcclusion, true, blockColors);
+			f.ambientOcclusion = ambientOcclusion;
+			f.colors = blockColors;
+		}
 		f.quads = quads;
 		f.translucent = translucent;
 		f.translucentSink = null;
 		return f;
+	}
+
+	@Override public void release() {
+		this.quads = null;
+		this.translucent = null;
+		this.translucentSink = null;
 	}
 
 	@Override

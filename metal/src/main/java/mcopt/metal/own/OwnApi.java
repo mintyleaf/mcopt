@@ -29,6 +29,7 @@ public final class OwnApi {
 	/** One section's block tesselator. */
 	public interface Mesher {
 		void block(float x, float y, float z, BlockAndTintGetter level, BlockPos pos, BlockState state, BlockStateModel model, long seed);
+		default void release() { }
 	}
 
 	/**
