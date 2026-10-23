@@ -2,7 +2,7 @@ plugins {
 	id 'net.fabricmc.fabric-loom' version "${loom_version}"
 }
 
-version = '0.3.0-alpha.2-fork.16'
+version = '0.3.0-alpha.2-fork.17'
 
 repositories { maven { url = 'https://maven.terraformersmc.com/releases/' } }
 
@@ -88,6 +88,12 @@ tasks.register('checkMetalPipelines', JavaExec) {
 	if (project.hasProperty('verifyMslCache')) args 'verify-cache'
 	if (project.hasProperty('pipelineTimingOutput')) jvmArgs '-Dmcopt.metal.jfr=true',
 		'-XX:StartFlightRecording=filename=' + rootProject.file(project.property('pipelineTimingOutput')).absolutePath
+}
+
+tasks.register('checkPipelinePrecompile', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.PipelinePrecompileChecks'
 }
 
 tasks.register('checkMetalTimings', JavaExec) {

@@ -5,6 +5,7 @@
 	"client": [
 		"FramerateLimiterMixin",
 		"WindowEventsTimingMixin",
+		"PipelinePrecompileMixin",
 		"PreferredGraphicsApiMixin",
 		"AnimFramesResidentMixin",
 		"LightmapDoubleMixin",
