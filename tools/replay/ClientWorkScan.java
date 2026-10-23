@@ -14,7 +14,7 @@ class ClientWorkScan {
    if(type.equals("mcopt.ReplayClientWork"))work.add(new Work(nanos(e.getStartTime()),e.getString("operation"),e.getDuration().toNanos()/1e6,e.getDouble("cpuMs"),e.getInt("packets"),e.getBoolean("yielded")));
   }}
   System.out.println("phase\toperation\tcalls\tpackets\tmaxPackets\tyields\twallTotalMs\tcpuTotalMs\twallP95Ms\twallMaxMs");
-  for(var p:phases)for(String operation:List.of("frame","packetDrain","lightUpdates","animateTick")){
+  for(var p:phases)for(String operation:List.of("frame","packetDrain","lightUpdates","animateTick","pollEvents")){
    var selected=work.stream().filter(w->w.at>=p.from&&w.at<p.to&&w.operation.equals(operation)).toList();
    var durations=new ArrayList<Double>();for(var w:selected)durations.add(w.wall);
    System.out.printf(Locale.ROOT,"%s\t%s\t%d\t%d\t%d\t%d\t%.3f\t%.3f\t%.3f\t%.3f%n",p.name,operation,selected.size(),selected.stream().mapToInt(Work::packets).sum(),selected.stream().mapToInt(Work::packets).max().orElse(0),selected.stream().filter(Work::yielded).count(),selected.stream().mapToDouble(Work::wall).sum(),selected.stream().mapToDouble(Work::cpu).sum(),percentile(durations,.95),percentile(durations,1));

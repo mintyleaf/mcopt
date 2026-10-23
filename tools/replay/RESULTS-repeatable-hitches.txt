@@ -1,0 +1,135 @@
+Other repeatable replay hitches, 2026-10-24
+=========================================
+
+The saved recordings contain repeatable first-use stalls beyond the first chest.
+They are distinct from sustained LOD rendering cost and new-terrain generation.
+
+Method
+------
+Same marker-owned isolated instance and immutable real survival-world fixture as
+RESULTS-first-render.txt; user builds retained. Frozen starting LOD cache restored
+before each run. RD12/simulation8, LOD192/N2048, two workers/Low population, 4 GiB
+ZGC, VSync60, world target2880x1620. Warmup15s, hold5s, westbound10s at64 blocks/s,
+eastbound return10s, same westbound pass10s, settle5s. No native sampler, external
+attach diagnostics or GPU pass splitting. JVM/filesystem/driver caches and thermal
+state remain nondeterministic. Timings are start-to-start frame gaps, not scanout.
+
+Item-frame pipeline: camera X about -46, return phase
+--------------------------------------------------
+Across six earlier captures this frame took 123-211ms, consistently near the same
+position. Final fork.16 took148ms; its render thread parked79ms in PipelineCache
+waiting for compilation. The new first-use event identifies minecraft:pipeline/
+item_cutout, the exact RenderPipelines.ITEM_CUTOUT object, missing from a cache
+with222 entries. It is a different identity from the location-keyed registry's
+entry. The origin probe confirms ordinary vanilla static construction, not a mod
+creating a pipeline during flight.
+
+Minecraft26.3 gives ITEM_CUTOUT, ITEM_CUTOUT_GLINT and ITEM_CUTOUT_GLINT_SPECIAL
+the same location. ITEM_TRANSLUCENT_GLINT and its SPECIAL variant also share one
+location. register() stores them in a location-keyed map; later variants overwrite
+earlier ones. ShaderManager compiles the map's surviving values during reload,
+while PipelineCache correctly keys compiled entries by object identity. Thus the
+three earlier variants wait for compilation at their first actual draw.
+
+Fork.17 supplements only ShaderManager's required compile batch with these three
+identities if absent. The public registry, pipeline names, states and cache keys
+stay unchanged. Existing reload executors handle compilation; no new worker pool,
+render-time prewarm or compiled-object aliasing. Each variant owns its compiled
+object and follows normal cache close/reload behavior. No name-based reuse that
+could mix normal/glint shaders or double-close a native object.
+This compiles three pipelines earlier, including glint variants even if unused
+in a session; it is a bounded startup/cache cost, not a memory reduction.
+mcopt.startup.completePipelines=false restores the vanilla loading batch.
+
+Other first-use helpers: return camera X about16
+------------------------------------------------
+Earlier traced frames took79-90ms and loaded painting/custom-feature/leash helpers,
+including ETF's ETFSprite. Actual asset tracing corrected a sampled-stack inference:
+the synchronous SimpleTexture loads were the nearby horse's texture, horse armor
+and lead, not a painting image. Those individual loads take roughly1-6ms here;
+no global texture preloader or ETF feature disable is justified by that evidence.
+
+Fork.17 adds15 stable named classes actually observed at these two first-use frames
+to the existing19-name priority list. The same two preload workers use the existing
+Class.forName(name,false,loader) path; absent optional-mod helpers are skipped.
+The initial control resolved all34 names and the15 added named loads disappeared
+from both target frames. Hidden/generated lambda creation and texture lookup/upload
+can still occur when entities first become visible.
+
+SDL event-pump pause remains
+---------------------------
+There is also a separate early-session native SDL_PollEvent pause, not a fixed
+camera location. Older captures clustered near22s after world entry; the fixed
+capture moves it to the stationary hold around19s. A fixed timer is not proven.
+The two new baseline
+captures show102ms wall/22ms thread CPU and78ms wall/17ms CPU in pollEvents. Most
+of the interval is therefore waiting or descheduling; this does not identify the
+underlying native/OS cause. ZGC pauses there were microseconds, not the long wait.
+No SDL events are skipped, no macOS main-thread work is moved to a worker, and this
+pause must not be counted as fixed by shader precompilation or class loading.
+
+Replay instrumentation
+----------------------
+ReplayAsset identifies PipelineCache misses and TextureManager.registerAndLoad
+calls, including asset names and requesting stacks. It is initialized before
+warmup so the diagnostic itself does not add first-use class-loading cost.
+ReplayClientWork adds wall/thread-CPU spans for pollEvents, which runs outside
+runTick's frame span. AssetScan reports these events beside route coordinates;
+ClassLoadScan accepts an explicit output path to avoid overwriting another ROI's
+name list. All additions are confined to the development replay harness/tools.
+
+Validation/results
+------------------
+PipelinePrecompileChecks uses the real26.3 pipeline objects: all five affected
+variants appear exactly once, original entries/order remain, completion is
+idempotent and the opt-out returns the original list. Core/harness builds and
+the34-name bundle check pass.
+
+The final A/B uses identical core/harness/supporting jar hashes, route, immutable
+fixture, options, graphics configs, save-directory identity and starting cache
+file count/bytes. Only mcopt.startup.completePipelines=false changes in the control
+config. Both enable actual class-load tracing, resolve34/34 priority names and
+pass focus/route/stable-render-setup checks.
+
+                               completion off   completion on
+First item-frame region max ms      113.610           34.971
+Nearby painting/horse max ms         34.222           43.174
+First chest region max ms            23.972           29.401
+Measured pipeline compilations           1                0
+Whole-route gaps above50ms               2                3
+
+The off case spends73ms inside the ITEM_CUTOUT cache miss, including26ms in the
+Metal backend; these are nested spans, not additive. The on case has no measured
+pipeline miss/compile. The15 added named class loads are absent in the selected
+target frames; generated lambda classes remain. Compared with older79-90ms
+painting-region traces, preload movement is demonstrated, but a precise timing
+speedup is not isolated from filesystem/JIT/thermal variance.
+
+The on case's remaining gaps are76ms with59ms in SDL event polling,61ms with49ms
+wall/1ms CPU in lightUpdates, and52ms with48ms in nextDrawable. No render-thread
+allocation stall or long GC pause explains them. They do not show an overall
+hitch-count win; the proven result is removing the repeated in-flight pipeline
+compile and moving the observed named class loads earlier.
+
+Final normal-recording follow-up (traceClassLoading=false), same restored fixture,
+cache and build: valid/stable,34/34 priority names, no in-flight compile and zero
+frame gaps above50ms across40 measured seconds. The item-frame region peaks at
+37.546ms, painting/horse region45.189ms and first-chest region19.664ms. The largest
+frame is still a small first-use hitch; lead.png's registration/upload spans23ms.
+SDL pollEvents is23ms in this run. This illustrates variance in the remaining
+waits; it does not prove the route will always stay below50ms.
+
+Delivery
+--------
+Fork.17 installed in the normal pack with fork.16 backed up. The tested core jar's
+hash matches the installed jar. All214 other source options/config/mod files in
+the pre-run snapshot hash identically. Normal worlds/caches were not opened by
+the replay. Owned options/config/graphics inputs and ordinary JVM launch flags
+restored, replay flags removed, all owned Minecraft/helper JVMs stopped.
+Source commits keep pipeline completion, preload names and replay diagnostics
+separate. No Atmospherics companion changes.
+
+Ignored local artifacts: out/repeatable-hitches-20261024/{trace,origin,control17,
+control-final,fixed17,final17}, asset/class-load/hitch reports, comparison.json,
+input snapshots and installation.json. control17 precedes the final scoping and
+diagnostic initialization cleanup; use control-final/fixed17 for the matched A/B.

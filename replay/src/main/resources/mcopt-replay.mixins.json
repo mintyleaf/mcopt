@@ -10,7 +10,10 @@
     "OverlayReplayMixin",
     "PacketReplayMixin",
     "LightReplayMixin",
-    "AnimateReplayMixin"
+    "AnimateReplayMixin",
+    "PipelineReplayMixin",
+    "TextureReplayMixin",
+    "WindowReplayMixin"
   ],
   "injectors": {
     "defaultRequire": 1

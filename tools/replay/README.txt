@@ -353,3 +353,27 @@ list excludes generated hidden/lambda names that cannot form a stable preload
 list. firstRenderPreload in report.json records requested/resolved/unavailable
 priority names when the renderer supports it. Resolved includes already-loaded
 classes and does not imply static initializers ran.
+
+First-use assets and window events
+---------------------------------
+
+The development harness records mcopt.ReplayAsset for slow PipelineCache misses
+and TextureManager.registerAndLoad calls during playback, including warmup. Each event identifies the
+asset, requesting stack and elapsed time. Pipeline events include cache identity,
+size, registration/identity checks and selected state. A shared location does not
+make two pipeline objects interchangeable. Texture events identify the actual
+load; a sampled painting renderer elsewhere in the frame is not proof that the
+painting supplied the texture.
+
+  java -Xmx256m tools/replay/AssetScan.java /path/to/run
+
+ReplayClientWork now also measures pollEvents wall/thread-CPU time. This pump can
+run between runTick frames. A long interval with little thread CPU establishes
+waiting/descheduling, not its native cause. It does not justify dropping SDL
+events or moving the macOS event pump off the main thread.
+
+ClassLoadScan accepts an optional fifth argument for its output name list:
+
+  java -Xmx256m tools/replay/ClassLoadScan.java /path/to/run return -65 -25 /tmp/item-classes.txt
+
+Without that argument it retains the older first-chest-classes.txt output name.

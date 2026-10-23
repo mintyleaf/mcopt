@@ -262,12 +262,14 @@ public final class Replay {
 
     private static void startRecording() throws Exception {
         if(!Boolean.parseBoolean(System.getProperty("mcopt.replay.jfr","true")))return;
+        AssetTrace.prepare();
         recording=new Recording(Configuration.getConfiguration("profile"));
         for(String event:List.of("mcopt.ReplayPhase","mcopt.MetalOperation","mcopt.MetalCommandBuffer","mcopt.MetalPresentation",
                 "mcopt.MetalDrawable","mcopt.MetalPipelineCompile","mcopt.OwnArenaGrowth","mcopt.LodArenaGrowth","mcopt.OwnArenaAllocation",
                 "mcopt.LodScheduling","mcopt.LodCaptureQueue","mcopt.LodClientCapture","mcopt.LodDetail",
                 "mcopt.LitematicaOverlayBatch","mcopt.ReplayOverlay"))recording.enable(event).withoutStackTrace();
         recording.enable("mcopt.ReplayClientWork").withoutStackTrace();
+        recording.enable("mcopt.ReplayAsset").withStackTrace();
         recording.enable("mcopt.MetalOperation").withThreshold(java.time.Duration.ZERO).withoutStackTrace();
         if(traceClassLoading)recording.enable("jdk.ClassLoad").withThreshold(java.time.Duration.ZERO).withStackTrace();
         recording.disable("mcopt.MetalGpuPass");
