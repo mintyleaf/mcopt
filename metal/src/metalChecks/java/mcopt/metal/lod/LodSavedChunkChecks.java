@@ -368,13 +368,21 @@ public final class LodSavedChunkChecks {
 					if(Thread.currentThread()==caller) throw new AssertionError("Column scan ran on producer");return at(snapshot,cx);
 				},(s,v)->callbacks.incrementAndGet())) throw new AssertionError("Raw queue filled too early");
 			}
-			if(store.captureDeferred(LodForest.chunkKey(64,0),()->{throw new AssertionError("Rejected raw capture evaluated");},(s,v)->{}))
+			if(store.captureFrozenPrepared(LodForest.chunkKey(64,0),()->{throw new AssertionError("Rejected render copy evaluated");},(s,v)->{},false))
 				throw new AssertionError("Raw capture queue is unbounded");
 			if(!store.captureDeferred(LodForest.chunkKey(0,0),()->at(snapshot,0),(s,v)->callbacks.incrementAndGet()))
 				throw new AssertionError("Full raw queue cannot coalesce the latest edit");
+			for (int x=64;x<LodCaptures.UNLOAD_LIMIT;x++) { int cx=x;
+				if(!store.captureFrozenPrepared(LodForest.chunkKey(cx,0),()-> {
+					if(Thread.currentThread()!=caller) throw new AssertionError("Snapshot copy escaped producer");
+					return ()->{if(Thread.currentThread()==caller)throw new AssertionError("Unload scan ran on producer");return at(snapshot,cx);};
+				},(s,v)->callbacks.incrementAndGet(),true))throw new AssertionError("Unload reserve exhausted early");
+			}
+			if(store.captureFrozenPrepared(LodForest.chunkKey(128,0),()->{throw new AssertionError("Full unload queue copied blocks");},(s,v)->{},true))
+				throw new AssertionError("Unload reserve is unbounded");
 		} finally {release.countDown();store.close();}
-		if(stale.get() || callbacks.get()!=64) throw new AssertionError("Deferred captures lost an accepted request or published superseded data");
-		System.out.println("PASS: raw capture queue bounded at 64, producer never scans columns, latest edit wins and close drains accepted work");
+		if(stale.get() || callbacks.get()!=LodCaptures.UNLOAD_LIMIT) throw new AssertionError("Deferred captures lost an accepted request or published superseded data");
+		System.out.println("PASS: ordinary queue64 plus reserved unload64, admission before copying, producer never scans accepted columns, latest edit wins and close drains accepted work");
 	}
 
 	private static void checkPipeline(LodChunks.Snapshot snapshot) throws Exception {

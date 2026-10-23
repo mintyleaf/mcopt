@@ -64,6 +64,7 @@ final class LodCaptures implements AutoCloseable {
 	private record Request(Supplier<Computed> compute, boolean raw) { }
 	@FunctionalInterface interface CaptureWriter { void write(Capture capture) throws IOException; }
 	static final int RAW_LIMIT = 64, WRITE_LIMIT = 128;
+	static final int UNLOAD_LIMIT = RAW_LIMIT + 64;
 	private final Path directory;
 	private final int levels, memoryLimit;
 	private final boolean disk;
@@ -132,8 +133,14 @@ final class LodCaptures implements AutoCloseable {
 	}
 
 	synchronized boolean captureDeferredPrepared(long key, Supplier<LodChunks.Snapshot> snapshot, BiConsumer<Prepared, Boolean> complete) {
+		return this.captureFrozenPrepared(key, () -> snapshot, complete, false);
+	}
+
+	/** Admission precedes the render-thread copy. Reserved unload slots protect the last live blocks/light. */
+	synchronized boolean captureFrozenPrepared(long key, Supplier<Supplier<LodChunks.Snapshot>> freeze, BiConsumer<Prepared, Boolean> complete, boolean unloading) {
 		Request previous = this.pending.get(key);
-		if (this.rawPending >= RAW_LIMIT && (previous == null || !previous.raw)) return false;
+		if (this.rawPending >= (unloading ? UNLOAD_LIMIT : RAW_LIMIT) && (previous == null || !previous.raw)) return false;
+		Supplier<LodChunks.Snapshot> snapshot = freeze.get();
 		this.submit(key, -1, stamp -> () -> {
 			LodChunks.Snapshot s = snapshot.get();
 			boolean valid = !LodConfig.LIGHTING;
@@ -395,7 +402,7 @@ final class LodCaptures implements AutoCloseable {
 		}
 		Deflater compressor = new Deflater(Deflater.BEST_SPEED);
 		// Buffer uncompressed words too: otherwise each writeInt enters the native compressor.
-		try (var out = new DataOutputStream(new BufferedOutputStream(new DeflaterOutputStream(new BufferedOutputStream(Files.newOutputStream(tmp)), compressor), 16384))) {
+		try (var out = LodCodecStreams.output(tmp, compressor)) {
 			out.writeInt(MAGIC); out.writeInt(FORMAT); out.writeInt(capture.x); out.writeInt(capture.z);
 			out.writeInt(local.size());
 			for (int id : local.keySet()) out.writeUTF(LodPalette.nameOf(id));
@@ -412,7 +419,7 @@ final class LodCaptures implements AutoCloseable {
 	private Capture read(int x, int z) throws IOException {
 		this.diskReads.incrementAndGet();
 		// A buffer below the inflater only batches disk reads; this one batches decompression.
-		try (var in = new DataInputStream(new BufferedInputStream(new InflaterInputStream(new BufferedInputStream(Files.newInputStream(this.file(x, z)))), 16384))) {
+		try (var in = LodCodecStreams.input(this.file(x, z))) {
 			if (in.readInt() != MAGIC) throw new IOException("Capture header");
 			int format=in.readInt(); // v2 adds segmented interval flags; v1 fine columns still reduce without recapture.
 			if (format<1 || format>FORMAT || in.readInt() != x || in.readInt() != z) throw new IOException("Capture header");

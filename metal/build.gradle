@@ -2,7 +2,7 @@ plugins {
 	id 'net.fabricmc.fabric-loom' version "${loom_version}"
 }
 
-version = '0.3.0-alpha.2-fork.12'
+version = '0.3.0-alpha.2-fork.13'
 
 repositories { maven { url = 'https://maven.terraformersmc.com/releases/' } }
 
@@ -191,6 +191,12 @@ tasks.register('checkLodCaptureIo', JavaExec) {
 	classpath = sourceSets.metalChecks.runtimeClasspath
 	mainClass = 'mcopt.metal.lod.LodCaptureIoChecks'
 	jvmArgs '--enable-native-access=ALL-UNNAMED'
+}
+
+tasks.register('checkLodCodec', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.lod.LodCodecChecks'
 }
 
 tasks.register('checkMoreCullingFaces', JavaExec) {

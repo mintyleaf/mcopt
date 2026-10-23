@@ -366,8 +366,7 @@ final class LodField {
 		int @org.jspecify.annotations.Nullable [] rn, int @org.jspecify.annotations.Nullable [] pl) {
 		Path f = this.file(key);
 		if (!Files.exists(f)) return false;
-		try (var inflater = new java.util.zip.Inflater();
-			DataInputStream in = new DataInputStream(new BufferedInputStream(new InflaterInputStream(new BufferedInputStream(Files.newInputStream(f)), inflater, 65536), 65536))) {
+		try (DataInputStream in = LodCodecStreams.input(f)) {
 			int format = in.readInt();
 			if (format < 10 || format > FORMAT) return false;
 			if(format<20 && this.noise!=null && this.noise.islands!=null) return false;
@@ -388,6 +387,7 @@ final class LodField {
 			boolean hasTex = in.readBoolean();
 			if (hasTex) {
 				int n = in.readInt();
+				if (n < 1 || n > LodPalette.MAX) return false;
 				int[] ids = new int[n];
 				for (int k = 0; k < n; k++) ids[k] = LodPalette.idOf(in.readUTF());
 				for (int i = 0; i < LodTile.CELLS; i++) {
@@ -423,6 +423,7 @@ final class LodField {
 			boolean hasPlants = in.readBoolean();
 			if (hasPlants) {
 				int n = in.readInt();
+				if (n < 1 || n > LodPalette.MAX) return false;
 				int[] ids = new int[n];
 				for (int k = 0; k < n; k++) ids[k] = LodPalette.idOf(in.readUTF());
 				for (int i = 0; i < LodTile.CELLS; i++) {
@@ -608,7 +609,7 @@ final class LodField {
 			Files.createDirectories(f.getParent());
 			Path tmp = f.resolveSibling(f.getFileName() + ".tmp" + Thread.currentThread().threadId());
 			try (var deflater = new Deflater(Deflater.BEST_SPEED);
-				DataOutputStream out = new DataOutputStream(new BufferedOutputStream(new DeflaterOutputStream(new BufferedOutputStream(Files.newOutputStream(tmp)), deflater, 65536), 65536))) {
+				DataOutputStream out = LodCodecStreams.output(tmp, deflater)) {
 				out.writeInt(FORMAT);
 				for (int i = 0; i < LodTile.CELLS; i++) out.writeInt(g[i]);
 				for (int i = 0; i < LodTile.CELLS; i++) out.writeInt(c[i]);
@@ -686,11 +687,6 @@ final class LodField {
 	void chunk(net.minecraft.world.level.chunk.LevelChunk chunk, Runnable retryLight, Runnable capturedReady, String reason) {
 		var event = LodCaptureQueue.beginCapture(chunk.getPos().x(), chunk.getPos().z(), reason);
 		try {
-			long t0 = System.nanoTime();
-			LodClientCapture.Frozen frozen = LodClientCapture.freeze(chunk, this.noise.cavernY);
-			this.snapNanos += System.nanoTime() - t0;
-			if (event != null) event.freezeMs = (System.nanoTime() - t0) / 1e6;
-			this.snapshots++;
 			long request = this.seq.incrementAndGet(), key = LodForest.chunkKey(chunk.getPos().x(), chunk.getPos().z());
 			this.chunkRequests.put(key, request);
 			java.util.function.BiConsumer<LodCaptures.Prepared, Boolean> complete = (sum, valid) -> {
@@ -701,11 +697,23 @@ final class LodField {
 					if (!valid) retryLight.run(); else capturedReady.run();
 				});
 			};
-			if (!this.captures.captureDeferredPrepared(key, frozen::snapshot, complete)) {
+			boolean unloading = "unload".equals(reason);
+			if (!this.captures.captureFrozenPrepared(key, () -> {
+				long t0 = System.nanoTime();
+				LodClientCapture.Frozen frozen = LodClientCapture.freeze(chunk, this.noise.cavernY);
+				this.snapNanos += System.nanoTime() - t0;
+				if (event != null) event.freezeMs = (System.nanoTime() - t0) / 1e6;
+				this.snapshots++;
+				return frozen::snapshot;
+			}, complete, unloading)) {
+				if (!unloading) { retryLight.run(); return; }
 				// Exceptional backpressure: keep the last visited edit rather than retaining unbounded raw section copies.
 				this.captureFallbacks++;
 				if (event != null) event.fallback = true;
 				long fallbackStart = System.nanoTime();
+				LodClientCapture.Frozen frozen = LodClientCapture.freeze(chunk, this.noise.cavernY);
+				if (event != null) event.freezeMs = (System.nanoTime() - fallbackStart) / 1e6;
+				this.snapshots++;
 				LodChunks.Snapshot snap = frozen.snapshot();
 				this.snapNanos += System.nanoTime() - fallbackStart;
 				boolean ready = !LodConfig.LIGHTING || java.util.stream.IntStream.range(0, 256).allMatch(i -> snap.lightValid()[i]);
