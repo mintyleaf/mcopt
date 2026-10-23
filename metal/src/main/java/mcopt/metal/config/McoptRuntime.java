@@ -6,12 +6,12 @@ import java.util.Set;
 
 /** Atomic live controls. Each world worker keeps the immutable snapshot it was created with. */
 public final class McoptRuntime {
-	private static final Set<String> LIVE = Set.of("mcopt.lod", "mcopt.lod.radius", "mcopt.lod.refine",
+	private static final Set<String> LIVE = Set.of("mcopt.client.packetBudgetMs", "mcopt.lod", "mcopt.lod.radius", "mcopt.lod.refine",
 		"mcopt.lod.refineRadius", "mcopt.lod.scoutRadius", "mcopt.lod.workload", "mcopt.lod.refineIntervalMs",
 		"mcopt.lod.importSaved", "mcopt.lod.importRadius", "mcopt.lod.threads", "mcopt.lod.altitudeDetail",
 		"mcopt.lod.altitudeStart", "mcopt.lod.altitudeRange", "mcopt.lod.altitudeMinPercent", "mcopt.lod.altitudePixels",
 		"mcopt.lod.reuseVisibility", "mcopt.lod.aoPixels", "mcopt.lod.haze", "mcopt.lod.debugHud");
-	private static final Set<String> VISUAL = Set.of("mcopt.lod.altitudeDetail", "mcopt.lod.altitudeStart",
+	private static final Set<String> NO_REBUILD = Set.of("mcopt.client.packetBudgetMs", "mcopt.lod.altitudeDetail", "mcopt.lod.altitudeStart",
 		"mcopt.lod.altitudeRange", "mcopt.lod.altitudeMinPercent", "mcopt.lod.altitudePixels", "mcopt.lod.reuseVisibility",
 		"mcopt.lod.aoPixels", "mcopt.lod.haze", "mcopt.lod.debugHud");
 	public record State(long generation, Map<String, String> values) {
@@ -43,7 +43,7 @@ public final class McoptRuntime {
 		for (var option : McoptSettings.OPTIONS) if (live(option.key()) && edits.containsKey(option.key()))
 			values.put(option.key(), option.validate(edits.get(option.key()).trim()));
 		if (values.equals(current.values())) return;
-		boolean rebuild = values.entrySet().stream().anyMatch(e -> !VISUAL.contains(e.getKey()) && !e.getValue().equals(current.value(e.getKey())));
+		boolean rebuild = values.entrySet().stream().anyMatch(e -> !NO_REBUILD.contains(e.getKey()) && !e.getValue().equals(current.value(e.getKey())));
 		current = new State(current.generation() + (rebuild ? 1 : 0), values);
 	}
 }

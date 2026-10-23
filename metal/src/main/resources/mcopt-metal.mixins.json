@@ -2,6 +2,22 @@
 	"required": true,
 	"package": "mcopt.metal.mixin",
 	"compatibilityLevel": "JAVA_25",
-	"client": ["FramerateLimiterMixin", "WindowEventsTimingMixin", "PreferredGraphicsApiMixin", "AnimFramesResidentMixin", "LightmapDoubleMixin", "AtlasDoubleMixin", "AtlasDoubleAtlasAccess", "AtlasDoubleTextureAccess", "AtlasDoubleSpriteAccess", "AtlasDoubleStateAccess", "RenderScaleMixin"],
-	"injectors": { "defaultRequire": 1 }
+	"client": [
+		"FramerateLimiterMixin",
+		"WindowEventsTimingMixin",
+		"PreferredGraphicsApiMixin",
+		"AnimFramesResidentMixin",
+		"LightmapDoubleMixin",
+		"AtlasDoubleMixin",
+		"AtlasDoubleAtlasAccess",
+		"AtlasDoubleTextureAccess",
+		"AtlasDoubleSpriteAccess",
+		"AtlasDoubleStateAccess",
+		"RenderScaleMixin",
+		"ClientPacketFrameMixin",
+		"ClientPacketBudgetMixin"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	}
 }

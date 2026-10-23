@@ -31,6 +31,7 @@ final class McoptSettings {
 		}
 	}
 	static final Option[] OPTIONS = {
+		number("mcopt.client.packetBudgetMs", "Client packet work (ms/frame)", "4", 0, 16, "Spread queued network work across frames without dropping or reordering packets. One complete packet always progresses and may exceed the budget. 0 drains the whole queue. Applies immediately."),
 		bool("mcopt.lod", "Distant terrain", "false", "Enable mcopt LOD terrain. Turning it off also stops LOD background work and releases world buffers."),
 		number("mcopt.lod.radius", "LOD distance (chunks)", "512", 32, 2048, "Terrain visibility distance. This does not increase structure scouting distance."),
 		bool("mcopt.lod.textures", "LOD block textures", "true", "Draw block textures on the finest LOD level."),
@@ -61,7 +62,7 @@ final class McoptSettings {
 		bool("mcopt.lod.trees", "Estimated trees", "true", "Approximate vegetation before populated terrain is available."),
 		bool("mcopt.lod.plants", "Small plants", "true", "Draw small plants on textured level-0 LODs."),
 		bool("mcopt.lod.debugHud", "F3 LOD statistics", "true", "Show tile queues, structure progress and reasons for waiting in F3."),
-		bool("mcopt.lod.memoryBudget", "LOD heap headroom", "true", "Pause optional estimated terrain, cached tile decoding, scouting and saved imports near the heap limit. Accepted visited captures continue draining. Resumes when headroom recovers."),
+		bool("mcopt.lod.memoryBudget", "LOD heap headroom", "true", "Pause optional estimated terrain, cached tile decoding, scouting and saved imports near the heap limit. Optional client snapshots also wait; unload captures and accepted visited captures continue draining. Resumes when headroom recovers."),
 		bool("mcopt.lod.yield.streaming", "LOD progress during flight", "true", "Share one generation slot between fallback terrain and visible LODs ahead while chunks stream in. Nearby holes or a large chunk backlog pause detailed work. Applies to missing/spare CPU admission modes."),
 		new Option("profile", "Optimization profile", "indie", 0, 0, "Startup optimization profile. Individual overrides still take precedence.", "indie", "recommended", "alpha", "none"),
 		bool("mcopt.metal", "Metal renderer", "true", "Native Apple Metal backend. Requires restarting Minecraft."),

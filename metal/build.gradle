@@ -2,7 +2,7 @@ plugins {
 	id 'net.fabricmc.fabric-loom' version "${loom_version}"
 }
 
-version = '0.3.0-alpha.2-fork.13'
+version = '0.3.0-alpha.2-fork.15'
 
 repositories { maven { url = 'https://maven.terraformersmc.com/releases/' } }
 
@@ -485,4 +485,10 @@ tasks.register('checkLodSurvivors', Exec) {
 	dependsOn 'compileLodSurvivorChecks'
 	commandLine survivorCheck.get().asFile, file('src/main/resources/mcopt/lod/columns.metal'),
 		file('src/metalChecks/native/lod-mesh-reference.metal'), file('src/metalChecks/native/lod-survivors.metal')
+}
+
+tasks.register("checkPacketWorkBudget", JavaExec) {
+	dependsOn metalChecksClasses
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = "mcopt.metal.cpu.PacketWorkBudgetChecks"
 }

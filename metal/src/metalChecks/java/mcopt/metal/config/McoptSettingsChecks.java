@@ -36,6 +36,9 @@ public final class McoptSettingsChecks {
 			}
 			model.values.put("mcopt.lod.haze", "1.25"); model.save();
 			if (!read(file).getProperty("mcopt.lod.haze").equals("1.25")) throw new AssertionError("fractional haze rejected");
+			long generation=McoptRuntime.current().generation();
+			model.values.put("mcopt.client.packetBudgetMs", "0");model.save();
+			if(McoptRuntime.current().number("mcopt.client.packetBudgetMs")!=0 || McoptRuntime.current().generation()!=generation)throw new AssertionError("Packet live edit rebuilt LODs or did not apply");
 			try (var files = Files.list(dir)) { if (files.count() != 1) throw new AssertionError("temporary files leaked"); }
 			System.out.println("PASS: settings preserve unrelated/concurrent keys, validate before writing, canonicalize integers, leave JVM defaults unpinned and replace files atomically");
 		} finally {
