@@ -1,4 +1,4 @@
-# First visible chest: actual named class loads from the Minecraft26.3 / ETF7.2.6 / EMF3.3.12 replay.
+# First visible chest, item frame, painting and leash: actual named class loads from the 26.3 replay.
 # Optional mod classes are skipped when absent; no static initializers run.
 it.unimi.dsi.fastutil.floats.Float2FloatFunction
 net.minecraft.client.renderer.Sheets$1
@@ -19,3 +19,19 @@ traben.entity_texture_features.features.texture_handlers.ETFTextureVariator
 traben.entity_texture_features.features.texture_handlers.ETFTextureVariator$ETFTextureMultiple
 traben.entity_texture_features.features.texture_handlers.ETFTextureVariator$ETFTextureSingleton
 traben.entity_texture_features.utils.URenderTypeToVertexConsumer
+# Other repeatable first-use frames; optional installed-mod helpers are skipped when absent.
+ca.fxco.moreculling.states.ItemRendererStates
+io.github.mortuusars.horseman.client.TransparentMount
+net.fabricmc.fabric.api.client.renderer.v1.mesh.Mesh
+net.fabricmc.fabric.impl.client.indigo.renderer.mesh.MeshImpl
+net.fabricmc.fabric.impl.client.indigo.renderer.mesh.MeshViewImpl
+net.fabricmc.fabric.impl.client.indigo.renderer.mesh.MutableMeshImpl
+net.fabricmc.fabric.impl.client.indigo.renderer.mesh.MutableMeshImpl$1
+net.minecraft.client.renderer.SubmitNodeCollector$CustomGeometryRenderer
+net.minecraft.client.renderer.entity.PaintingRenderer$1
+net.minecraft.client.renderer.entity.state.EntityRenderState$LeashState
+net.minecraft.client.renderer.feature.CustomFeatureRenderer$Submit
+net.minecraft.client.renderer.feature.ItemFeatureRenderer$1
+net.minecraft.client.renderer.feature.ItemFeatureRenderer$Submit
+net.minecraft.client.renderer.feature.LeashFeatureRenderer$Submit
+traben.entity_texture_features.features.texture_handlers.ETFSprite
