@@ -1,0 +1,21 @@
+# First visible chest: actual named class loads from the Minecraft26.3 / ETF7.2.6 / EMF3.3.12 replay.
+# Optional mod classes are skipped when absent; no static initializers run.
+it.unimi.dsi.fastutil.floats.Float2FloatFunction
+net.minecraft.client.renderer.Sheets$1
+net.minecraft.client.renderer.SpriteCoordinateExpander
+net.minecraft.client.renderer.blockentity.BrightnessCombiner
+net.minecraft.client.renderer.blockentity.state.ChestRenderState$ChestMaterialType
+net.minecraft.client.renderer.feature.RenderTypeFeatureRenderer$Group
+net.minecraft.client.renderer.rendertype.PreparedRenderType
+net.minecraft.client.renderer.rendertype.PreparedRenderType$Texture
+net.minecraft.world.level.block.ChestBlock$3
+traben.entity_model_features.utils.EMFLODHandler
+traben.entity_texture_features.ETFApi$ETFVariantSuffixProvider
+traben.entity_texture_features.compat.SodiumGetBufferInjector
+traben.entity_texture_features.features.property_reading.PropertiesRandomProvider
+traben.entity_texture_features.features.property_reading.TrueRandomProvider
+traben.entity_texture_features.features.texture_handlers.ETFDirectory
+traben.entity_texture_features.features.texture_handlers.ETFTextureVariator
+traben.entity_texture_features.features.texture_handlers.ETFTextureVariator$ETFTextureMultiple
+traben.entity_texture_features.features.texture_handlers.ETFTextureVariator$ETFTextureSingleton
+traben.entity_texture_features.utils.URenderTypeToVertexConsumer

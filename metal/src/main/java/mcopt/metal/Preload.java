@@ -17,7 +17,9 @@ import net.fabricmc.loader.api.entrypoint.PreLaunchEntrypoint;
  * own work instead of stalling it. Loading only (no static initializers run), so nothing about the game changes: the
  * same classes end up loaded, only sooner and off the main thread. The list (resources/mcopt/metal/preload.txt.gz)
  * comes from a -Xlog:class+load run of the shipping stack (tools/preloadlist.py); names that don't exist in some
- * other mod set are skipped. -Dmcopt.preload=false turns it off, -Dmcopt.preload.threads=N sets the thread count.
+ * other mod set are skipped. A small first-render list precedes the general boot list;
+ * -Dmcopt.preload.firstRender=false disables only that priority list.
+ * -Dmcopt.preload=false turns all preloading off, -Dmcopt.preload.threads=N sets the thread count.
  */
 public final class Preload implements PreLaunchEntrypoint {
 	static {
@@ -26,6 +28,11 @@ public final class Preload implements PreLaunchEntrypoint {
 
 	private static final boolean ENABLED = Boolean.parseBoolean(System.getProperty("mcopt.preload", "true"));
 	private static final int THREADS = Integer.getInteger("mcopt.preload.threads", 2);
+	private static final AtomicInteger priorityResolved = new AtomicInteger(), priorityUnavailable = new AtomicInteger();
+	private static volatile int priorityRequested;
+	public static java.util.Map<String,Integer> priorityReport() {
+		return java.util.Map.of("requested",priorityRequested,"resolved",priorityResolved.get(),"unavailable",priorityUnavailable.get());
+	}
 
 	@Override
 	public void onPreLaunch() {
@@ -39,6 +46,17 @@ public final class Preload implements PreLaunchEntrypoint {
 		} catch (IOException e) {
 			return;
 		}
+		List<String> priority = new ArrayList<>();
+		if (Boolean.parseBoolean(System.getProperty("mcopt.preload.firstRender", "true"))) {
+			try (InputStream in = Preload.class.getResourceAsStream("/mcopt/metal/preload-first-render.txt")) {
+				if (in != null) {
+					var reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
+					for (String line; (line = reader.readLine()) != null; ) if (!line.isBlank() && !line.startsWith("#")) priority.add(line);
+				}
+			} catch (IOException ignored) { }
+		}
+		priorityRequested = priority.size();
+		names.addAll(0, priority);
 		ClassLoader loader = Preload.class.getClassLoader();
 		AtomicInteger next = new AtomicInteger();
 		for (int t = 0; t < THREADS; t++) {
@@ -46,8 +64,10 @@ public final class Preload implements PreLaunchEntrypoint {
 				for (int i; (i = next.getAndIncrement()) < names.size(); ) {
 					try {
 						Class.forName(names.get(i), false, loader);
+						if (i < priorityRequested) priorityResolved.incrementAndGet();
 					} catch (Throwable absent) {
 						// Not in this mod set or environment: the game wouldn't load it either.
+						if (i < priorityRequested) priorityUnavailable.incrementAndGet();
 					}
 				}
 			}, "mcopt class preload #" + t);
