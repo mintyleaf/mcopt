@@ -481,14 +481,14 @@ public final class LodSavedChunkChecks {
 		java.nio.file.Files.createDirectories(path.toAbsolutePath().getParent());
 		try(var recording=new jdk.jfr.Recording()) {
 			recording.enable("mcopt.LodCaptureQueue");recording.start();long now=System.nanoTime();
-			long next=LodCaptureQueue.sample(now,0,store,123,456,7,42,17);
-			LodCaptureQueue.sample(now+1,next,store,999,999,999,999,999);
+			long next=LodCaptureQueue.sample(now,0,store,123,456,7,42,17,8);
+			LodCaptureQueue.sample(now+1,next,store,999,999,999,999,999,999);
 			recording.stop();recording.dump(path);
 		}
 		var events=jdk.jfr.consumer.RecordingFile.readAllEvents(path).stream().filter(e->e.getEventType().getName().equals("mcopt.LodCaptureQueue")).toList();
 		if(events.size()!=1 || events.getFirst().getInt("rawQueued")!=64 || events.getFirst().getInt("writesQueued")!=128
 			|| events.getFirst().getLong("snapshots")!=123 || events.getFirst().getLong("snapshotNanos")!=456 || events.getFirst().getLong("fallbacks")!=7
-			|| events.getFirst().getLong("reusedUnloads")!=42 || events.getFirst().getLong("reusedEdits")!=17)
+			|| events.getFirst().getLong("reusedUnloads")!=42 || events.getFirst().getLong("reusedEdits")!=17 || events.getFirst().getLong("deferredCaptureFrames")!=8)
 			throw new AssertionError("Capture pipeline telemetry missing, unthrottled or incorrect");
 		System.out.println("PASS: throttled JFR capture queue event records raw/write backlog, copy counters and fallbacks");
 	}

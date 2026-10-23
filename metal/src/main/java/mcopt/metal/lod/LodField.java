@@ -724,6 +724,7 @@ final class LodField {
 	private long captureFallbacks;
 	long reusedUnloads;
 	long reusedEdits;
+	long deferredCaptureFrames;
 
 	/** Writes a chunk's columns into every resident tile that covers it: level 0 every column, coarser at sample points. */
 	private void applyChunk(LodCaptures.Prepared prepared) {
@@ -1030,7 +1031,7 @@ final class LodField {
 	/** Takes the workers' results (bounded per frame so a burst can't stall one). */
 	void integrate() {
 		this.nextCaptureSample = LodCaptureQueue.sample(System.nanoTime(), this.nextCaptureSample, this.captures,
-			this.snapshots, this.snapNanos, this.captureFallbacks, this.reusedUnloads, this.reusedEdits);
+			this.snapshots, this.snapNanos, this.captureFallbacks, this.reusedUnloads, this.reusedEdits, this.deferredCaptureFrames);
 		long deadline = System.nanoTime() + 1_500_000;
 		Runnable r;
 		while ((r = this.results.poll()) != null) {

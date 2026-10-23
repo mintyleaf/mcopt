@@ -12,15 +12,16 @@ final class LodCaptureQueue {
 	@StackTrace(false)
 	static final class Sample extends Event {
 		int rawQueued, writesQueued;
-		long snapshots, snapshotNanos, fallbacks, reusedUnloads, reusedEdits;
+		long snapshots, snapshotNanos, fallbacks, reusedUnloads, reusedEdits, deferredCaptureFrames;
 	}
-	static long sample(long now, long next, LodCaptures captures, long snapshots, long nanos, long fallbacks, long reusedUnloads, long reusedEdits) {
+	static long sample(long now, long next, LodCaptures captures, long snapshots, long nanos, long fallbacks, long reusedUnloads, long reusedEdits, long deferredCaptureFrames) {
 		if (!ENABLED || now < next || !TYPE.isEnabled()) return next;
 		var event = new Sample();
 		event.rawQueued = captures.rawPendingCount(); event.writesQueued = captures.writePendingCount();
 		event.snapshots = snapshots; event.snapshotNanos = nanos; event.fallbacks = fallbacks;
 		event.reusedUnloads = reusedUnloads;
 		event.reusedEdits = reusedEdits;
+		event.deferredCaptureFrames = deferredCaptureFrames;
 		event.commit();
 		return now + 1_000_000_000L;
 	}

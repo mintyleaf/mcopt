@@ -1584,6 +1584,9 @@ public final class Lod {
 			this.captureFreshness.clear();
 			return;
 		}
+		// Optional copies may wait while the existing heap budget is busy; coordinates stay queued.
+		// Unload captures still preserve the last live blocks/light through their separate lossless path.
+		if (LodMemoryBudget.pressured()) { this.field.deferredCaptureFrames++; return; }
 		// Only coordinates wait here, never live chunks. Bound both count and render-thread copy time during packet bursts.
 		long deadline = System.nanoTime() + 750_000L;
 		for (int n = 0; n < 4; n++) {
