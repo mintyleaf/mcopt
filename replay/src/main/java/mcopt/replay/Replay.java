@@ -32,7 +32,7 @@ public final class Replay {
     }
     private static final List<Segment> segments = new ArrayList<>();
     private static final JsonArray liveStates = new JsonArray();
-    private static boolean liveControls;
+    private static boolean liveControls,traceClassLoading;
     private static long packetBudgetNanos;
     public static long packetBudgetNanos(){return packetBudgetNanos;}
     public static boolean traceClientWork(){return ON && started && !finished;}
@@ -81,6 +81,7 @@ public final class Replay {
         if(!Files.isRegularFile(owned)) throw new IllegalStateException("Replay requires a marker-owned disposable instance");
         byte[] bytes=Files.readAllBytes(Path.of(PLAN));
         JsonObject plan=JsonParser.parseString(new String(bytes,StandardCharsets.UTF_8)).getAsJsonObject();
+        traceClassLoading=plan.has("traceClassLoading") && plan.get("traceClassLoading").getAsBoolean();
         double packetBudget=plan.has("packetBudgetMs")?plan.get("packetBudgetMs").getAsDouble():0;
         if(!Double.isFinite(packetBudget)||packetBudget<0||packetBudget>20)throw new IllegalArgumentException("packetBudgetMs must be0..20");
         packetBudgetNanos=(long)(packetBudget*1e6);
@@ -268,6 +269,7 @@ public final class Replay {
                 "mcopt.LitematicaOverlayBatch","mcopt.ReplayOverlay"))recording.enable(event).withoutStackTrace();
         recording.enable("mcopt.ReplayClientWork").withoutStackTrace();
         recording.enable("mcopt.MetalOperation").withThreshold(java.time.Duration.ZERO).withoutStackTrace();
+        if(traceClassLoading)recording.enable("jdk.ClassLoad").withThreshold(java.time.Duration.ZERO).withStackTrace();
         recording.disable("mcopt.MetalGpuPass");
         recording.setDestination(output.resolve("recording.jfr"));recording.setDumpOnExit(true);recording.start();
     }
@@ -297,6 +299,8 @@ public final class Replay {
             JsonObject report=new JsonObject();report.addProperty("schema",1);report.addProperty("completed",error==null);
             if(error!=null)report.addProperty("error",error);
             if(setup!=null) {setup.addProperty("stableDuringMeasurement",stableSetup);setup.addProperty("minMeasuredRenderDistance",minRenderDistance);setup.addProperty("maxMeasuredRenderDistance",maxRenderDistance);}
+            try {report.add("firstRenderPreload",JSON.toJsonTree(Class.forName("mcopt.metal.Preload").getMethod("priorityReport").invoke(null)));}
+            catch(ClassNotFoundException | NoSuchMethodException olderRenderer){}
             try {report.addProperty("clientPacketYieldedFrames",(long)Class.forName("mcopt.metal.cpu.PacketWorkBudget").getMethod("yieldedFrames").invoke(null));}
             catch(ClassNotFoundException | NoSuchMethodException olderRenderer){}
             report.add("setup",setup);report.addProperty("frameDefinition","Minecraft.runTick start-to-start; intervals belong to the preceding phase; not scanout FPS");

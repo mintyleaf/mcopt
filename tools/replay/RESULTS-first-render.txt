@@ -1,0 +1,94 @@
+First visible chest hitch, 2026-10-24
+====================================
+
+The first large measured flight hitch repeats near camera X=-160/Z=514 in the
+copied saved world. Earlier captures put it at 174/156/202ms. This is roughly
+3.8s into the westbound flight; it is not evidence about every pause during world
+entry or before replay warmup. The trace includes ChestRenderer extraction,
+ETF texture/provider lookup, EMF activation and class loading/Mixin transformation.
+
+ETF 7.2.6 and EMF 3.3.12 are visual feature mods, not separate optimization patches.
+ImmediatelyFast 1.17.1, EntityCulling 1.11.3 and MoreCulling 1.9.0 remain installed.
+The user could not recall an ETF-related optimizer name; no guessed mod was added.
+
+Method
+------
+One marker-owned instance, immutable real saved-world fixture restored per run;
+original user builds retained. Same starting LOD cache snapshot restored each time.
+VSync 60, RD12/simulation8, LOD192/N2048, workers2/Low population, 4 GiB ZGC,
+world target 2880x1620. Each route: 15s stationary warmup, 5s hold at 83/180/514,
+10s west at 64 blocks/s,10s return,10s same westbound pass,5s settle.
+Analysis selects the largest frame in X(-195,-130) for cold/warm westbound phases.
+All runs completed with focus, route and stable setup checks passing. No native
+sampler, GPU pass splitting or attach diagnostics during these measurements.
+
+Capture                       Target cold ms   Target warm ms
+fork.15 normal ETF                  266.414          17.743
+fork.15 chest ETF overrides off      118.148          25.196
+fork.15 actual class-load trace       38.412          41.687
+fork.16 priority + class-load trace   34.084          16.816
+fork.16 priority, normal recording    21.650          17.157
+fork.16 priority disabled            36.863          16.899
+
+The last pair shares route, fixture, options and supporting mod hashes; the only
+functional setting change is mcopt.preload.firstRender=false. The renderer was
+rebuilt for final packaging between them (Preload Javadoc/debug line metadata),
+so full renderer hashes differ. Treat the 37 -> 22ms comparison as indicative, not
+a strict binary-identical repeated A/B. The large 266 -> 22ms difference includes
+cache/order/thermal/JIT variance: the unpatched traced control already reached 38ms.
+It cannot establish a 90%+ patch speedup or all hitches fixed. ETF chest overrides
+also cannot quantify ETF's exact contribution independently of that variance.
+
+Actual class-load evidence and shipping change
+---------------------------------------------
+Opt-in traceClassLoading records jdk.ClassLoad names, duration and requesting
+stacks. Sampled caller methods from the previous investigation did not identify
+all loaded classes. The first-chest trace exposed 19 stable named types missing
+from the existing preload list: 9 vanilla/fastutil render helpers and 10 ETF/EMF
+helpers. Hidden/generated lambda names are excluded. Examples include the chest
+material enum, sprite coordinate expander, render groups/prepared types,
+ETFTextureVariator/provider classes and EMFLODHandler.
+
+Fork.16 prioritizes that small list before the existing boot list on the same two
+background preload workers. Class.forName(name,false,loader) retains the existing
+loading-only behavior. No static initializers are requested, no new worker pool,
+no world/entity/buffer references and no texture/model options disabled. Optional
+mod classes that are absent follow the existing skipped-class path.
+mcopt.preload.firstRender=false disables the priority list; mcopt.preload=false
+still disables all preloading. Requested/resolved/unavailable counters are exposed
+to the development replay report. Resolved includes already-loaded classes.
+
+Both candidate captures verified 19 requested/resolved, 0 unavailable. The disabled
+control verified 0 requested. The candidate's target frame no longer contained any
+of the 19 named class loads; it contained only generated lambda/method-handle loads.
+This structural movement of loading work is stronger evidence than the variable
+wall-clock timings. Runtime initialization/resource lookup can still occur there.
+
+The full normal-recording candidate route still contained a 76ms cold-phase gap
+elsewhere and a 148ms return-phase gap. This targets the repeated first-chest class
+loading work, not all freezes or the separate pipeline-future waits.
+
+ETF config finding
+------------------
+The installed ETF 7.2.6 class files reference enableCustomBlockEntities and
+enableEmissiveBlockEntities only in ETFConfig itself; those legacy fields do not
+control the observed rendering path. The active canDoCustomTextures/Emissive code
+consults per-type override maps and the current state.entityKey(). The block-entity
+key API returns registry identifiers. The diagnostic off run therefore set
+entityRandomOverrides/entityEmissiveOverrides for minecraft:chest,trapped_chest,
+ender_chest to false. All ETF settings were restored; the shipping run had the
+original full entity features enabled. No ETF config workaround is shipped.
+
+Validation/delivery
+-------------------
+Metal/replay builds and all 10 replay runner safety checks pass. Final bundle check
+verifies 19 unique stable priority names and absence of hidden lambda addresses.
+ClassLoadScan.java is an offline bounded JFR consumer for phase/X-region analysis;
+the example first-render route uses a placeholder seed and needs a matching saved
+fixture to reproduce the user's builds. The actual seed stays in ignored inputs.
+
+Fork.16 installed, fork.15 backed up. Normal options/configs/presets and other mod
+hashes verified unchanged. The owned instance's temporary ETF overrides, priority
+off switch and replay launch flags were restored/removed. All game JVMs exited.
+Local ignored artifacts: out/first-hitch-20261024/{on,chest-off,trace,priority16,
+final16,control16}, input/config hashes, class-load reports and installation.json.

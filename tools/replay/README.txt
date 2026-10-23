@@ -334,3 +334,22 @@ first-frame setup overhead. Sampling is statistical; absent samples
 are not proof that a thread did no work. ClientWorkScan tabulates per-phase wall
 and thread-CPU cost, packet counts and experimental yields. Frame, packet/light
 and animation scopes overlap; do not add their times as independent frame costs.
+
+First-render class loading
+--------------------------
+
+Set traceClassLoading=true to record actual jdk.ClassLoad events, including the
+loaded class name, duration and requesting stack. This is a diagnostic mode;
+compare it separately from normal captures. Sampled caller stacks alone do not
+identify every class being loaded. first-render.json demonstrates a cold/return/
+warm route; reproduce a particular scene with its original saved-world fixture.
+The example seed does not recreate the user's builds.
+
+  java -Xmx256m tools/replay/ClassLoadScan.java /path/to/run cold -195 -130
+
+The tool selects the largest frame in the requested phase/X interval and lists
+class loads overlapping it. Durations can nest; do not sum them. The output name
+list excludes generated hidden/lambda names that cannot form a stable preload
+list. firstRenderPreload in report.json records requested/resolved/unavailable
+priority names when the renderer supports it. Resolved includes already-loaded
+classes and does not imply static initializers ran.

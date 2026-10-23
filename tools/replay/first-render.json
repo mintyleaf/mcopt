@@ -1,0 +1,96 @@
+{
+  "schema": 1,
+  "seed": 12345,
+  "maximize": false,
+  "warmupSeconds": 15,
+  "phases": [
+    {
+      "name": "start",
+      "seconds": 5,
+      "from": [
+        83,
+        180,
+        514
+      ],
+      "to": [
+        83,
+        180,
+        514
+      ],
+      "yaw": 90,
+      "pitch": 15,
+      "fov": 70
+    },
+    {
+      "name": "cold",
+      "seconds": 10,
+      "from": [
+        83,
+        180,
+        514
+      ],
+      "to": [
+        -557,
+        180,
+        514
+      ],
+      "yaw": 90,
+      "pitch": 15,
+      "fov": 70
+    },
+    {
+      "name": "return",
+      "seconds": 10,
+      "from": [
+        -557,
+        180,
+        514
+      ],
+      "to": [
+        83,
+        180,
+        514
+      ],
+      "yaw": -90,
+      "pitch": 15,
+      "fov": 70
+    },
+    {
+      "name": "warm",
+      "seconds": 10,
+      "from": [
+        83,
+        180,
+        514
+      ],
+      "to": [
+        -557,
+        180,
+        514
+      ],
+      "yaw": 90,
+      "pitch": 15,
+      "fov": 70
+    },
+    {
+      "name": "settle",
+      "seconds": 5,
+      "from": [
+        -557,
+        180,
+        514
+      ],
+      "to": [
+        -557,
+        180,
+        514
+      ],
+      "yaw": 90,
+      "pitch": 15,
+      "fov": 70
+    }
+  ],
+  "captureImage": true,
+  "packetBudgetMs": 0,
+  "traceClassLoading": true
+}
