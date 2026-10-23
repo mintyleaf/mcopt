@@ -294,3 +294,14 @@ The production bridges are default-on only for the inspected mod/API versions.
 They are optional: neither dependency is bundled. Changed Polytone Indigo method
 bodies retain the original offset call. Runtime mod settings remain authoritative;
 the properties above are startup opt-outs, not substitutes for those settings.
+
+Optional companion fog probe
+----------------------------
+
+A route may set fogScaleProbe=true and include live mcopt edits. At each phase
+boundary, the harness checks the separate Atmospherics fixes mod's actual scale,
+reference maximum and recent render-hook timestamp. live-controls.json records
+those values alongside active LOD reach. This requires active custom atmospheric
+fog and the companion's inspected preset API; it deliberately fails if the hook
+never runs or settled scaled reach differs by over2%. It is a correctness probe,
+not an isolated GPU performance comparison; changing fog changes visible terrain.

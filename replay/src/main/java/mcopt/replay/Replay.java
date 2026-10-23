@@ -38,7 +38,7 @@ public final class Replay {
     private static volatile boolean serverReady;
     private static volatile boolean loaded,finished;
     private static boolean opened,started;
-    private static boolean schematicFixture,compatFixture,captureImage,captureRequested,moreCullingProbe;
+    private static boolean schematicFixture,compatFixture,captureImage,captureRequested,moreCullingProbe,fogScaleProbe;
     private static volatile boolean captureFinished;
     private static volatile Exception captureError;
     private static double warmup,total;
@@ -81,6 +81,7 @@ public final class Replay {
         schematicFixture=plan.has("schematicFixture") && plan.get("schematicFixture").getAsBoolean();
         compatFixture=plan.has("compatFixture") && plan.get("compatFixture").getAsBoolean();
         captureImage=plan.has("captureImage") && plan.get("captureImage").getAsBoolean();
+        fogScaleProbe=plan.has("fogScaleProbe") && plan.get("fogScaleProbe").getAsBoolean();
         moreCullingProbe=plan.has("moreCullingProbe") && plan.get("moreCullingProbe").getAsBoolean();
         if(plan.has("maximize") && plan.get("maximize").getAsBoolean())org.lwjgl.sdl.SDLVideo.SDL_MaximizeWindow(mc.getWindow().handle());
         if(plan.get("schema").getAsInt()!=1) throw new IllegalArgumentException("Unsupported route schema");
@@ -202,6 +203,7 @@ public final class Replay {
     private static void recordLiveState() throws Exception {
         if(!liveControls||phase<0)return;
         JsonObject state=new JsonObject();state.addProperty("phase",segments.get(phase).name);
+        if(fogScaleProbe)state.add("fogScale",FogScaleProbe.read());
         state.add("lod",JSON.toJsonTree(Class.forName("mcopt.metal.lod.Lod").getMethod("report").invoke(null)));
         state.add("lodThreads",JSON.toJsonTree(Thread.getAllStackTraces().keySet().stream()
             .filter(t->t.isAlive()&&t.getName().startsWith("mcopt-lod-")).map(Thread::getName).sorted().toList()));

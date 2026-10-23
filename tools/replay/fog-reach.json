@@ -1,0 +1,92 @@
+{
+  "schema": 1,
+  "seed": 12345,
+  "maximize": false,
+  "warmupSeconds": 20,
+  "captureImage": true,
+  "fogScaleProbe": true,
+  "phases": [
+    {
+      "name": "reach192",
+      "seconds": 15,
+      "from": [
+        83,
+        180,
+        514
+      ],
+      "to": [
+        83,
+        180,
+        514
+      ],
+      "yaw": 90,
+      "pitch": 10,
+      "fov": 70,
+      "mcopt": {
+        "mcopt.lod": true,
+        "mcopt.lod.radius": 192
+      }
+    },
+    {
+      "name": "reach96",
+      "seconds": 15,
+      "from": [
+        83,
+        180,
+        514
+      ],
+      "to": [
+        83,
+        180,
+        514
+      ],
+      "yaw": 90,
+      "pitch": 10,
+      "fov": 70,
+      "mcopt": {
+        "mcopt.lod.radius": 96
+      }
+    },
+    {
+      "name": "lod_off",
+      "seconds": 15,
+      "from": [
+        83,
+        180,
+        514
+      ],
+      "to": [
+        83,
+        180,
+        514
+      ],
+      "yaw": 90,
+      "pitch": 10,
+      "fov": 70,
+      "mcopt": {
+        "mcopt.lod": false
+      }
+    },
+    {
+      "name": "restored",
+      "seconds": 15,
+      "from": [
+        83,
+        180,
+        514
+      ],
+      "to": [
+        83,
+        180,
+        514
+      ],
+      "yaw": 90,
+      "pitch": 10,
+      "fov": 70,
+      "mcopt": {
+        "mcopt.lod": true,
+        "mcopt.lod.radius": 192
+      }
+    }
+  ]
+}

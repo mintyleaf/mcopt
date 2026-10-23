@@ -1,0 +1,91 @@
+Capture and worker memory changes, 2026-10-23
+===========================================
+
+Fork.13 changes
+---------------
+Capture admission now precedes detached client copying. Ordinary refreshes retry
+when the 64-entry raw queue is full. Unloads may use64 reserved entries, preserving
+the last visited edits/light; saturation beyond 128 still uses the existing lossless
+synchronous fallback. The count bound is not a total byte budget.
+
+Tile/capture codecs lease two 64 KiB temporary byte arrays per participating thread.
+Decoded planes remain independently owned. Nested legacy repairs get independent
+scratch; close/failure paths return leases. Compressed format and cache identity
+are unchanged. Palette lengths are checked before dictionary allocation.
+
+Verified Indigo 9.1.24+b9d63e335d tesselators are reused per worker and configuration;
+other renderer implementations retain per-section creation. Mesher finally blocks
+release section suppliers/builders and region/cache references. OwnQuads native
+scratch is cleaned when its owner dies and trimmed after sustained low demand,
+with capacity hysteresis rather than shrinking on every section.
+
+Checks
+------
+checkLodCodec: original/new format agreement, nested unread buffers, failure
+recovery and double-close ownership.100 reads allocate 13,186,400 -> 141,600 bytes
+in the test fixture (temporary Java allocation, not total game memory).
+checkLodSavedChunks: actual detached blocks/light and summaries; producer-thread
+copy/worker scanning; admission-before-copy, reserved unload capacity, latest edit
+wins, close drain, bounded disk backlog and persistence/restart correctness.
+checkLodCaptures/checkLodCaptureIo: existing formats, intervals, light and slow I/O.
+checkOwnQuadOrder: all seven buckets retain exact quad/record bytes, bounds and
+metadata through growth, low-demand trimming, regrowth and idempotent cleanup.
+checkTerrainCompat still passes. Metal and replay builds pass.
+
+Controlled flight
+-----------------
+One warm-cache pass per case in the same marker-owned Prism instance, immutable
+copy of the real saved world restored before each run; built features retained.
+Same 120-second route: 20s stationary,45s outbound64blocks/s,45s return,10s settle.
+RD 12/simulation 8, LOD radius 192, workers 2, Low population, C2ME 3, 4 GiB ZGC,
+VSync 60, world target 2880x1620. Atmospherics 2.6.8 and companion 0.1.1 in all three
+performance cases. No native sampler or split GPU passes. All runs focused with
+zero route error and stable render targets. The camera at the endpoint is inside
+a hillside in both baseline/candidate screenshots; this is not an above-ground
+LOD quality comparison or actual elytra physics.
+
+Case             Core field  Out/return p95 ms   Flight gaps>50ms  Worst flight ms
+fork.12 N2048    256MiB      17.20 /20.03        38                256.45
+fork.13 N2048    256MiB      18.73 /21.14        60                396.15
+fork.13 N1024     80MiB      16.94 /16.99         6                110.17
+
+The core field figure excludes mesh arenas, temporary/native buffers and heap.
+At N1024 the first coarse switch is 444 rather than 956 blocks. Outer configured
+radius remains 192 chunks; the automatically selected level count changes 3 -> 4.
+
+Weighted JFR estimated allocation rates: 716.4, 610.0, 648.1 MiB/s respectively.
+Sample-weight attribution to LodCaptures.read fell 2207 -> 867 MiB in the 2048 passes;
+write attribution fell 760 -> 220 MiB. These are estimates, not exact byte counters
+or normalized per-file costs. Heap-after-GC peaks were 2524/2880/2866 MiB: no retained
+Java-heap reduction is established. RSS/compression are not physical footprint.
+The 2048 passes each had one render-thread allocation stall (22.9/17.2ms);
+the 1024 pass had none.
+
+None saturated the raw queue or used synchronous capture fallbacks. The overload
+benefit is established by forced queue checks, not by these flights. The code-only
+case did not improve hitch counts. The1024 grid is promising, but asynchronous
+world work, evolving warm LOD caches, driver/JIT and thermal state differ between
+passes. No repeated/randomized speedup or fixed overall RAM reduction is claimed.
+BetterGrassify predicates, vanilla chunk work and copy-on-write map updates remain
+large allocation sources. Lowering this grid does not eliminate those sources.
+
+Separate fog companion
+----------------------
+Atmospherics-fixes 0.1.2 adds proportional environmental fog scaling. It remains
+outside mcopt source and dependencies. An opt-in replay probe checks the actual
+companion render-hook timestamp, maximum and scale across live radius/LOD toggles;
+the tracked route uses an example seed. Fluid/effect fog and separate haze controls
+remain unchanged. This correctness run is separate from the performance cases.
+
+Local ignored artifacts: out/memory-next-20261023/{baseline2048,fork13-2048,
+fork13-1024,fog-live}. Each performance case includes reports, JFR, phase summaries,
+allocation-summary.json, RSS samples and source/input hashes. Warm caches evolve;
+only saved-world input bytes and the declared settings are restored identically.
+
+Live fog result: all four states passed with a preset maximum of8192blocks.
+Scaled ends followed3072 ->1536 ->192 ->3072blocks (LOD192/96/off/192),
+within0.002blocks at the settled sample. The above-ground screenshot was inspected.
+All replay JVMs exited; automatic replay launch flags and temporary live settings
+were removed. Fork.13 and companion0.1.2 installed with previous jars backed up.
+Normal options/configs/presets and other mod hashes verified unchanged. The normal
+pack retains its existing grid pending the user’s quality/performance preference.
