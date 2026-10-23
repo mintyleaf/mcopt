@@ -305,3 +305,32 @@ those values alongside active LOD reach. This requires active custom atmospheric
 fog and the companion's inspected preset API; it deliberately fails if the hook
 never runs or settled scaled reach differs by over2%. It is a correctness probe,
 not an isolated GPU performance comparison; changing fog changes visible terrain.
+
+Packet-work experiment and hitch attribution
+-------------------------------------------
+
+packet-flight.json uses an above-ground out/return camera route. The optional
+packetBudgetMs plan field (0 by default) enables a limiter in the replay harness
+only. For comparisons with a production client packet budget, keep this field 0
+and set mcopt.client.packetBudgetMs explicitly in controlledConfig. The two knobs
+have different purposes; do not enable both limiters for an attribution test.
+
+The harness records packet drains, light updates, complete frames and animateTick
+with wall/thread-CPU time. Server drains are never limited by the replay hook.
+Packets and bundles remain indivisible and ordered: one expensive packet can
+exceed the time budget. Retain one immutable world AND one starting LOD cache
+snapshot across restarted comparisons; asynchronous generation/thermal/driver/JIT
+state still varies. Compare terrain readiness alongside frame tails.
+
+After a completed run, bounded offline consumers provide focused reports:
+
+  java -Xmx256m tools/replay/HitchScan.java /path/to/run
+  java -Xmx256m tools/replay/ClientWorkScan.java /path/to/run
+
+HitchScan correlates the 15 largest frame gaps above 50 ms with JFR packet/Metal/GC
+spans and sampled render-thread stacks. It derives the absolute frame clock from
+phase markers and frames.csv, using the least-delayed boundary to avoid
+first-frame setup overhead. Sampling is statistical; absent samples
+are not proof that a thread did no work. ClientWorkScan tabulates per-phase wall
+and thread-CPU cost, packet counts and experimental yields. Frame, packet/light
+and animation scopes overlap; do not add their times as independent frame costs.

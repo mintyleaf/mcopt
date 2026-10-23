@@ -1,0 +1,111 @@
+Client-work hitch investigation, 2026-10-24
+=========================================
+
+Evidence and experiment
+-----------------------
+The previous fork.13/N2048 396ms frame sampled client chunk/entity packet
+handling and several unload captures. PacketProcessor.processQueuedPackets has
+an unbounded FIFO drain. The old recording threshold omitted short commit events,
+so its commit-based frame timeline was incomplete.
+
+The replay now records nonempty packet drains, light updates and (for production
+validation) complete frames/animateTick with wall and current-thread CPU time.
+MetalOperation is enabled with a zero threshold. The replay-only packetBudgetMs
+knob leaves queued packets in place and yields between whole packet handlers.
+Server drains remain untouched. No packet/bundle is split, dropped or reordered.
+
+One restarted pass per candidate, same real saved-world fixture and the same
+starting LOD-cache snapshot restored each time. Above-ground route at Y180:
+20s stationary, 45s west at 64 blocks/s, 45s return,10s settle. VSync 60, 4 GiB ZGC,
+RD12/simulation8, LOD192/N2048, workers2, Low population, C2ME3, render2880x1620.
+Atmospherics 2.6.8 with companion 0.1.2 throughout. No native sampler/GPU pass split.
+Immutable world/mod/settings hashes and focus/route/setup checks are recorded.
+Renderer work is not made cheaper by changing render distance or LOD detail.
+
+Unbounded baseline: 10 flight gaps>50ms;174.25ms worst; packet drain49.05ms max.
+Replay 4ms limiter: 6 gaps>50ms;299.34ms worst; packet drain21.45ms max;244 yields.
+Final settle had zero missing full chunks/LOD tiles in both. Outbound missing
+full chunks204/125; end-return missing0/0. These are single-run observations,
+not evidence of a repeatable global hitch reduction. Budgets can be exceeded by
+one expensive packet or a scheduler/GC pause within its handler.
+
+The baseline included a 102.27ms render-thread allocation stall during an ordinary
+LOD snapshot. Its 174ms first-chest frame sampled ETF/EMF class/resource loading;
+first item-frame rendering also waited on PipelineCache.get. The replay4ms run
+still had a 299ms frame with only one ParticleRain sample: that capture cannot
+establish whether it was CPU work or time off-CPU.
+
+Production changes
+------------------
+mcopt.client.packetBudgetMs defaults to 4 (0 disables), range 0..16, exposed in
+Mod Menu and applied live without rebuilding LODs. A frame scope is installed
+only around Minecraft's in-world client packet drain. Thread-local state keeps
+server/unscoped drains unchanged; finally removes it. The queue implementation
+and handling order stay vanilla. One complete packet always makes progress.
+
+Ordinary LOD resnapshots now honor the existing LodMemoryBudget occupancy
+hysteresis before copying; coordinates remain queued for retry. Unload captures
+still take their lossless path. No cooldown, collection request or new memory
+threshold is added. Deferred-frame counts are included in capture JFR telemetry.
+
+checkPacketWorkBudget verifies FIFO across repeated budgets, progress after a
+long pause, whole-packet boundaries, disabled/unscoped behavior, nesting, server
+thread isolation and exceptional cleanup. checkMcoptSettings verifies the live
+off switch does not increment the LOD rebuild generation. Existing saved chunk,
+slow-disk, bounded capture drain and memory scheduling checks pass. Metal/replay
+builds pass.
+
+Production validation (same replay limiter disabled)
+---------------------------------------------------
+The initial production pass had 16 flight gaps>50ms and 309.11ms worst, with no
+render allocation stalls and 49 deferred snapshot frames. The scene fully settled
+again. Its largest frame included a 151ms PipelineCache wait and 89ms thread CPU
+in 308ms wall time. The 202ms first-chest frame had 53ms thread CPU. A 49.86ms packet
+drain used 3.04ms thread CPU: the wall overshoot cannot be equated with continuous
+packet CPU work. Neither the code nor these passes establishes all hitches fixed.
+The complete-frame/animation instrumentation was added after the first pair, so
+its supporting harness hash differs from those runs. The final preload comparison
+was diagnostic and is excluded from global speed comparisons.
+
+Unshipped preload experiment
+----------------------------
+The boot class list has zero ETF/EMF entries. A 21-class observed-name preload was
+tried after client startup with static initialization disabled. Its printf marker
+bypassed Minecraft's LoggedPrintStream logger (which overrides println, not printf),
+so the initial missing-log interpretation was incorrect. Attach diagnostics were
+used during the preload/final15 trials; both are marked invalid for global speed
+comparisons. Those captures remain useful for attribution and functional counters.
+The candidate did not establish a reliable hitch benefit and was removed from the
+shipping source/jar. No entity-mod preload or resource cache patch is shipped.
+
+Local ignored artifacts: out/hitches-next-20261024/{unlimited,budget4,production,
+preload,final15,shipping15}. The saved source pack is read only during all benchmarks. Failed Prism
+IPC launches were excluded: no JVM started, then an idle-launcher restart/direct
+CLI launch recovered. No launch failure is counted as a measured replay.
+
+Shipping result
+---------------
+Fork.15 ships only the client packet budget and heap-aware ordinary snapshots.
+The short shipping smoke run used 10s warmup, 5s stationary and 25s outbound flight
+at 64 blocks/s. It passed focus, route and stable-target checks, recorded 137 real
+production yields, 3 deferred snapshot frames and zero render allocation stalls.
+It still had 11 flight gaps>50ms (173ms worst). This shorter route/warmup is a
+functional smoke test, not comparable to the 120s experiment's hitch count.
+The production counter also verified 273 yields in the longer diagnostic run.
+
+The missing preload printf log is not used as proof of a failed startup callback;
+that earlier interpretation was incorrect. Both preload trials are excluded from
+speed claims because attach diagnostics ran during measurement. The unshipped
+preload sources/resources and mixin were removed and a clean build checked the
+final jar contains none of them.
+
+No overall FPS or global hitch-rate improvement is established. Packet processing
+now yields at packet boundaries, and optional snapshot work yields under existing
+heap pressure. Large first-use ETF/EMF resource/class-loading and pipeline-future
+waits remain separate targets. A151ms future wait included only 38ms in the observed
+backend pipeline compile; frontend preparation/queue time also needs attribution.
+
+Fork.15 installed in the normal pack with fork.13 backed up. Normal options,
+configs/presets and every other mod hash verified unchanged. All game JVMs exited;
+temporary replay options/controls and automatic launch flags were removed from
+the marker-owned instance. The tested harness remains in that owned instance only.

@@ -228,7 +228,7 @@ def parse_events(events):
     lod_arena_growth = []
     command_buffers, presentations, pipeline_compiles, drawable_waits, lod_scheduling = [], [], [], [], []
     drawable_lifetimes = []
-    capture_queues, client_captures, arena_allocations = [], [], []
+    capture_queues, client_captures, arena_allocations, client_work = [], [], [], []
     gpu_completed = []
     submits = {}
     spans = []
@@ -287,10 +287,15 @@ def parse_events(events):
                                                                   "severeChunkPressure", "streamingAllowed", "streamingStarts", "lodStaleJobsDropped",
                                                                   "lodCacheChecksQueued", "lodFallbackQueued", "lodVisibleQueued", "lodDeferredQueued")})
         elif kind == "mcopt.LodCaptureQueue":
-            capture_queues.append({key: value.get(key) for key in ("startTime", "rawQueued", "writesQueued", "snapshots", "snapshotNanos", "fallbacks", "reusedUnloads", "reusedEdits")})
+            capture_queues.append({key: value.get(key) for key in ("startTime", "rawQueued", "writesQueued", "snapshots", "snapshotNanos", "fallbacks", "reusedUnloads", "reusedEdits", "deferredCaptureFrames")})
         elif kind == "mcopt.LodClientCapture":
             client_captures.append({"startTime": value.get("startTime"), "durationMs": duration_ms(value.get("duration")),
                                     **{key: value.get(key) for key in ("chunkX", "chunkZ", "reason", "freezeMs", "fallback")}})
+        elif kind == "mcopt.ReplayClientWork":
+            row = {"startTime": value["startTime"], "durationMs": duration_ms(value.get("duration")),
+                   **{key: value.get(key) for key in ("operation", "packets", "yielded", "budgetMs", "cpuMs")}}
+            client_work.append(row)
+            spans.append((row["startTime"], row["durationMs"], "client." + row["operation"]))
         elif kind == "mcopt.OwnArenaAllocation":
             arena_allocations.append({key: value.get(key) for key in ("startTime", "reserveBytes", "reserveUsedBytes", "reserveHits", "sharedFallbacks", "filterDeferrals")})
         elif kind == "mcopt.MetalCommandBuffer":
@@ -398,6 +403,7 @@ def parse_events(events):
         "captureQueues": capture_queues,
         "clientCaptures": client_captures,
         "arenaAllocations": arena_allocations,
+        "clientWork": client_work,
         "drawableWaits": sorted(drawable_waits, key=lambda row: row["durationMs"], reverse=True),
         "metalCpuOperationMs": {op: stats(values) for op, values in operations.items()},
         "mainGpuMsFromRetiredSubmits": stats([v["gpuMs"] for v in gpu_completed]),
@@ -442,7 +448,7 @@ def summarize(output, jfr_tool):
               "mainSubmitIntervalMs": stats([(b-a)*1000 for a,b in zip(sorted(commits["main"].values()), sorted(commits["main"].values())[1:])]),
               "gpuNote": "Command buffer GPU spans include dependencies and can overlap across frames and main/pre buffers. Do not add them or interpret them as per-frame GPU busy time. Submit cadence is not measured scanout FPS. Durations do not attribute individual draw calls.",
               "gpuDiagnostics": diagnostics}
-    event_filter = "jdk.ExecutionSample,jdk.NativeMethodSample,jdk.CPULoad,jdk.ThreadCPULoad,jdk.GCPhasePause,jdk.ZAllocationStall,mcopt.MetalOperation,mcopt.MetalArenaTransfer,mcopt.MetalGpuPass,mcopt.OwnArenaGrowth,mcopt.LodArenaGrowth,mcopt.MetalCommandBuffer,mcopt.MetalPresentation,mcopt.MetalDrawable,mcopt.MetalPipelineCompile,mcopt.LodScheduling,mcopt.LodCaptureQueue,mcopt.LodClientCapture,mcopt.OwnArenaAllocation"
+    event_filter = "jdk.ExecutionSample,jdk.NativeMethodSample,jdk.CPULoad,jdk.ThreadCPULoad,jdk.GCPhasePause,jdk.ZAllocationStall,mcopt.MetalOperation,mcopt.MetalArenaTransfer,mcopt.MetalGpuPass,mcopt.OwnArenaGrowth,mcopt.LodArenaGrowth,mcopt.MetalCommandBuffer,mcopt.MetalPresentation,mcopt.MetalDrawable,mcopt.MetalPipelineCompile,mcopt.LodScheduling,mcopt.LodCaptureQueue,mcopt.LodClientCapture,mcopt.OwnArenaAllocation,mcopt.ReplayClientWork"
     try:
         dump = run([jfr_tool, "print", "--json", "--events", event_filter, output / "recording.jfr"], timeout=90)
         events = json.loads(dump)["recording"]["events"]

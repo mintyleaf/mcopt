@@ -1,0 +1,78 @@
+{
+  "schema": 1,
+  "seed": 12345,
+  "maximize": false,
+  "warmupSeconds": 20,
+  "phases": [
+    {
+      "name": "built_low",
+      "seconds": 20,
+      "from": [
+        83,
+        180,
+        514
+      ],
+      "to": [
+        83,
+        180,
+        514
+      ],
+      "yaw": 90,
+      "pitch": 15,
+      "fov": 70
+    },
+    {
+      "name": "populated_out",
+      "seconds": 45,
+      "from": [
+        83,
+        180,
+        514
+      ],
+      "to": [
+        -2797,
+        180,
+        514
+      ],
+      "yaw": 90,
+      "pitch": 15,
+      "fov": 70
+    },
+    {
+      "name": "populated_return",
+      "seconds": 45,
+      "from": [
+        -2797,
+        180,
+        514
+      ],
+      "to": [
+        83,
+        180,
+        514
+      ],
+      "yaw": -90,
+      "pitch": 15,
+      "fov": 70
+    },
+    {
+      "name": "settle_low",
+      "seconds": 10,
+      "from": [
+        83,
+        180,
+        514
+      ],
+      "to": [
+        83,
+        180,
+        514
+      ],
+      "yaw": 90,
+      "pitch": 15,
+      "fov": 70
+    }
+  ],
+  "captureImage": true,
+  "packetBudgetMs": 0
+}
