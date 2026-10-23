@@ -377,3 +377,27 @@ ClassLoadScan accepts an optional fifth argument for its output name list:
   java -Xmx256m tools/replay/ClassLoadScan.java /path/to/run return -65 -25 /tmp/item-classes.txt
 
 Without that argument it retains the older first-chest-classes.txt output name.
+
+Long normal-game sessions
+------------------------
+
+Use disk-backed rolling JFR with a time and byte limit, automatic stop and dump
+on normal JVM exit. The caving session used20ms CPU/native-method samples,
+50 allocation samples/s,20-minute retention,256MiB maximum and30-minute stop.
+The two retention limits apply together; exceeding the byte cap can retain less
+than20 minutes. Keep native sampling tools, class-load tracing and GPU pass
+splitting off for this first pass. Attaching can cause an initial pause, so leave
+a margin around recorder start/stop. A user note with approximate hitch times is
+useful; frequent live attach commands can themselves interfere with play.
+
+Do not run the older whole-file JSON analyzer on a large session on an8GiB Mac.
+Use the streaming Java consumer with epoch-second start/end bounds instead:
+
+  java -Xmx256m tools/replay/SessionScan.java /path/recording.jfr /path/analysis START_EPOCH END_EPOCH
+
+Its CSV tracks consecutive main-submit gaps, not runTick frames or measured
+scanout FPS. Presentation cadence is separate. Window events may run outside the
+game frame. It includes explicit SystemGC caller spans: a thread can wait seconds
+inside System.gc() even if the collector's stop-the-world pause events are tiny.
+Sampled stacks/weights are statistical and do not prove which process generated
+system-wide swap traffic. See RESULTS-gameplay-session.txt for the first run.

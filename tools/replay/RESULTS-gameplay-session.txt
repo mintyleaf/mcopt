@@ -1,0 +1,101 @@
+Normal caving session, 2026-10-24
+================================
+
+Capture
+-------
+Normal Prism pack, fork.17, current user settings including384-chunk LOD radius.
+User reported hitches throughout enclosed caving, no visible Litematica overlays,
+a few pauses and no app switches during play. No replay/world replacement, setting
+changes, benchmark, native sampler, GPU pass splitting or build during recording.
+The user ended after about9 minutes;110MiB JFR saved. CPU/native stack samples20ms,
+allocation samples throttled50/s, rolling limit20 minutes/256MiB, timed stop30min.
+Recording stopped explicitly; no ongoing session recording remains.
+
+Analyze537.8s excluding the first/last10s attach margins. CPU samples and allocation
+weights are statistical; profiling adds overhead. Main-submit cadence is not
+scanout FPS; presented-time cadence is reported separately. Some inventory/menu
+work is visible in the trace and must not be treated as caving renderer cost.
+
+Observed cadence
+----------------
+30,215 consecutive main-submit intervals: p50=16.675ms, p95=19.016ms,
+p99=36.987ms.117 exceed50ms,43 exceed100ms. The last minute includes long event-
+handling/GC waits, so it is not representative of all gameplay. The first8 minutes
+still contain79 intervals above50ms,26 above100ms and218 above33.4ms across28,054
+intervals. Earlier changes did not eliminate ordinary gameplay hitches.
+
+Presented-time intervals: p50/p95=16.667ms, p99=35.389ms. Main GPU command spans
+typically14ms with p95=15.737ms; they include dependencies and do not isolate
+shader/draw-call GPU busy time. This capture does not establish a specific LOD
+shader bottleneck. No in-flight pipeline compilation was recorded.
+
+Memory/allocations
+------------------
+No jdk.ZAllocationStall events.162 stop-the-world GC pauses, maximum3.301ms;
+these do not account for the100ms+ gameplay gaps.
+
+System-wide vm_stat deltas show about42GiB of pages swapped in and42GiB swapped
+out, with substantial compression/decompression turnover. Swap space in use rose
+from4047MiB to4684MiB. Counters are system-wide and page-equivalent volumes, not
+proof of which process or which individual hitch caused I/O. JFR resident and NMT
+committed memory have different accounting and must not be added. Retained heap
+after collections is generally about1-2GiB: temporary allocation is a separate
+measurement from retained memory/leak growth.
+
+Allocation samples estimate71.4GiB cumulatively over the analysis interval:
+- saved-import worker14.1GiB; render thread14.6GiB; server thread11.2GiB;
+- three C2ME workers about5.2GiB each;
+- meshing worker stacks repeatedly allocate stream machinery in
+  BetterGrassSnow.Api.ghost -> BetterSnowPredicateUtils.isBlockWhitelisted;
+  the leading printed sites alone account for multiple GiB.
+
+Saved import calls SerializableChunkData.parse on detached saved chunks; sampled
+stacks include codec construction/codecui metadata and state/palette decoding.
+It is a dedicated mcopt-lod-saved-import thread, separate from LOD worker count.
+LodMemoryBudget samples Java heap occupancy, not OS paging. Thus plenty of heap
+headroom can coexist with memory/paging pressure and continued background work.
+This is a concrete scheduler blind spot, not proof that every hitch is caused
+by that thread. Allocation-rate reductions need controlled follow-up validation.
+
+Large late freeze: exact caller found
+------------------------------------
+At03:47:16 local time the Render thread spends5624ms inside System.gc(), called
+by DynamicFPSMod.handleStateChange through WindowObserver.onEvent and SDL's event
+pump. Two subsequent calls take580ms and464ms. These synchronous caller waits are
+distinct from GCPhasePause's small stop-the-world durations. The JFR SystemGC
+events identify the caller directly; the pause is not merely a sampled SDL guess.
+
+Dynamic FPS3.11.10 was already present in the source-pack snapshot before fork.17.
+Its config enables states.unfocused.run_garbage_collector and the same flag for
+invisible. The late window-state transition may include returning to chat; it
+does not explain the first8 minutes' caving hitches. No Dynamic FPS settings or
+other pack files were changed by this profiling pass.
+
+Next targets
+------------
+1. Disable the two Dynamic FPS forced-GC state settings, retaining its background
+   frame limiting. This addresses the demonstrated late synchronous collection.
+2. Remove repeated stream/predicate allocation from the snow adapter while keeping
+   config/whitelist and position-dependent behavior correct.
+3. Reduce palette/codec allocation in saved import and teach its budget about
+   system-memory pressure, rather than only Java heap occupancy. Keep lighting,
+   block-state, version upgrade and dimension correctness.
+4. Recheck caving after those changes. The existing trace also samples near/LOD
+   seam updates, chunk snapshot copies and mesh integration in hitch windows;
+   samples alone do not quantify their exclusive CPU cost under paging pressure.
+
+Streaming analysis
+------------------
+SessionScan.java reads JFR incrementally with a256MiB Java heap, writes per-submit
+CSV, minute statistics, CPU/GC/memory summaries and selected hitch stacks. It
+avoids expanding the whole110MiB trace into a much larger JSON object graph.
+SystemGC is included explicitly so synchronous collection callers are not missed
+by looking only at stop-the-world GC pauses. AllocationScan provides estimated
+allocation attribution, with overlapping inclusive contexts kept separate.
+
+Cross-check: on the saved final16 short recording, SessionScan reproduces all3191
+intervals in the existing analyzer's frameTimeline, maximum timing difference
+0.00114ms due to timestamp arithmetic. Full session analysis completes at-Xmx256m.
+
+Private local artifacts: out/gameplay-session-20261024-033831/recording.jfr,
+capture.json, profile.jfc, allocations.txt, memory-events.txt and analysis/.
