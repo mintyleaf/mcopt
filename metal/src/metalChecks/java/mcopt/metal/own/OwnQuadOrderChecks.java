@@ -46,8 +46,8 @@ public final class OwnQuadOrderChecks {
 		long thread = Thread.currentThread().threadId();
 		try {
 			int[] sizes = {2, 129, 4097, 7, 512, 65, 512, 512};
-			for (int iteration = 0; iteration < sizes.length; iteration++) {
-				int n = sizes[iteration];
+			for (int iteration = 0; iteration < 140; iteration++) {
+				int n = iteration < sizes.length ? sizes[iteration] : iteration == 138 ? 4097 : 7;
 				long[][] expected = fill(layer, n, iteration);
 				long before = allocations.getThreadAllocatedBytes(thread), start = System.nanoTime();
 				layer.order();
@@ -66,13 +66,13 @@ public final class OwnQuadOrderChecks {
 							throw new AssertionError("Record bytes differ from original sort");
 				}
 				layer.order(); // Multiple consumers of a layer must preserve exactly the same permutation.
-				System.out.printf("ORDER iteration=%d quadsPerBucket=%d allocatedBytes=%d timeMs=%.4f%n", iteration, n, bytes, nanos / 1e6);
+				if (iteration == 137) for (int cap : layer.cap) if (cap > 128) throw new AssertionError("Worker high-water buffers were not trimmed");
+				if (iteration < sizes.length || iteration >= 137) System.out.printf("ORDER iteration=%d quadsPerBucket=%d allocatedBytes=%d timeMs=%.4f%n", iteration, n, bytes, nanos / 1e6);
 			}
 			System.out.println("PASS: all seven buckets preserve quad/record bytes, planes, bounds, material and class through grow/shrink/reuse");
 		} finally {
-			for (int b = 0; b < 7; b++) { MemoryUtil.nmemFree(layer.addr[b]); if (layer.qaddr[b] != 0) MemoryUtil.nmemFree(layer.qaddr[b]); }
-			Field scratch = OwnQuads.Layer.class.getDeclaredField("scratch"); scratch.setAccessible(true);
-			long at = scratch.getLong(layer); if (at != 0) MemoryUtil.nmemFree(at);
+			layer.releaseNative(); layer.releaseNative();
+			for (int b = 0; b < 7; b++) if (layer.addr[b] != 0 || layer.qaddr[b] != 0) throw new AssertionError("Native scratch not released exactly once");
 		}
 	}
 }

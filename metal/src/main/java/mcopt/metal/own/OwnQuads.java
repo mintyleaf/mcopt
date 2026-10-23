@@ -2,6 +2,7 @@ package mcopt.metal.own;
 
 import com.mojang.blaze3d.vertex.QuadInstance;
 import com.mojang.blaze3d.vertex.VertexConsumer;
+import java.lang.ref.Cleaner;
 import net.minecraft.client.resources.model.geometry.BakedQuad;
 import net.minecraft.util.LightCoordsUtil;
 import org.joml.Vector3fc;
@@ -10,12 +11,27 @@ import org.lwjgl.system.MemoryUtil;
 /**
  * A meshing worker's solid and cutout quads (-Dmcopt.own.mesh), written once, as they are computed, as compact 16-byte
  * vertices (terrain.metal CVtx) into one of 7 facing buckets per layer: no 28-byte BufferBuilder vertex, no MeshData, no
- * sort pass. One per thread, reused for every section (native bucket memory grows and is never freed). The bytes and the
+ * sort pass. One per thread, reused for every section, trimmed after sustained low demand and freed when unreachable. The bytes and the
  * draw units are exactly what OwnTerrain.store makes of vanilla's BLOCK vertices for the same quads: same conversion, same
  * facing test, same stable bucket order (the digest check, -Dmcopt.own.mesh=verify, compares the two for every section).
  */
 public final class OwnQuads {
 	static final int BUCKETS = 7, QUAD = 64;
+	private static final Cleaner CLEANER = Cleaner.create();
+	/** Cleanup owns only pointer slots, never the Layer/OwnQuads or a world. */
+	static final class NativeMemory implements Runnable {
+		final long[] addr = new long[BUCKETS], qaddr = new long[BUCKETS];
+		long scratch;
+		@Override public void run() {
+			for (int b = 0; b < BUCKETS; b++) {
+				if (this.addr[b] != 0) MemoryUtil.nmemFree(this.addr[b]);
+				if (this.qaddr[b] != 0) MemoryUtil.nmemFree(this.qaddr[b]);
+				this.addr[b] = this.qaddr[b] = 0;
+			}
+			if (this.scratch != 0) MemoryUtil.nmemFree(this.scratch);
+			this.scratch = 0;
+		}
+	}
 	/**
 	 * -Dmcopt.own.mesh.order=plane: inside each facing bucket, quads sorted by plane coordinate, then by a Morton cell of their
 	 * whole-block bounds (in-plane axes; all three for the any-facing bucket), emission order breaking ties. Each draw unit then
@@ -202,7 +218,9 @@ public final class OwnQuads {
 
 	/** One layer's quads: per bucket, compact quads in emission order and per quad its plane and whole-block bounds. */
 	public static final class Layer {
-		final long[] addr = new long[BUCKETS];
+		private final NativeMemory memory = new NativeMemory();
+		@SuppressWarnings("unused") private final Cleaner.Cleanable cleanable = CLEANER.register(this, this.memory);
+		final long[] addr = this.memory.addr;
 		final int[] cap = new int[BUCKETS], count = new int[BUCKETS];
 		final float[][] plane = new float[BUCKETS][];
 		/** Per quad: box(min) and box(max) of its corners per axis, x | y << 8 | z << 16 (OwnTerrain.box). */
@@ -220,7 +238,7 @@ public final class OwnQuads {
 		boolean spriteOk;
 		int total;
 		/** OwnQrec: per bucket the quads' 40-byte records (parallel to addr), the stubs among them, the next quad's hint. */
-		final long[] qaddr = new long[BUCKETS];
+		final long[] qaddr = this.memory.qaddr;
 		int stubs;
 		boolean hinted;
 		int hintGreys, hintTint;
@@ -246,23 +264,59 @@ public final class OwnQuads {
 		public int total() {
 			return this.total;
 		}
+		/** Detached checks may release explicitly; production workers use Cleaner after their last owner disappears. */
+		void releaseNative() { this.cleanable.clean(); }
 
 		private boolean ordered;
 		private long[] keys = new long[64];
-		private long scratch;
 		private int scratchCap;
+		private final int[] recentPeak = new int[BUCKETS];
+		private int resets;
 		// One worker-local permutation scratch, reused across every bucket and section; bucket capacity can far exceed n.
 		private float[] sortPlane = new float[64];
 		private int[] sortLo = new int[64], sortHi = new int[64], sortMat = new int[64];
 		private byte[] sortCls = new byte[64];
 
 		void reset() {
+			// Safe boundary: the previous section's quads have already been copied into the arena by this worker.
+			for (int b = 0; b < BUCKETS; b++) this.recentPeak[b] = Math.max(this.recentPeak[b], this.count[b]);
+			if (++this.resets % 64 == 0) this.trimScratch();
 			java.util.Arrays.fill(this.count, 0);
 			this.total = 0;
 			this.ordered = false;
 			this.runsMemo = null;
 			this.stubs = 0;
 			this.hinted = false;
+		}
+
+		private static long resize(long address, long bytes) {
+			long next = address == 0 ? MemoryUtil.nmemAlloc(bytes) : MemoryUtil.nmemRealloc(address, bytes);
+			if (next == 0) throw new OutOfMemoryError("own mesh scratch");
+			return next;
+		}
+		private void trimScratch() {
+			int maximum = 64;
+			for (int b = 0; b < BUCKETS; b++) {
+				int target = 64;
+				while (target < this.recentPeak[b] * 2) target *= 2;
+				maximum = Math.max(maximum, target);
+				this.recentPeak[b] = 0;
+				if (this.cap[b] <= Math.max(1024, target * 2)) continue;
+				this.addr[b] = resize(this.addr[b], (long)target * QUAD);
+				if (this.qaddr[b] != 0) this.qaddr[b] = resize(this.qaddr[b], (long)target * OwnQrec.BYTES);
+				this.cap[b] = target;
+				this.plane[b] = new float[target]; this.lo[b] = new int[target]; this.hi[b] = new int[target];
+				this.mat[b] = new int[target]; this.cls[b] = new byte[target];
+				if (OwnMergeStat.ON) { this.mk0[b] = new long[target]; this.mk1[b] = new long[target]; this.mk2[b] = new long[target]; }
+			}
+			if (this.scratchCap > Math.max(1024, maximum * 2)) {
+				this.memory.scratch = resize(this.memory.scratch, (long)maximum * QUAD); this.scratchCap = maximum;
+			}
+			if (this.keys.length > Math.max(1024, maximum * 2)) this.keys = new long[maximum];
+			if (this.sortPlane.length > Math.max(1024, maximum * 2)) {
+				this.sortPlane = new float[maximum]; this.sortLo = new int[maximum]; this.sortHi = new int[maximum];
+				this.sortMat = new int[maximum]; this.sortCls = new byte[maximum];
+			}
 		}
 
 		/** OwnQrec: the quads the record can't hold (each a stub plus its 64 bytes). */
@@ -313,10 +367,10 @@ public final class OwnQuads {
 				for (int i = 0; i < n; i++) k[i] = key(b, this.plane[b][i], this.lo[b][i], i);
 				java.util.Arrays.sort(k, 0, n);
 				if (this.scratchCap < n) {
-					this.scratch = this.scratch == 0 ? MemoryUtil.nmemAlloc((long) n * QUAD) : MemoryUtil.nmemRealloc(this.scratch, (long) n * QUAD);
+					this.memory.scratch = resize(this.memory.scratch, (long)n * QUAD);
 					this.scratchCap = n;
 				}
-				long src = this.addr[b], dst = this.scratch;
+				long src = this.addr[b], dst = this.memory.scratch;
 				if (this.sortPlane.length < n) {
 					int capacity = Math.max(n, this.sortPlane.length * 2);
 					this.sortPlane = new float[capacity];
@@ -354,16 +408,14 @@ public final class OwnQuads {
 			int n = this.count[b];
 			if (n == this.cap[b]) {
 				int cap = n * 2;
-				this.addr[b] = MemoryUtil.nmemRealloc(this.addr[b], (long) cap * QUAD);
-				if (this.addr[b] == 0) throw new OutOfMemoryError("own mesh bucket");
+				this.addr[b] = resize(this.addr[b], (long)cap * QUAD);
 				this.plane[b] = java.util.Arrays.copyOf(this.plane[b], cap);
 				this.lo[b] = java.util.Arrays.copyOf(this.lo[b], cap);
 				this.hi[b] = java.util.Arrays.copyOf(this.hi[b], cap);
 				this.mat[b] = java.util.Arrays.copyOf(this.mat[b], cap);
 				this.cls[b] = java.util.Arrays.copyOf(this.cls[b], cap);
 				if (OwnQrec.ON) {
-					this.qaddr[b] = MemoryUtil.nmemRealloc(this.qaddr[b], (long) cap * OwnQrec.BYTES);
-					if (this.qaddr[b] == 0) throw new OutOfMemoryError("own mesh qrec bucket");
+					this.qaddr[b] = resize(this.qaddr[b], (long)cap * OwnQrec.BYTES);
 				}
 				if (OwnMergeStat.ON) {
 					this.mk0[b] = java.util.Arrays.copyOf(this.mk0[b], cap);
