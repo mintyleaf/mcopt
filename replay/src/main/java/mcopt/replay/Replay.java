@@ -274,6 +274,9 @@ public final class Replay {
         if(!Boolean.parseBoolean(System.getProperty("mcopt.replay.jfr","true")))return;
         AssetTrace.prepare();
         recording=new Recording(Configuration.getConfiguration("profile"));
+        // Class-loader inventory is a stop-the-world VM operation; it contaminated earlier hitch captures.
+        for(String event:List.of("jdk.ClassLoaderStatistics","jdk.ThreadDump","jdk.NativeMemoryUsage",
+                "jdk.NativeMemoryUsageTotal","jdk.NativeLibrary"))recording.disable(event);
         for(String event:List.of("mcopt.ReplayPhase","mcopt.MetalOperation","mcopt.MetalCommandBuffer","mcopt.MetalPresentation",
                 "mcopt.MetalDrawable","mcopt.MetalPipelineCompile","mcopt.OwnArenaGrowth","mcopt.LodArenaGrowth","mcopt.OwnArenaAllocation",
                 "mcopt.LodScheduling","mcopt.LodCaptureQueue","mcopt.LodClientCapture","mcopt.LodDetail",

@@ -103,6 +103,26 @@ def macos_memory_snapshot():
     return result
 
 
+VM_INVENTORY_EVENTS = ('jdk.ClassLoaderStatistics', 'jdk.ThreadDump', 'jdk.NativeMemoryUsage',
+                       'jdk.NativeMemoryUsageTotal', 'jdk.NativeLibrary')
+
+
+def omit_vm_inventory(configuration):
+    """Inventory walks can stop the VM or contend with allocation; keep them out of frame captures."""
+    for name in VM_INVENTORY_EVENTS:
+        events = [e for e in configuration.getroot().findall('event') if e.get('name') == name]
+        if not events:
+            events = [ET.SubElement(configuration.getroot(), 'event', {'name': name})]
+        for event in events:
+            settings = [s for s in event.findall('setting') if s.get('name') == 'enabled']
+            if not settings:
+                settings = [ET.SubElement(event, 'setting', {'name': 'enabled'})]
+            for setting in settings:
+                setting.attrib.pop('control', None)
+                setting.text = 'false'
+    return configuration
+
+
 def profile_configuration(java_home, gpu_only, gpu_passes):
     if gpu_only:
         configuration = ET.ElementTree(ET.Element("configuration", {
@@ -129,7 +149,7 @@ def profile_configuration(java_home, gpu_only, gpu_passes):
     for name in ("mcopt.MetalCommandBuffer", "mcopt.MetalPresentation", "mcopt.MetalDrawable", "mcopt.MetalPipelineCompile", "mcopt.LodScheduling", "mcopt.LodCaptureQueue", "mcopt.LodClientCapture", "mcopt.OwnArenaAllocation"):
         event = ET.SubElement(configuration.getroot(), "event", {"name": name})
         ET.SubElement(event, "setting", {"name": "enabled"}).text = "true"
-    return configuration
+    return omit_vm_inventory(configuration)
 
 
 def capture(args):
