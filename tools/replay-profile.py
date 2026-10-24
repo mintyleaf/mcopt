@@ -123,6 +123,11 @@ def validate_plan(path):
     if plan.get('schema') != 1 or not 3 <= plan.get('warmupSeconds', 0) <= 120:
         raise ValueError('Expected schema 1 and warmupSeconds 3..120')
     phases = plan.get('phases', [])
+    for flag in ('terrainChanges', 'lightSampling'):
+        if flag in plan and not isinstance(plan[flag], bool):
+            raise ValueError(flag + ' must be boolean')
+    if plan.get('terrainChanges') and sum(p.get('seconds', 0) for p in phases) < 55:
+        raise ValueError('Terrain edit fixture requires at least55 measured seconds')
     if not 1 <= len(phases) <= 32:
         raise ValueError('Expected 1..32 phases')
     names = set()
@@ -255,6 +260,21 @@ mcopt.own.arena.reserveMaxMiB=512
     print('Fixture SHA-256:', data['fixtureSha256'])
 
 
+def workload_valid(plan, report):
+    """An older/mismatched harness must not silently pass a terrain-change comparison."""
+    if not plan.get('terrainChanges'):
+        return True
+    work = report.get('terrainChanges')
+    if not isinstance(work, dict):
+        return False
+    completed = work.get('completedAtSeconds')
+    return (work.get('valid') is True and work.get('expectedBatches') == 80
+            and work.get('completedBatches') == 80 and work.get('rockChanges') == 320
+            and work.get('lightChanges') == 80 and work.get('fixtureMode') == 'creative'
+            and work.get('heldItems') == 'diamond_pickaxe/torch'
+            and isinstance(completed, (int, float)) and 49.5 <= completed <= 50.5)
+
+
 def memory_state():
     result = {}
     for name, cmd in [('vmStat',['/usr/bin/vm_stat']),('swapUsage',['/usr/sbin/sysctl','-n','vm.swapusage'])]:
@@ -337,7 +357,7 @@ def run(args):
         shutil.copy2(game/'logs/latest.log',output/'game.log')
         manifest.update(endedEpoch=time.time(),memoryAfter=memory_state(),lodCacheFilesAfter=len(list(cache.rglob('*.lod')))+len(list(cache.rglob('*.lodc'))))
         manifest['cacheIdentities'] = [str(p.relative_to(cache)) for p in cache.rglob('world-*') if p.is_dir()]
-        manifest['validForComparison'] = report['setup'].get('stableDuringMeasurement', True) and all(p['frames']>0 and p['unfocusedFrames']==0 and p['maxPositionError']<1 for p in report['phases'])
+        manifest['validForComparison'] = report['setup'].get('stableDuringMeasurement', True) and workload_valid(plan, report) and all(p['frames']>0 and p['unfocusedFrames']==0 and p['maxPositionError']<1 for p in report['phases'])
         write_json(output/'run.json',manifest)
         metadata=json.loads((output/'capture.json').read_text());metadata['endEpoch']=time.time();write_json(output/'capture.json',metadata)
         print(json.dumps(dict(validForComparison=manifest['validForComparison'],phases=report['phases']),indent=2),flush=True)

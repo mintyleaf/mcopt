@@ -1,0 +1,118 @@
+{
+  "schema": 1,
+  "seed": 12345,
+  "maximize": false,
+  "warmupSeconds": 20,
+  "terrainChanges": true,
+  "captureImage": true,
+  "packetBudgetMs": 0,
+  "phases": [
+    {
+      "name": "idle",
+      "seconds": 10,
+      "from": [
+        69,
+        52,
+        517
+      ],
+      "to": [
+        69,
+        52,
+        517
+      ],
+      "yaw": -90,
+      "pitch": 5,
+      "fov": 70
+    },
+    {
+      "name": "edits_east",
+      "seconds": 10,
+      "from": [
+        69,
+        52,
+        517
+      ],
+      "to": [
+        90,
+        52,
+        517
+      ],
+      "yaw": -90,
+      "yawTo": 0,
+      "pitch": 5,
+      "fov": 70
+    },
+    {
+      "name": "edits_south",
+      "seconds": 10,
+      "from": [
+        90,
+        52,
+        517
+      ],
+      "to": [
+        90,
+        52,
+        538
+      ],
+      "yaw": 0,
+      "yawTo": 90,
+      "pitch": 5,
+      "fov": 70
+    },
+    {
+      "name": "edits_west",
+      "seconds": 10,
+      "from": [
+        90,
+        52,
+        538
+      ],
+      "to": [
+        69,
+        52,
+        538
+      ],
+      "yaw": 90,
+      "yawTo": 180,
+      "pitch": 5,
+      "fov": 70
+    },
+    {
+      "name": "edits_north",
+      "seconds": 10,
+      "from": [
+        69,
+        52,
+        538
+      ],
+      "to": [
+        69,
+        52,
+        517
+      ],
+      "yaw": 180,
+      "yawTo": 270,
+      "pitch": 5,
+      "fov": 70
+    },
+    {
+      "name": "settle",
+      "seconds": 10,
+      "from": [
+        69,
+        52,
+        517
+      ],
+      "to": [
+        69,
+        52,
+        517
+      ],
+      "yaw": 270,
+      "pitch": 5,
+      "fov": 70
+    }
+  ],
+  "lightSampling": true
+}

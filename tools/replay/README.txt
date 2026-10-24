@@ -401,3 +401,29 @@ game frame. It includes explicit SystemGC caller spans: a thread can wait second
 inside System.gc() even if the collector's stop-the-world pause events are tiny.
 Sampled stacks/weights are statistical and do not prove which process generated
 system-wide swap traffic. See RESULTS-gameplay-session.txt for the first run.
+
+Deterministic terrain and lighting edits
+---------------------------------------
+
+terrain-changes.json is an opt-in enclosed caving workload. Its seed is a
+placeholder; use a matching immutable saved-world fixture. terrainChanges=true
+builds a32x12x32 stone chamber at64/48/512 inside the owned copy, with fixed lights.
+The source world is never opened. A normal fixture restore removes these edits.
+
+After20s warmup and10s measured idle, the server performs80 batches at500ms
+intervals: each changes four wall blocks between stone/air and one light source
+between stone/glowstone. The player follows a square route in creative mode with
+a diamond pickaxe and offhand torch, exercising held-item rendering and installed
+dynamic-light support. The last10s measure settling. This synthetic workload is
+intentionally reproducible, not a recording
+of the user's mining inputs. The server's clock is independent of render FPS;
+it performs at most one batch per tick when catching up after a stall.
+
+report.json records completed batches, actual changed-block counts, operation
+digest, maximum scheduling lag and completion time. The runner rejects comparisons
+without all320 wall and80 light changes completed by measured50.5s. Compare the
+digests and operation counts as well as mod/config/fixture hashes across cases.
+ReplayTerrainChange JFR events preserve each batch's actual timing.
+
+lightSampling=true uses20ms CPU/native-method periods and50 allocation samples/s
+instead of the profile defaults. Keep that flag identical across compared runs.

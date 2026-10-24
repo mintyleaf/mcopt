@@ -107,6 +107,33 @@ class ResetSafety(unittest.TestCase):
         with self.assertRaises(ValueError):
             MODULE.validate_plan(route)
 
+    def test_mutation_fixture_rejects_truncated_or_nonboolean_plan(self):
+        route = self.root / 'edits.json'
+        plan = json.loads((Path(__file__).parent / 'smoke.json').read_text())
+        plan['terrainChanges'] = True
+        MODULE.write_json(route, plan)
+        with self.assertRaises(ValueError):
+            MODULE.validate_plan(route)
+        plan['phases'][0]['seconds'] = 60
+        MODULE.write_json(route, plan)
+        self.assertTrue(MODULE.validate_plan(route)['terrainChanges'])
+        plan['terrainChanges'] = 'true'
+        MODULE.write_json(route, plan)
+        with self.assertRaises(ValueError):
+            MODULE.validate_plan(route)
+
+    def test_missing_or_incomplete_edit_work_is_not_comparable(self):
+        plan = {'terrainChanges': True}
+        self.assertFalse(MODULE.workload_valid(plan, {}))
+        work = dict(valid=True, expectedBatches=80, completedBatches=80, rockChanges=320,
+                    lightChanges=80, fixtureMode='creative', heldItems='diamond_pickaxe/torch',
+                    completedAtSeconds=49.55)
+        self.assertTrue(MODULE.workload_valid(plan, {'terrainChanges': work}))
+        for field, value in [('completedBatches', 79), ('rockChanges', 319),
+                             ('completedAtSeconds', 52), ('fixtureMode', 'spectator'), ('valid', False)]:
+            with self.subTest(field=field):
+                self.assertFalse(MODULE.workload_valid(plan, {'terrainChanges': dict(work, **{field: value})}))
+
 
 if __name__ == '__main__':
     unittest.main()

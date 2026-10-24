@@ -32,7 +32,7 @@ public final class Replay {
     }
     private static final List<Segment> segments = new ArrayList<>();
     private static final JsonArray liveStates = new JsonArray();
-    private static boolean liveControls,traceClassLoading;
+    private static boolean liveControls,traceClassLoading,lightSampling;
     private static long packetBudgetNanos;
     public static long packetBudgetNanos(){return packetBudgetNanos;}
     public static boolean traceClientWork(){return ON && started && !finished;}
@@ -41,7 +41,8 @@ public final class Replay {
     private static volatile boolean serverReady;
     private static volatile boolean loaded,finished;
     private static boolean opened,started;
-    private static boolean schematicFixture,compatFixture,captureImage,captureRequested,moreCullingProbe,fogScaleProbe;
+    private static boolean schematicFixture,compatFixture,terrainChanges,captureImage,captureRequested,moreCullingProbe,fogScaleProbe;
+    private static volatile long mutationClock=Long.MAX_VALUE;
     private static volatile boolean captureFinished;
     private static volatile Exception captureError;
     private static double warmup,total;
@@ -82,11 +83,13 @@ public final class Replay {
         byte[] bytes=Files.readAllBytes(Path.of(PLAN));
         JsonObject plan=JsonParser.parseString(new String(bytes,StandardCharsets.UTF_8)).getAsJsonObject();
         traceClassLoading=plan.has("traceClassLoading") && plan.get("traceClassLoading").getAsBoolean();
+        lightSampling=plan.has("lightSampling") && plan.get("lightSampling").getAsBoolean();
         double packetBudget=plan.has("packetBudgetMs")?plan.get("packetBudgetMs").getAsDouble():0;
         if(!Double.isFinite(packetBudget)||packetBudget<0||packetBudget>20)throw new IllegalArgumentException("packetBudgetMs must be0..20");
         packetBudgetNanos=(long)(packetBudget*1e6);
         schematicFixture=plan.has("schematicFixture") && plan.get("schematicFixture").getAsBoolean();
         compatFixture=plan.has("compatFixture") && plan.get("compatFixture").getAsBoolean();
+        terrainChanges=plan.has("terrainChanges") && plan.get("terrainChanges").getAsBoolean();
         captureImage=plan.has("captureImage") && plan.get("captureImage").getAsBoolean();
         fogScaleProbe=plan.has("fogScaleProbe") && plan.get("fogScaleProbe").getAsBoolean();
         moreCullingProbe=plan.has("moreCullingProbe") && plan.get("moreCullingProbe").getAsBoolean();
@@ -148,6 +151,7 @@ public final class Replay {
                 if(schematicFixture)SchematicFixture.load(output);
                 if(moreCullingProbe)MoreCullingProbe.run(mc,output);
                 started=true;startedAt=now;measureAt=now+(long)(warmup*1e9);
+                mutationClock=measureAt;
                 setup=setup(mc);
                 JsonObject capture=new JsonObject();capture.addProperty("label","controlled_replay");capture.addProperty("pid",ProcessHandle.current().pid());
                 capture.addProperty("startEpoch",System.currentTimeMillis()/1000.0);capture.addProperty("seconds",warmup+total);
@@ -248,7 +252,12 @@ public final class Replay {
             if(!serverReady) {
                 if(schematicFixture)SchematicFixture.populate(level);
                 if(compatFixture)TerrainCompatFixture.populate(level);
-                player.setGameMode(GameType.SPECTATOR);
+                if(terrainChanges)TerrainChanges.populate(level);
+                player.setGameMode(terrainChanges?GameType.CREATIVE:GameType.SPECTATOR);
+                if(terrainChanges){
+                    player.setItemSlot(net.minecraft.world.entity.EquipmentSlot.MAINHAND,new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.DIAMOND_PICKAXE));
+                    player.setItemSlot(net.minecraft.world.entity.EquipmentSlot.OFFHAND,new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.TORCH));
+                }
                 level.getServer().getGameRules().set(GameRules.ADVANCE_TIME,false,level.getServer());
                 level.getServer().getGameRules().set(GameRules.ADVANCE_WEATHER,false,level.getServer());
                 level.getServer().getGameRules().set(GameRules.SPAWN_MOBS,false,level.getServer());
@@ -258,6 +267,7 @@ public final class Replay {
             player.setPos(p.x,p.y,p.z);player.setYRot(p.yaw);player.setXRot(p.pitch);player.setDeltaMovement(Vec3.ZERO);
             player.connection.resetPosition();level.getChunkSource().move(player);serverReady=true;
         }
+        if(terrainChanges&&mutationClock!=Long.MAX_VALUE)TerrainChanges.tick(level,(System.nanoTime()-mutationClock)/1e9);
     }
 
     private static void startRecording() throws Exception {
@@ -270,8 +280,14 @@ public final class Replay {
                 "mcopt.LitematicaOverlayBatch","mcopt.ReplayOverlay"))recording.enable(event).withoutStackTrace();
         recording.enable("mcopt.ReplayClientWork").withoutStackTrace();
         recording.enable("mcopt.ReplayAsset").withStackTrace();
+        recording.enable("mcopt.ReplayTerrainChange").withoutStackTrace();
         recording.enable("mcopt.MetalOperation").withThreshold(java.time.Duration.ZERO).withoutStackTrace();
         if(traceClassLoading)recording.enable("jdk.ClassLoad").withThreshold(java.time.Duration.ZERO).withStackTrace();
+        if(lightSampling){
+            recording.enable("jdk.ExecutionSample").withPeriod(java.time.Duration.ofMillis(20));
+            recording.enable("jdk.NativeMethodSample").withPeriod(java.time.Duration.ofMillis(20));
+            recording.enable("jdk.ObjectAllocationSample").with("throttle","50/s");
+        }
         recording.disable("mcopt.MetalGpuPass");
         recording.setDestination(output.resolve("recording.jfr"));recording.setDumpOnExit(true);recording.start();
     }
@@ -320,6 +336,7 @@ public final class Replay {
                 summaries.add(s);
             }
             report.add("phases",summaries);
+            if(terrainChanges)report.add("terrainChanges",JSON.toJsonTree(TerrainChanges.report()));
             try(var w=Files.newBufferedWriter(output.resolve("frames.csv"))) {
                 w.write("phase,elapsedSeconds,frameMs,x,y,z,positionError,focused\n");
                 for(int i=0;i<frames;i++)w.write(String.format(Locale.ROOT,"%s,%.6f,%.6f,%.6f,%.6f,%.6f,%.9f,%s%n",
