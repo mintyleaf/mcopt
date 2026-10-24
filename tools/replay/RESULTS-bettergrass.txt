@@ -1,0 +1,111 @@
+BetterGrassify terrain-edit comparison, 2026-10-24
+================================================
+
+Result
+------
+Removing BetterGrassify eliminates roughly2.1GiB of sampled BetterGrassify-related
+temporary allocations per40s edit workload in mcopt's current compatibility path.
+Frame-time tails improve in both off runs, though one off run still has five gaps
+above50ms. This supports disabling an unwanted visual feature; it does not prove
+that removing the mod solves every normal-game hitch or benchmark stock Sodium.
+
+The pack's current betterGrassMode is OFF; betterSnowMode is LAMBDA. The active
+layer list includes snow, moss carpet, pink/pale-moss layers, leaf litter and
+wildflowers. Fabulously Optimized lists BetterGrassify under Pretty, describing
+OptiFine-style grass/snow features:
+https://github.com/Fabulously-Optimized/fabulously-optimized/blob/main/INCLUDED-MODS.md
+
+Method
+------
+One marker-owned replay copy of the real saved-world fixture, immutable world and
+frozen starting LOD cache restored before each run; no source-world regeneration.
+Browser intentionally left open. Supporting mod jars match the normal pack.
+Only BetterGrassify1.8.8's jar presence changes; core remains fork.17, same harness.
+Other mod/config/route/fixture hashes, save-directory identity, starting cache
+count/bytes and measured render setup match. Normal pack remains untouched.
+
+Current user384-chunk LOD radius, two workers/Low population, scout512, RD12,
+simulation8,4GiB ZGC, VSync60, world target2880x1620 at0.75 scale. No native sampler,
+GPU pass splitting, class-load tracing or analysis process during measurements.
+JFR sampling20ms, allocation throttle50/s. Builds/Gradle daemon stopped first.
+Detailed analysis runs afterward in streaming consumers at-Xmx192m.
+
+The controlled room is32x12x32 at64/48/512, enclosed with fixed lights. Creative
+player holds a diamond pickaxe and offhand torch; follows an84-block square route
+with camera turns. This exercises held-item rendering, installed dynamic lights,
+section movement, block changes and normal lighting.20s warmup,10s measured idle,
+40s walking/editing,10s settling. Each500ms batch changes four wall blocks and one
+light source. All runs completed320 actual stone/air changes plus80 stone/glowstone
+changes; operation digest c2e0326dbd8c12f5 in every case. Maximum batch scheduling
+lags:142/87/52/253ms, all work complete before measured50.5s. Focus, route error,
+render-setup stability and workload validity checks pass in all four captures.
+
+Order: onA,offA,offB,onB. A preliminary spectator pilot (on1) is excluded because
+it omitted held-item rendering; the formal series all uses the same creative
+fixture and identical harness bytes. The synthetic room is not the user's exact
+caving route and does not reproduce all of its generation/visibility conditions.
+
+40-second edit phases
+---------------------
+Case    frames   p95 ms   p99 ms    max ms   gaps>50ms   estimated alloc MiB   BG-context MiB
+onA       2356   17.347   28.094   165.865       6              6620.3             2130.8
+offA      2374   17.400   22.503   118.898       5              4425.8                0.0
+offB      2399   17.198   17.750    32.780       0              4856.8                0.0
+onB       2359   17.524   26.177   231.904       5              6438.6             2159.3
+
+Percentiles come from all raw frames in the four edit segments together, not an
+average of segment percentiles. Typical frame cadence stays close to60 in both
+conditions. The useful difference is less temporary work and better tails.
+
+BG-context labels include frames in BetterGrassify or mcopt's BetterGrassSnow
+adapter. Detailed onA attribution confirms dominant ReferencePipeline$Head,
+ArraySpliterator, MatchSink and predicate-lambda allocations under Api.ghost,
+matching the prior real-play trace. Contexts are inclusive and allocation sample
+weights are estimates; figures are cumulative allocation, not retained RAM.
+Both off cases have zero samples/allocation weights in those removed paths.
+
+Mean render-thread CPU/frame:2.97/3.09/3.09/2.87ms. Aggregate CPU load does not show
+a consistent reduction. Avoid claiming a direct render-thread CPU speedup; the
+main demonstrated saving is worker-side allocation. Other background work varies.
+
+Paging and remaining hitches
+----------------------------
+Whole-run vm_stat page-equivalent swap-in/out deltas, GiB:
+onA3.44/4.43; offA3.06/3.96; offB1.94/2.45; onB3.84/4.94.
+These system-wide counters cover launch/warmup/play/exit and are not exact SSD
+byte counts or phase-specific attribution. Browser remained open, but paging and
+filesystem/driver cache state cannot be frozen. ABBA reduces simple warm-order
+bias; two repetitions do not establish a universal speedup. Off-case variability
+and remaining hitches are material limits, not failures to be omitted.
+
+Examples: onB's232ms gap contains229ms nextDrawable wait and2.8ms render-thread
+CPU. OffA still has a119ms gap with114ms drawable wait and3.8ms CPU. Other long
+frames sample chunk-packet replacement, light-map copy-on-write updates and
+section snapshot copies, often with wall time far above thread CPU. Removing
+BetterGrassify reduces avoidable work, while driver/compositor/OS waits and
+chunk/light processing remain targets. This does not isolate every stall's cause.
+
+Decision
+--------
+For this8GiB setup, disabling BetterGrassify is reasonable if its snow/moss/petal/
+leaf-layer visuals are unwanted; better-grass visuals were already switched off.
+If keeping those visuals, optimize mcopt's adapter instead of treating this as a
+general statement about the mod under other renderers. Paging-aware background
+budgets and other allocation sources still matter after its removal.
+
+Delivery/verification
+---------------------
+Core mod unchanged. The reusable development harness gains the opt-in fixture and
+light-sampling plan flag; runner rejects missing/truncated/mismatched workloads.
+All12 runner checks pass. TerrainWorkScan streams phase CPU/allocation attribution;
+it uses the server batch clock for the edit window so a first batch preceding the
+next client phase marker is included. All80 batches are counted in every run.
+Screenshot checked: enclosed geometry, held pickaxe and torch present.
+
+All215 normal-pack option/config/mod files hash identically before/after, including
+BetterGrassify still installed. Owned settings, BetterGrassify and normal launch
+flags restored; replay flags removed; no game or owned helper JVMs remain.
+No new Prism instance created. Browser unchanged. Artifacts remain in ignored
+out/bettergrass-mutations-20261024/{onA,offA,offB,onB}, comparison.json, phase-work,
+hitch/alloc reports, snapshots and cleanup.json. on1/pilot-route are excluded pilot
+data. Tests do not change source worlds/caches or deploy a new production jar.
