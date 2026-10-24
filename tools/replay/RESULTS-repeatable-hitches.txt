@@ -1,6 +1,16 @@
 Other repeatable replay hitches, 2026-10-24
 =========================================
 
+Later profiler correction
+-------------------------
+Subsequent VM-operation audit found periodic class-loader inventory in the stock
+JFR profile causing80-280ms JVM stops. Raw SDL/drawable durations and overall
+hitch statistics in older captures can include those stops. Treat the timings
+below as instrumented observations, not clean game-only FPS evidence. The named
+class-load movement and removal of an actual pipeline-cache miss remain direct
+structural findings. Capture configs now omit inventories and analyzers include
+VM-operation spans before attributing waits to the driver or OS.
+
 The saved recordings contain repeatable first-use stalls beyond the first chest.
 They are distinct from sustained LOD rendering cost and new-terrain generation.
 

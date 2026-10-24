@@ -9,6 +9,7 @@ import java.util.*;
 class SessionScan {
  record Gap(long submit,double from,double to){double ms(){return (to-from)*1000;}}
  record Gpu(double at,double ms){}
+ record VmSpan(double from,double to,String operation){}
  static final class Values {
   final List<Double> v=new ArrayList<>();
   void add(double d){if(Double.isFinite(d))v.add(d);}
@@ -31,7 +32,7 @@ class SessionScan {
  public static void main(String[] args)throws Exception {
   Path file=Path.of(args[0]),output=Path.of(args[1]);Files.createDirectories(output);double start=Double.parseDouble(args[2]),end=Double.parseDouble(args[3]);
   var counts=new TreeMap<String,Long>();var operations=new TreeMap<String,Values>();var threads=new HashMap<String,Integer>();var stacks=new HashMap<String,Integer>();var inclusive=new HashMap<String,Integer>();
-  var threadCpu=new TreeMap<String,Values>();var memory=new TreeMap<String,Values>();var cpuMachine=new Values();var cpuJvm=new Values();var pauses=new Values();var stalls=new TreeMap<String,Values>();var gpuStats=new Values();var presentationStats=new Values();
+  var threadCpu=new TreeMap<String,Values>();var memory=new TreeMap<String,Values>();var vmOps=new TreeMap<String,Values>();var profilerStops=new ArrayList<VmSpan>();var cpuMachine=new Values();var cpuJvm=new Values();var pauses=new Values();var stalls=new TreeMap<String,Values>();var gpuStats=new Values();var presentationStats=new Values();
   var commits=new TreeMap<Long,Double>();var gpuBySubmit=new HashMap<Long,Gpu>();var presented=new TreeSet<Double>();var bins=new TreeMap<Integer,Bin>();var special=new ArrayList<String>();
   try(var in=new RecordingFile(file)){while(in.hasMoreEvents()){
    var e=in.readEvent();double at=epoch(e.getStartTime());if(at<start||at>end)continue;String kind=e.getEventType().getName();counts.merge(kind,1L,Long::sum);double ms=e.getDuration().toNanos()/1e6;
@@ -48,6 +49,11 @@ class SessionScan {
     case "jdk.CPULoad" -> {double machine=e.getFloat("machineTotal")*100,jvm=(e.getFloat("jvmUser")+e.getFloat("jvmSystem"))*100;cpuMachine.add(machine);cpuJvm.add(jvm);bin.machine.add(machine);bin.jvm.add(jvm);}
     case "jdk.ThreadCPULoad" -> threadCpu.computeIfAbsent(thread(e),k->new Values()).add((e.getFloat("user")+e.getFloat("system"))*100);
     case "jdk.GCPhasePause" -> pauses.add(ms);
+    case "jdk.ExecuteVMOperation" -> {
+     String op=e.getString("operation"),caller=name(e.getThread("caller"));vmOps.computeIfAbsent(op,k->new Values()).add(ms);
+     if(e.getBoolean("safepoint")&&caller.startsWith("JFR"))profilerStops.add(new VmSpan(at,epoch(e.getEndTime()),op));
+     if(ms>=20&&special.size()<500)special.add(String.format(Locale.ROOT,"+%.3fs VM operation %s %.3fms caller=%s",at-start,op,ms,caller));
+    }
     case "jdk.ResidentSetSize" -> memory.computeIfAbsent("JVM resident MiB",k->new Values()).add(e.getLong("size")/1048576.0);
     case "jdk.NativeMemoryUsageTotal" -> memory.computeIfAbsent("NMT committed MiB (not physical residency)",k->new Values()).add(e.getLong("committed")/1048576.0);
     case "jdk.SystemGC" -> {if(special.size()<500)special.add(String.format(Locale.ROOT,"+%.3fs explicitGC %.3fms thread=%s concurrent=%s %s",at-start,ms,thread(e),e.getBoolean("invokedConcurrent"),stack(e,12)));}
@@ -70,19 +76,22 @@ class SessionScan {
   }
   var selected=new ArrayList<Gap>();gaps.stream().filter(g->g.ms()>=100).sorted(Comparator.comparingDouble(Gap::ms).reversed()).limit(20).forEach(selected::add);
   gaps.stream().filter(g->g.ms()>25&&g.ms()<100).sorted(Comparator.comparingDouble(Gap::ms).reversed()).limit(20).forEach(selected::add);selected.sort(Comparator.comparingDouble(Gap::from));var details=selected.stream().map(Detail::new).toList();
-  Set<String> spanKinds=Set.of("mcopt.MetalOperation","mcopt.LodClientCapture","mcopt.MetalPipelineCompile","mcopt.OwnArenaGrowth","mcopt.LodArenaGrowth","jdk.ThreadPark","jdk.JavaMonitorEnter","jdk.ZAllocationStall","jdk.GCPhasePause","jdk.SystemGC","jdk.FileRead");
+  Set<String> spanKinds=Set.of("mcopt.MetalOperation","mcopt.LodClientCapture","mcopt.MetalPipelineCompile","mcopt.OwnArenaGrowth","mcopt.LodArenaGrowth","jdk.ThreadPark","jdk.JavaMonitorEnter","jdk.ZAllocationStall","jdk.GCPhasePause","jdk.SystemGC","jdk.FileRead","jdk.ExecuteVMOperation","jdk.SafepointBegin");
   try(var in=new RecordingFile(file)){while(in.hasMoreEvents()){
    var e=in.readEvent();String kind=e.getEventType().getName();boolean sample=kind.equals("jdk.ExecutionSample")||kind.equals("jdk.NativeMethodSample");if(!sample&&!spanKinds.contains(kind))continue;
    double at=epoch(e.getStartTime()),to=epoch(e.getEndTime());if(to<start||at>end)continue;String name=sample?name(e.getThread("sampledThread")):thread(e);double ms=e.getDuration().toNanos()/1e6;
-   if(sample&&!name.equals("Render thread"))continue;if(!sample&&!name.equals("Render thread")&&!kind.equals("jdk.GCPhasePause")&&!kind.equals("mcopt.MetalPipelineCompile"))continue;if(!sample&&ms<.5)continue;
+   if(sample&&!name.equals("Render thread"))continue;if(!sample&&!name.equals("Render thread")&&!kind.equals("jdk.GCPhasePause")&&!kind.equals("mcopt.MetalPipelineCompile")&&!kind.equals("jdk.ExecuteVMOperation")&&!kind.equals("jdk.SafepointBegin"))continue;if(!sample&&ms<.5)continue;
    for(var d:details){if(d.gap.from>to)break;if(d.gap.to<at)continue;
     if(sample)d.samples.merge(stack(e,12),1,Integer::sum);
-    else if(d.spans.size()<35){String extra=kind.equals("mcopt.MetalOperation")?e.getString("operation"):kind.equals("mcopt.MetalPipelineCompile")?e.getString("pipeline"):"";d.spans.add(String.format(Locale.ROOT,"%.3f..%.3fms %s %s %s",(at-d.gap.from)*1000,(to-d.gap.from)*1000,kind,extra,stack(e,8)));}
+    else if(d.spans.size()<35){String extra=kind.equals("mcopt.MetalOperation")?e.getString("operation"):kind.equals("mcopt.MetalPipelineCompile")?e.getString("pipeline"):kind.equals("jdk.ExecuteVMOperation")?e.getString("operation")+" caller="+name(e.getThread("caller")):"";d.spans.add(String.format(Locale.ROOT,"%.3f..%.3fms %s %s %s",(at-d.gap.from)*1000,(to-d.gap.from)*1000,kind,extra,stack(e,8)));}
    }
   }}
   try(var out=new PrintWriter(Files.newBufferedWriter(output.resolve("summary.txt")))){
    out.printf(Locale.ROOT,"Window %s .. %s (%.1fs); submit cadence is not scanout FPS.%n",Instant.ofEpochMilli((long)(start*1000)),Instant.ofEpochMilli((long)(end*1000)),end-start);
    var cadence=new Values();for(var g:gaps)cadence.add(g.ms());out.println("Main submit interval ms: "+cadence.report());for(double limit:new double[]{18,20,25,33.4,50,100,250})out.println("Intervals >"+limit+"ms: "+gaps.stream().filter(g->g.ms()>limit).count());
+   out.println("Profiler safepoint operations: "+profilerStops.size());
+   for(double limit:new double[]{50,100})out.println("Intervals >"+limit+"ms overlapping profiler VM stops: "+gaps.stream().filter(g->g.ms()>limit&&profilerStops.stream().anyMatch(v->v.from<g.to&&v.to>g.from)).count());
+   out.println("VM operations ms (can stop Java threads; distinct from GC pauses):");vmOps.forEach((k,v)->out.println(k+" "+v.report()));
    out.println("Presented intervals ms: "+presentationStats.report());out.println("Main GPU span ms (dependencies can overlap; not additive GPU busy): "+gpuStats.report());out.println("Machine CPU percent: "+cpuMachine.report());out.println("JVM CPU percent (machine normalized): "+cpuJvm.report());out.println("GC pauses ms: "+pauses.report());
    out.println("Memory snapshots (different accounting, do not add):");memory.forEach((k,v)->out.println(k+" "+v.report()));
    out.println("Allocation stalls by thread ms:");stalls.forEach((k,v)->out.println(k+" "+v.report()));out.println("Operations ms:");operations.forEach((k,v)->out.println(k+" "+v.report()));

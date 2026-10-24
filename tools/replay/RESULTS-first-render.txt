@@ -1,6 +1,12 @@
 First visible chest hitch, 2026-10-24
 ====================================
 
+Later instrumentation note: a subsequent session audit found that JFR's default
+class-loader inventory can stop Java threads for100ms+. These timing results used
+that older profile and are not clean game-only FPS evidence. The observed named
+class-load movement remains structural evidence; later capture profiles disable
+inventory walks and analyzers include VM-operation spans before blaming SDL/Metal.
+
 The first large measured flight hitch repeats near camera X=-160/Z=514 in the
 copied saved world. Earlier captures put it at 174/156/202ms. This is roughly
 3.8s into the westbound flight; it is not evidence about every pause during world

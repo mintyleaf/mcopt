@@ -381,6 +381,15 @@ Without that argument it retains the older first-chest-classes.txt output name.
 Long normal-game sessions
 ------------------------
 
+Important: disable jdk.ClassLoaderStatistics and jdk.ThreadDump for hitch captures.
+The stock profile enables periodic VM-wide inventory; class-loader walks caused
+80-280ms stop-the-world VM operations in the modded pack, invisible if analysis
+only checked GC pause events. Record ExecuteVMOperation to detect interference.
+Current capture/replay configs disable those inventories plus unused native-memory
+and library snapshots. CPU sampling periods alone do not prevent inventory stops.
+Compare native Metal wait duration with the surrounding Java span: a safepoint
+can delay Java return after a short native wait.
+
 Use disk-backed rolling JFR with a time and byte limit, automatic stop and dump
 on normal JVM exit. The caving session used20ms CPU/native-method samples,
 50 allocation samples/s,20-minute retention,256MiB maximum and30-minute stop.
@@ -401,6 +410,12 @@ game frame. It includes explicit SystemGC caller spans: a thread can wait second
 inside System.gc() even if the collector's stop-the-world pause events are tiny.
 Sampled stacks/weights are statistical and do not prove which process generated
 system-wide swap traffic. See RESULTS-gameplay-session.txt for the first run.
+
+SessionScan now includes VM-operation spans and counts slow intervals overlapping
+profiler-triggered safepoints. VmOperationScan exports VM operations and replay
+phase anchors as a small TSV for auditing older captures. Overlap identifies
+contaminated measurements; subtracting durations does not reconstruct unprofiled
+FPS or prove that every other interval is free of instrumentation overhead.
 
 Deterministic terrain and lighting edits
 ---------------------------------------

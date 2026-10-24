@@ -1,11 +1,27 @@
 BetterGrassify terrain-edit comparison, 2026-10-24
 ================================================
 
+Profiler correction, later2026-10-24
+----------------------------------
+The default JFR profile enabled periodic class-loader inventory at safepoints.
+Later VM-operation audit found one edit-phase gap overlapping this profiler work
+in onA/offA/onB (maximum VM-stop durations132/110/225ms). OffB's corresponding
+operation was16ms and overlapped no gap above50ms. The table below is raw recorded
+timing, contaminated by this instrumentation. Do not treat its worst-frame or
+hitch-count differences as clean game-only performance measurements. Native
+drawable waits can appear long because Java resumes late after a profiler stop.
+
+The approximately2.1GiB of sampled BetterGrassify/adapter allocations in both on
+runs, absent in both off runs, remains direct evidence of removed allocation work.
+The visual-feature removal decision remains reasonable. A corrected-profile
+repeat is required for stronger FPS/stutter claims; configurations now disable
+class-loader/thread inventories and native-memory/library snapshots.
+
 Result
 ------
 Removing BetterGrassify eliminates roughly2.1GiB of sampled BetterGrassify-related
 temporary allocations per40s edit workload in mcopt's current compatibility path.
-Frame-time tails improve in both off runs, though one off run still has five gaps
+Raw frame-time tails improve in both off runs, though one off run still has five gaps
 above50ms. This supports disabling an unwanted visual feature; it does not prove
 that removing the mod solves every normal-game hitch or benchmark stock Sodium.
 

@@ -1,6 +1,12 @@
 Client-work hitch investigation, 2026-10-24
 =========================================
 
+Later instrumentation correction: the original JFR profile's periodic inventory
+could stop the JVM for80-280ms. Raw frame/wait timings in this report may include
+those diagnostics. Queue/yield/capture behavior is still directly observable;
+do not infer a clean game-only stutter reduction from these old recordings.
+See RESULTS-profiler-correction.txt and use the corrected capture settings.
+
 Evidence and experiment
 -----------------------
 The previous fork.13/N2048 396ms frame sampled client chunk/entity packet

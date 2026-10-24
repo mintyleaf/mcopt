@@ -24,7 +24,7 @@ class HitchScan {
   gaps.sort(Comparator.comparingDouble(Gap::ms).reversed());
   if(gaps.size()>15)gaps=new ArrayList<>(gaps.subList(0,15));
   List<Span> spans=new ArrayList<>();
-  Set<String> kinds=Set.of("jdk.ExecutionSample","jdk.NativeMethodSample","jdk.ThreadPark","jdk.JavaMonitorEnter","jdk.ZAllocationStall","jdk.GCPhasePause","mcopt.MetalOperation","mcopt.LodClientCapture","mcopt.OwnArenaGrowth","mcopt.LodArenaGrowth","mcopt.MetalPipelineCompile","mcopt.ReplayClientWork");
+  Set<String> kinds=Set.of("jdk.ExecutionSample","jdk.NativeMethodSample","jdk.ThreadPark","jdk.JavaMonitorEnter","jdk.ZAllocationStall","jdk.GCPhasePause","jdk.ExecuteVMOperation","jdk.SafepointBegin","mcopt.MetalOperation","mcopt.LodClientCapture","mcopt.OwnArenaGrowth","mcopt.LodArenaGrowth","mcopt.MetalPipelineCompile","mcopt.ReplayClientWork");
   try(var input=new RecordingFile(dir.resolve("recording.jfr"))){while(input.hasMoreEvents()){
    var e=input.readEvent();String kind=e.getEventType().getName();double at=epoch(e.getStartTime());
    if(!kinds.contains(kind))continue;
@@ -32,6 +32,7 @@ class HitchScan {
    if(kind.endsWith("Sample") && !thread.equals("Render thread"))continue;
    List<String> stack=new ArrayList<>();if(e.getStackTrace()!=null)for(var f:e.getStackTrace().getFrames()){var m=f.getMethod();stack.add(m.getType().getName()+"."+m.getName());}
    String detail=kind.equals("mcopt.ReplayClientWork")?e.getString("operation")+" packets="+e.getInt("packets")+" yielded="+e.getBoolean("yielded")+" cpuMs="+e.getDouble("cpuMs"):kind.equals("mcopt.MetalOperation")?e.getString("operation"):kind.equals("mcopt.LodClientCapture")?e.getString("reason")+" freeze="+e.getDouble("freezeMs"):"";
+   if(kind.equals("jdk.ExecuteVMOperation"))detail=e.getString("operation")+" caller="+(e.getThread("caller")==null?"unknown":e.getThread("caller").getJavaName());
    if(anchor!=0){double end=epoch(e.getEndTime());boolean near=false;for(var g:gaps)if(at<=anchor+g.elapsed+g.ms/1000 && end>=anchor+g.elapsed){near=true;break;}if(near)spans.add(new Span(at,end,kind,thread,stack,detail));}
   }}
   if(!Double.isFinite(anchor))throw new IllegalStateException("Missing anchor");
@@ -41,7 +42,7 @@ class HitchScan {
    Map<String,Integer> samples=new LinkedHashMap<>();
    for(var s:spans){if(s.at>end || s.end<start)continue;
     if(s.kind.endsWith("Sample"))samples.merge(String.join(" > ",s.stack.subList(0,Math.min(12,s.stack.size()))),1,Integer::sum);
-    else if((s.thread.equals("Render thread") || s.kind.equals("jdk.GCPhasePause")) && (s.end-s.at>=.001 || s.kind.equals("mcopt.ReplayClientWork") || s.kind.equals("jdk.GCPhasePause")))System.out.printf(Locale.ROOT,"  %.3fms..%.3fms %s %s %s\n",(s.at-start)*1000,(s.end-start)*1000,s.kind,s.detail,String.join(" > ",s.stack));
+    else if((s.thread.equals("Render thread") || s.kind.equals("jdk.GCPhasePause") || s.kind.equals("jdk.ExecuteVMOperation") || s.kind.equals("jdk.SafepointBegin")) && (s.end-s.at>=.001 || s.kind.equals("mcopt.ReplayClientWork") || s.kind.equals("jdk.GCPhasePause")))System.out.printf(Locale.ROOT,"  %.3fms..%.3fms %s %s %s\n",(s.at-start)*1000,(s.end-start)*1000,s.kind,s.detail,String.join(" > ",s.stack));
    }
    samples.entrySet().stream().sorted(Map.Entry.<String,Integer>comparingByValue().reversed()).limit(8).forEach(e->System.out.println("  SAMPLE x"+e.getValue()+" "+e.getKey()));
   }

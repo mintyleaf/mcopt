@@ -1,6 +1,17 @@
 Normal caving session, 2026-10-24
 ================================
 
+Later profiler correction
+-------------------------
+An audit of ExecuteVMOperation found profiler-triggered safepoint inventory work
+overlapping8 of117 raw gaps above50ms and7 of43 above100ms in this capture. The
+longest profiler stop is279ms. Treat those gaps as recording-contaminated; earlier
+SDL/drawable labels alone did not establish driver/OS responsibility. This does
+not remove all observed hitches or the separately identified Dynamic FPS GC call.
+Future capture profiles disable periodic class-loader/thread inventory and unused
+native-memory/library snapshots. Allocation-path findings remain useful; raw
+frame statistics below describe this instrumented recording, not an unprofiled run.
+
 Capture
 -------
 Normal Prism pack, fork.17, current user settings including384-chunk LOD radius.

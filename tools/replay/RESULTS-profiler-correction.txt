@@ -1,0 +1,122 @@
+Profiler inventory interference and corrected walk, 2026-10-24
+=============================================================
+
+Finding and correction
+----------------------
+The stock Java25 profile.jfc enables jdk.ClassLoaderStatistics everyChunk and
+jdk.ThreadDump every60s, as well as periodic native-memory/library inventories.
+In this modded JVM, JFR Periodic Tasks requested ClassLoaderStatsOperation at
+safepoints, sometimes stopping Java execution for80-280ms. GCPhasePause events
+alone do not reveal this: it is a different VM operation. A surrounding Java
+MetalOperation can include the stop even when the actual native wait is short.
+
+Example from the15-minute recording: a210.600ms Java nextDrawable span contains
+only10.210ms of native wait; a206.284ms class-loader VM operation overlaps it.
+Other class-loader stops reach258.619ms. This is recorder-induced interference,
+not evidence that Metal's drawable acquisition itself took210ms. Earlier
+SDL/driver-attribution statements and benchmark maxima need that qualification.
+
+Capture and replay profiles now explicitly disable ClassLoaderStatistics,
+ThreadDump, NativeMemoryUsage, NativeMemoryUsageTotal and NativeLibrary. Stack
+sampling, sampled allocation, CPU/RSS/GC data, VM-operation events and Metal
+telemetry remain. Thread/memory census walks are not needed for frame attribution.
+No Minecraft restart or production mod rebuild is needed for a live JFR setting
+change. The development replay harness is rebuilt with the same exclusions.
+
+Old-recording audit
+-------------------
+Counts below identify submit intervals overlapping known JFR-triggered safepoint
+operations. They do not reconstruct counterfactual unprofiled FPS or certify that
+all other intervals are unaffected by instrumentation.
+
+Capture                       raw gaps>50 / overlap   raw gaps>100 / overlap
+Earlier9-minute caving                 117 /8                  43 /7
+Later15-minute mixed walking            94 /16                 35 /12
+BetterGrassify onA edit phase            6 /1                   3 /1
+BetterGrassify offA edit phase           5 /1                   1 /1
+BetterGrassify offB edit phase           0 /0                   0 /0
+BetterGrassify onB edit phase            5 /1                   1 /1
+
+The BetterGrassify allocation result remains direct: both enabled runs show about
+2.1GiB of temporary allocation in mod/adapter paths, absent in both off cases.
+Its recorded worst-frame/hitch-count comparison is contaminated and needs a
+corrected-profile repeat before making stronger game-only performance claims.
+The optional visual mod was removed at the user's explicit request; no need to
+reinterpret the allocation saving as a guaranteed stutter cure.
+
+15-minute walk before the correction
+-----------------------------------
+Same running normal pack, fork.17, BetterGrassify removed, radius384. User described
+mixed indoor/outdoor gameplay with similar perceived hitching.188.8MiB recording,
+891.6s analyzed after attach margins. Main-submit p99=30.371ms,94 gaps>50ms and35
+above100ms. No heap-allocation stalls; max GC pause2.442ms. Sampled allocation
+estimate104.8GiB cumulatively, including24.2GiB saved import and26.7GiB render.
+One first-use Atmospherics triangle pipeline compile took25.649ms; it is not a
+repeating cause throughout the session.
+
+System-wide counters:56.76/57.15GiB page-equivalent swap-in/out over the capture,
+with substantial compression turnover. Those are global page counters, not exact
+disk bytes or proof of a particular process causing a particular hitch.
+
+Corrected-profile repeat
+------------------------
+User reported browser closed and much less hitching. Same running Minecraft JVM
+and384-chunk LOD setting; corrected configuration, no restart.8.3min/96.3MiB saved;
+473.1s analyzed excluding initial15s/final10s attach margins. User's free gameplay
+is not a controlled repeat of the earlier route.
+
+Metric                                  previous       corrected/browser closed
+Main submit p50 ms                       16.671                16.668
+Main submit p95 ms                       17.414                17.142
+Main submit p99 ms                       30.371                19.569
+Submit gaps>50ms /minute                    6.33                  1.27
+Submit gaps>100ms /minute                   2.36                  0.38
+Total gaps>50ms                              94                    10
+Total gaps>100ms                             35                     3
+Max gap ms                              537.704               247.587
+
+No ClassLoaderStatistics/ThreadDump/native-inventory events or class-loader VM
+operations remain. Seven intrinsic JFRSafepointWrite operations peak at1.014ms;
+none overlap a gap above50ms. No heap-allocation stalls, explicit System.gc calls
+or in-flight pipeline compilations. GCPhasePause peaks at1.586ms.
+
+Paging counters rose14.11/14.01GiB page-equivalent swap-in/out, about1.8GiB/min
+in each direction versus3.8GiB/min before. Swap space in use fell slightly,3683
+to3582MiB. Paging was reduced, not eliminated. Saved-import-thread allocation is
+much lower:1.55GiB over473s versus24.24GiB over892s. Async I/O and other work run
+on different threads, and total allocation rate stays similar (about117 versus
+120MiB/s). This is a changed background-work mix, not proof that all background
+work subsided. It is another confound alongside the browser and recorder changes.
+Do not apportion the overall improvement to a single cause or call this a direct
+browser-only/recorder-only A/B. The disappearance of inventory VM stops is proven
+independently by the events themselves.
+
+Remaining long-frame examples
+-----------------------------
+- +28.8s:132ms with sparse samples spread across HUD, FRAPI model work and world
+  rendering. A roughly1ms GC pause and5ms safepoint synchronization do not explain
+  the entire gap; no unique cause established from sampling alone.
+- +137.8s:167ms while opening a screen/inventory, including SDL relative-mouse
+  release, OptiGUI event setup and recipe-book initialization.
+- +299.7s:248ms while toggling F3/debug HUD, including first CPU hardware probing
+  through OSHI/JNA and font-glyph upload. This is directly in debug-overlay code.
+- Other gaps include a first-use texture load, input/event polling, section/LOD
+  mask work and inventory initialization. These are separate targets from a
+  sustained distant-terrain GPU bottleneck; this run does not show a universal
+  cause for every remaining small hitch.
+
+Validation and delivery
+-----------------------
+All14 Python runner/profile checks pass. Live tiny-JVM positive/control test:
+original profile emits6 class-loader inventory events; corrected profile emits0.
+Corrected full gameplay confirms0 inventory events and0 overlapping long gaps.
+Replay build passes. SessionScan/HitchScan now include VM and reaching-safepoint
+spans; VmOperationScan exports bounded TSV for auditing older captures. Prior
+reports carry an explicit correction rather than silently replacing raw results.
+No new core gameplay jar, heap-size change or pack setting change in this pass.
+
+Local ignored artifacts: out/gameplay-walk-20261024-050353 (old profile, audit,
+profile-clean.jfc, positive/control JVM probe) and
+out/gameplay-walk-clean-20261024-053239 (corrected capture, analysis and VM TSV).
+Recordings are stopped. Future captures must use the updated config builder or
+the corrected profile; copying an older saved JFC would reintroduce the problem.
