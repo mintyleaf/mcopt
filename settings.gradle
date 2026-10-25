@@ -11,3 +11,5 @@ include 'metal', 'fpshud'
 
 // Development harness is built separately; tools/release still packages only :metal.
 include 'replay'
+// Optional passive diagnostics for normal gameplay; never included in releases.
+include 'probe'

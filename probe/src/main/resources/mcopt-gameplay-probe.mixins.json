@@ -1,0 +1,16 @@
+{
+  "required": true,
+  "package": "mcopt.probe.mixin",
+  "compatibilityLevel": "JAVA_25",
+  "client": [
+    "TextureProbeMixin",
+    "PipelineProbeMixin",
+    "SoundProbeMixin",
+    "ParticleProbeMixin",
+    "EntityProbeMixin",
+    "BlockProbeMixin",
+    "LightProbeMixin",
+    "ActionProbeMixin"
+  ],
+  "injectors": {"defaultRequire": 1}
+}

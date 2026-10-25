@@ -1,0 +1,26 @@
+plugins { id 'net.fabricmc.fabric-loom' version "${loom_version}" }
+version = '0.1.0-dev'
+dependencies {
+    minecraft "com.mojang:minecraft:${minecraft_version}"
+    implementation "net.fabricmc:fabric-loader:${loader_version}"
+}
+tasks.withType(JavaCompile).configureEach { it.options.release = 25 }
+processResources {
+    inputs.property 'version', version
+    filesMatching('fabric.mod.json') { expand 'version': version }
+}
+jar { from(rootProject.file('LICENSE')); from(rootProject.file('NOTICE')) }
+
+sourceSets {
+    probeChecks {
+        compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
+        runtimeClasspath += sourceSets.main.output + sourceSets.main.runtimeClasspath
+    }
+}
+tasks.register('checkGameplayProbe', JavaExec) {
+    dependsOn 'probeChecksClasses'
+    classpath = sourceSets.probeChecks.runtimeClasspath
+    mainClass = 'mcopt.probe.GameplayProbeChecks'
+    jvmArgs '-Xmx128m'
+}
+check.dependsOn 'checkGameplayProbe'

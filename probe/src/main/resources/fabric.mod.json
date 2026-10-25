@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "mcopt-gameplay-probe",
+  "version": "${version}",
+  "name": "mcopt gameplay probe",
+  "description": "Optional passive JFR diagnostics for gameplay hitches. Not included in mcopt releases.",
+  "environment": "client",
+  "license": "Apache-2.0",
+  "entrypoints": {"client": ["mcopt.probe.GameplayProbe"]},
+  "mixins": ["mcopt-gameplay-probe.mixins.json"],
+  "depends": {"fabricloader": ">=0.19.5", "minecraft": "~26.3", "java": ">=25"}
+}
