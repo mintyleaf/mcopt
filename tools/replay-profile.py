@@ -310,7 +310,8 @@ def memory_state():
 
 
 def startup_properties(values):
-    allowed = {'mcopt.preload.fallingBlocks', 'atmosphericsfixes.starPreload'}
+    allowed = {'mcopt.preload.fallingBlocks', 'atmosphericsfixes.starPreload',
+               'mcopt.lod.captureHash', 'mcopt.preload.caves', 'mcopt.preload.caveTextures', 'mcopt.metal.recoverDrawables'}
     result = {}
     for value in values:
         key, sep, setting = value.partition('=')

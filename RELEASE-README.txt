@@ -235,4 +235,24 @@ publication snapshots while the GPU copy is in flight; those snapshots retire af
 skip tile refreshes, and color/light-only changes reuse unchanged mesh allocations. A render summary every 30 seconds in
 latest.log reports FPS, resident quads, mesh backlog, arena memory, skipped updates and pending GPU snapshots.
 
+Cave first-use work (fork.20)
+The LOD capture-token map now mixes its private coordinate keys to avoid the concentrated hashes of neighboring
+chunks. Coordinates, persistent caches, invalidation ordering and edit quiet periods retain their existing meaning.
+-Dmcopt.lod.captureHash=false restores the former token-map hashing for a restarted comparison.
+
+Nine measured chest, mob and optional selection helper classes join the existing background loading-only list.
+-Dmcopt.preload.caves=false disables this subgroup. Five measured resources (shadow, bat, spider, zombie and slime)
+are registered for TextureManager's normal resource-reload batch. The engine prepares, uploads, replaces and closes
+them; existing registrations are preserved. -Dmcopt.preload.caveTextures=false disables those registrations.
+Both additions respect the global, firstRender and gameplay preload switches. They add no new worker pool.
+All these switches require a restart; the fixed texture list bounds the count, while resource-pack image sizes
+determine its decoded/GPU footprint.
+
+Experimental: -Dmcopt.metal.recoverDrawables=true avoids extracting/drawing a world frame while an earlier bounded
+VSync drawable acquisition remains blocked. It waits at most the existing acquisition budget for readiness, without
+starting another worker or consuming the ready drawable. Updates, ticks, input, resource tasks and frame cleanup
+continue. A recovered frame is freshly rendered; stale camera images are not presented. Resize resets recovery,
+and menus/loading overlays and other presentation modes use their normal path. This flag is off by default: it
+reduces work that cannot be displayed, but does not eliminate the underlying driver/compositor acquisition stalls.
+
 Licence: Apache-2.0 (LICENSE, NOTICE).

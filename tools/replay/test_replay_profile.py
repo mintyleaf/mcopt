@@ -181,6 +181,8 @@ class ResetSafety(unittest.TestCase):
         with self.assertRaises(ValueError): MODULE.validate_plan(route)
 
     def test_startup_properties_are_explicit_bounded_boolean_controls(self):
+        cave = ['mcopt.lod.captureHash', 'mcopt.preload.caves', 'mcopt.preload.caveTextures', 'mcopt.metal.recoverDrawables']
+        self.assertEqual(MODULE.startup_properties([key+'=false' for key in cave]), dict.fromkeys(cave, 'false'))
         self.assertEqual(MODULE.startup_properties(['mcopt.preload.fallingBlocks=false', 'atmosphericsfixes.starPreload=true']),
                          {'mcopt.preload.fallingBlocks': 'false', 'atmosphericsfixes.starPreload': 'true'})
         for values in (['user.dir=/tmp/elsewhere'], ['atmosphericsfixes.starPreload=false -Xmx8G'],

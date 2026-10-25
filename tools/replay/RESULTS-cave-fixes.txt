@@ -1,0 +1,125 @@
+Cave hitch fixes and paired replay, 2026-10-25
+===========================================
+
+Changes
+-------
+1. LodCaptureFreshness privately avalanches its packed64-bit keys using two odd
+   multiplications and invertible xor shifts. Long.hashCode previously reduced
+   nearby coordinates to x^z; a25x25 neighborhood near the saved location produced
+   only60 distinct spread hashes for625 coordinates. Mixing retains coordinate
+   identity while dispersing bins. The concurrent map, token replacement/removal,
+   late-completion rules, edit coalescing/quiet period and persistent cache format
+   are unchanged. The edit queue itself retains canonical coordinates.
+   mcopt.lod.captureHash=false opts out at startup.
+
+2. Nine measured stable names join the existing two loading-only preload workers:
+   DoubleBlockCombiner and two nested types, zombie arm/animation helpers,
+   Fabric ArmorRenderer and the optional selection/collection helpers recorded
+   in the real cave flight. No generated lambda/anonymous names are guessed and
+   no static initialization is requested. mcopt.preload.caves=false opts out.
+
+   TextureManager's constructor registers exactly five otherwise-unregistered
+   SimpleTextures through registerForNextReload: shadow, bat, spider, zombie and
+   slime. The existing manager reload prepares their contents asynchronously and
+   applies them on its normal executor, owning all GPU objects and replacement/
+   close behavior. The helper owns only resource identifiers, preserves existing
+   registrations, adds no worker pool and performs no gameplay prefetch sweep.
+   mcopt.preload.caveTextures=false opts out. Both groups respect the existing
+   global/firstRender/gameplay parents. Image sizes still follow resource packs.
+
+3. Experimental mcopt.metal.recoverDrawables=true (default OFF): after an actual
+   failed bounded acquisition, wait for the existing worker before extracting
+   and drawing another world frame. If it remains blocked, omit that frame's
+   extraction, drawing and stale-color blit. Minecraft's updates, input, ticks,
+   resource task execution, submission and cleanup continue. The bounded wait
+   prevents an uncapped busy loop. Readiness checks neither launch workers nor
+   consume drawables. Resume normal fresh drawing as soon as the result is ready.
+   Surface reconfiguration clears state; menus, loading overlays, non-VSync and
+   alternate acquire modes bypass the recovery path. Normal frames retain late
+   drawable acquisition. Deferred frames are observable in the replay report.
+
+Offline checks
+--------------
+Core/replay builds and22 Python runner checks pass. Freshness checks pass both
+with mixing enabled and through the legacy opt-out, including pending/older
+captures, concurrent light invalidation, unload/world reset, raced edits, signed
+coordinate distribution and token retirement. Texture checks cover the fixed
+bound, existing-entry ownership, idempotence and all parent/feature opt-outs.
+
+An Objective-C check compiles the actual mcdrawable implementation against a
+semaphore-controlled fake layer. It verifies bounded waits, exactly one worker,
+ready-result ownership, stale resize rejection and close during blocked work.
+The final jar contains the linked recovery function and no diagnostic jars.
+Whitespace-only cleanup after the benchmark retained byte-identical compiled
+class/native payloads; Mixin JSON changed indentation only.
+
+Live paired comparison
+----------------------
+Both cases used fork.20, Atmospherics Fixes0.1.3 and identical support jars, the
+verified copy of the actual survival save, frozen source LOD cache, source pack
+settings and one180s route. The route follows the same cave passages as the prior
+flight, at approximately3.8 blocks/s overall.20s warmup, explicit full resource
+reload before warmup,28 phases, RD12, LOD256/Low/two workers, VSync60,4GB ZGC,
+2880x1620 world target. Full source config and starting cache were restored between
+cases. All compared input hashes/byte counts and save-directory identity match.
+Both runs pass workload/focus/camera/settings validation. The four new properties
+were false in the control and true in the candidate, with the same jar hashes.
+
+runTick start-to-start intervals (not scanout FPS):
+                                    control          candidate
+frames                              10712            10782
+p50                                 16.663ms         16.663ms
+p99                                 23.120ms         18.327ms
+maximum                             136.589ms        38.093ms
+intervals>33.4ms                    34               2
+intervals>50ms                      13               0
+largest reported presentation gap    399.999ms        266.666ms
+
+This is one pair with natural spawning and variable system/JVM/driver scheduling,
+not a statistically isolated effect size for each change. Source world/settings
+are controlled; mob visibility and every first-use path are not deterministic.
+
+Control priority preload51/51; candidate60/60, zero unavailable. In the measured
+control, chest combination helper loads were12.392,27.606 and5.848ms; armor helper
+14.879ms, collection helper13.901ms, arm/animation helpers6.979/3.677ms. None of
+the nine added names loaded on the render thread during candidate measurement.
+A further unlisted NeighborCombineResult$Single still loaded4.383ms; that is not
+covered by the nine-name subgroup. Durations may be nested and must not be added.
+
+Control lazily loaded the targeted bat/shadow/spider textures in4.483/5.212/6.650ms.
+Candidate recorded none of the five targeted textures loading during measurement.
+Other resource costs remain: skeleton texture8.206ms and enderman5.998ms in the
+candidate; control also encountered creeper texture9.060ms. These IDs are not
+silently added to the fixed warmup set. No targeted texture-load/Mixin failures
+appeared in either log. The final candidate screenshot shows the expected cave.
+
+Lighting-update scopes over the recording threshold: control46 samples, mean
+6.729ms/max33.872ms; candidate29, mean3.553/max9.144ms. Counts differ, classes also
+warm earlier, and the scope includes vanilla lighting, so do not assign the full
+change to hash mixing. GC maxima1.904/0.770ms; no allocation stalls. Resident
+samples averaged913/982MiB; these route observations do not isolate the memory
+cost of the small preloaded set from simulation/JIT/driver variance.
+
+Recovery was actually exercised:36 measured readiness checks,22 deferred frames.
+Joining their submit IDs with drawable/GPU telemetry confirms those22 had no
+drawable and main GPU spans below0.14ms, while fresh rendering/presentation resumed
+after readiness returned. One extra readiness check occurred in warmup; it did
+not defer a frame. The final view rendered correctly and cleanup completed.
+The control had10 reported presentation gaps>50ms; candidate5, including two
+266.7ms gaps. There is no cadence-ring overflow. These display stalls persist
+despite zero candidate game-loop intervals>50ms. Recovery avoids unpresentable
+scene work but is not a demonstrated fix for the underlying driver/compositor
+delay; it remains opt-in/off by default. Atmospherics particle behavior is unchanged.
+
+Delivery and retained evidence
+-----------------------------
+Build: dist/mcopt-0.3.0-alpha.2-fork.20.jar. Ignored artifacts under
+out/cave-fixes-20261025 include control/,candidate/,comparison.json,inputs.json,
+bench-core.jar and restoration.json. Exact artifact hashes are recorded there.
+Native presentation audits and streaming SessionScan/GameplayScan outputs retain
+the event evidence; heavy analysis ran after the game exited.
+
+The original test instance's jars, full config tree, settings, world and LOD cache
+were restored. Full-world hashes verify the actual survival save and immutable
+cave fixture are unchanged; all215 main-pack file hashes match the snapshot.
+The main pack was not updated by these tests and remains fork.18/companion0.1.2.

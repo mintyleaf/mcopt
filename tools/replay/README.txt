@@ -570,3 +570,23 @@ fixtures, and verify the world copy before launch. A camera flight exercises
 visibility, rendering and streaming; it does not reproduce mining/combat inputs.
 Use firstUseTracing with the separate probe and leave native sampling and GPU pass
 splitting off for the first recording. Analyze only after the owned game exits.
+
+Cave fix comparisons
+--------------------
+The runner also accepts Boolean startup overrides for mcopt.lod.captureHash,
+mcopt.preload.caves, mcopt.preload.caveTextures and mcopt.metal.recoverDrawables.
+Use the same new core jar in both cases and explicit false/true overrides; preserve
+the fixture, route, all support mods/config and starting LOD cache. Natural mob
+activity, JVM compilation, driver caches and system load are still variable.
+Require validForComparison=true and compare actual named first-use work separately
+from whole-route frame statistics. A completed resource reload before warmup
+exercises the pre-registered textures' ordinary reload lifetime.
+
+setup records the requested switches; presentationRecoverySkippedFrames records
+the core's lifetime counter. mcopt.MetalOperation drawableRecovery scopes mark
+bounded readiness checks. Correlate them with acquired/presented drawables and
+main GPU spans to verify which checks deferred rendering. Continue to report
+native presented timestamps: loop intervals can stay short during display stalls.
+The recovery flag remains experimental/off by default even when its candidate
+run avoids unpresentable GPU work. Never infer that the underlying acquisition
+delay disappeared from CPU FPS alone.

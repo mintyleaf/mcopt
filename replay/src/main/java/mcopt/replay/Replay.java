@@ -378,6 +378,10 @@ public final class Replay {
         o.addProperty("resourceReloadCompleted",reloadFuture!=null && reloadFuture.isDone() && !reloadFuture.isCompletedExceptionally());
         o.addProperty("fallingBlockPreload",Boolean.parseBoolean(System.getProperty("mcopt.preload.fallingBlocks","true")));
         o.addProperty("starPreload",Boolean.parseBoolean(System.getProperty("atmosphericsfixes.starPreload","true")));
+        o.addProperty("captureHash",Boolean.parseBoolean(System.getProperty("mcopt.lod.captureHash","true")));
+        o.addProperty("cavePreload",Boolean.parseBoolean(System.getProperty("mcopt.preload.caves","true")));
+        o.addProperty("caveTexturePreload",Boolean.parseBoolean(System.getProperty("mcopt.preload.caveTextures","true")));
+        o.addProperty("drawableRecovery",Boolean.getBoolean("mcopt.metal.recoverDrawables"));
         try {o.addProperty("gpu",RenderSystem.getDevice().getDeviceInfo().name());o.addProperty("backend",RenderSystem.getDevice().getDeviceInfo().backendName());}
         catch(Exception ignored) { }
         var mods=new TreeMap<String,String>();FabricLoader.getInstance().getAllMods().forEach(m->mods.put(m.getMetadata().getId(),m.getMetadata().getVersion().getFriendlyString()));
@@ -399,6 +403,8 @@ public final class Replay {
             try {report.add("firstRenderPreload",JSON.toJsonTree(Class.forName("mcopt.metal.Preload").getMethod("priorityReport").invoke(null)));}
             catch(ClassNotFoundException | NoSuchMethodException olderRenderer){}
             try {report.addProperty("clientPacketYieldedFrames",(long)Class.forName("mcopt.metal.cpu.PacketWorkBudget").getMethod("yieldedFrames").invoke(null));}
+            catch(ClassNotFoundException | NoSuchMethodException olderRenderer){}
+            try {report.addProperty("presentationRecoverySkippedFrames",(long)Class.forName("mcopt.metal.PresentationRecovery").getMethod("skippedFrames").invoke(null));}
             catch(ClassNotFoundException | NoSuchMethodException olderRenderer){}
             report.add("setup",setup);report.addProperty("frameDefinition","Minecraft.runTick start-to-start; intervals belong to the preceding phase; not scanout FPS");
             JsonArray summaries=new JsonArray();
