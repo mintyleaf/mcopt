@@ -1,0 +1,113 @@
+Actual survival-cave flight, 2026-10-25
+====================================
+
+Scope and validity
+------------------
+An exact APFS copy of the current survival save was verified against a full-world
+SHA-256 before launch. This was not terrain regenerated from its seed. The route
+starts at the saved underground player position and traverses five parts of its
+connected cavern, then returns. Offline saved-block analysis found56533 connected
+dry, two-block-high cells and verified body clearance along every interpolated
+segment. The camera covered approximately680 blocks in280 measured seconds after
+20s warmup.28 route segments,16773 frame intervals, zero unfocused frames, zero
+position error, stable settings; runner validForComparison=true.
+
+The isolated pack used core fork.19 and separate Atmospherics Fixes0.1.3, the
+current main pack's supporting mods/settings, render distance12, LOD256/Low/two
+workers, VSync60,4GB ZGC and2880x1620 world target. Its copied same-world LOD data
+was transplanted into the established owned save identity after verifying identical
+generation settings; startup confirmed that exact identity was used. Source save,
+cache and pack were read only. The main pack remains on fork.18/companion0.1.2.
+
+The development harness's naturalCaves mode uses creative camera movement and
+leaves the copied world's mob-spawning rule enabled; time/weather advancement is
+frozen. Original blocks, player inventory and entities come from the save. No
+synthetic room, scripted mining, forced particles or test-mob summons were used.
+Flight does not reproduce survival combat AI or player mining inputs. The final
+screenshot shows the actual torch-lit deepslate cave and original equipped items.
+
+Game-loop results
+-----------------
+runTick start-to-start intervals, not display scanout FPS:
+                        first circuit      return circuit       all
+p50                     16.663ms           16.659ms              16.660ms
+p95                     17.174ms           17.173ms              17.174ms
+p99                     18.573ms           17.676ms              18.122ms
+maximum                 55.156ms           48.017ms              55.156ms
+intervals>33.4ms        9                  2                     11
+intervals>50ms          1                  0                     1
+
+The55ms interval around measured98.30s overlaps9.593ms block-entity extraction,
+4.285ms first spider-texture loading and a native setPipeline sample. These do
+not account for the whole interval; do not add nested spans or assign a sole cause.
+
+Other first-use work includes bat texture14.821ms near1.36s, shadow texture21.954ms
+near93.93s, chest combination helper class loading, zombie arm/animation helpers
+5.770/4.702ms and zombie texture3.967ms near164.28s, and slime texture2.264ms near
+202.40s. The associated frame intervals were43.3,36.5,36.5 and48.0ms respectively.
+Optional Litematica/malilib selection/outline helpers also loaded without a colored
+schematic fixture; that does not establish that schematic overlay drawing was active.
+
+Atmospherics AmbientMistParticle biome/alpha blending appears in sampled particle
+ticks; recorded tick scopes reached7.808ms. A lighting-update scope reached11.743ms,
+with a sample inside LodCaptureFreshness.invalidate during the light callback.
+These are secondary targets; neither single sample proves the entire scope belongs
+to that component. No gameplay shader compilation was recorded. There were no
+allocation stalls; maximum GC pause0.585ms. Inventory JFR events remained disabled,
+and no JFR data-loss event was recorded.
+
+Important: presentation stalls survived the short game-loop intervals
+------------------------------------------------------------------
+Native presented timestamps show a583.332ms gap around measured42.25..42.83s,
+plus100ms and83.333ms gaps later. The largest gap has independent acquisition
+evidence, so it must not be dismissed as merely delayed JFR callback retirement:
+
+- main submits3819..3833 had drawableStatus=2 (bounded wait expired), about22..24ms
+  per attempt, and no drawable/presentation was scheduled for those15 frames;
+- submit3834 recovered the single pending worker result:471.384ms elapsed inside
+  acquisition, only0.091ms thread CPU; surface generation stayed1;
+- before/after acquired drawables were scheduled and Java ownership released;
+- the three preceding callbacks and the first recovered callback reported zero
+  presentedTime, while the next valid timestamp ended the583ms gap;
+- main GPU spans in that region were approximately8.7..36.8ms; Java continued
+  committing frames, with no matching half-second GC/VM stop.
+
+The native cadence probe uses fixed atomic slots, and its Java pending-observation
+ring did not overflow. This is presentation starvation corroborated by failed
+acquisition attempts, not evidence that the Java loop froze for583ms. It explains
+why a loop/FPS-only metric can look improved while visible continuity still fails.
+It does not identify whether the underlying cause is the driver, compositor,
+system scheduling/residency or renderer interaction. Native acquisition wall time
+is not CPU execution time, and GPU frame spans do not measure compositor work.
+
+JVM resident samples averaged954MiB and peaked1164MiB. Global paging counters
+advanced across launch-to-exit and machine CPU was higher than JVM CPU, especially
+early; those system-wide snapshots cannot establish per-hitch causality. Do not
+blame heap size, LOD generation, a browser or WindowServer from this capture alone.
+
+Follow-up priorities
+--------------------
+1. Investigate drawable/presentation starvation with skipped-present and native
+   worker timing alongside displayed cadence. Preserve the bounded wait's input
+   responsiveness; reducing its timeout alone cannot make an unavailable drawable
+   present. Rendering full frames during a long acquisition outage also deserves
+   scrutiny because those frames cannot be displayed.
+2. Address measured first-use texture/model helper costs through the normal
+   resource lifecycle, without unbounded texture preloading or new long startup
+   pauses. Existing falling-block/star fixes do not cover these paths.
+3. Profile the sampled particle-blend and lighting-invalidation scopes separately
+   before making a specific optimization claim. A later gameplay capture still
+   needs actual digging/combat to exercise those critical inputs.
+
+Artifacts and cleanup
+---------------------
+Ignored private data: out/real-caves-20261025/{flight/,summary.json,route-info.json,
+source-world-before.json,restoration.json}. The59.9MiB JFR has lightweight20ms
+CPU/native-method sampling and50/s allocation samples; no native process sampler
+or GPU pass splitting ran alongside play. Streaming analysis ran after game exit.
+Presentation/DrawableAudit outputs preserve the callback/acquisition evidence.
+
+The owned test instance's original jars, entire config tree, options, launch
+settings, world and LOD cache were restored. Full-world hashes verify the original
+survival save and immutable cave fixture are unchanged; all215 main-pack file
+hashes match. The replay harness build and22 Python safety/runner checks pass.
