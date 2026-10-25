@@ -551,3 +551,22 @@ Use true/true for the candidate. These compare two distinct first-use changes;
 attribute named events in each action window rather than claiming a pure overall
 FPS speedup. The generated Fabric anonymous helper is deliberately not added to
 the stable class preload list and can still incur first-use work.
+
+Natural-cave flight
+------------------
+
+An optional naturalCaves=true route traverses an immutable copy of an existing
+survival save, without building the synthetic caving room or spawning test effects.
+It uses creative camera movement instead of spectator mode so the copied world's
+normal mob-spawning rule remains meaningful; that rule is left unchanged. Time and
+weather advancement remain frozen for repeatability. Existing inventories, blocks
+and entities come from the saved world. It cannot be combined with terrainChanges,
+compatFixture or schematicFixture. The setup report confirms the mode; an older
+harness that lacks it cannot silently pass workload validation.
+
+Derive a route from saved player position and actual connected air passages, with
+clearance for the player body. Keep the original save and seed private in ignored
+fixtures, and verify the world copy before launch. A camera flight exercises
+visibility, rendering and streaming; it does not reproduce mining/combat inputs.
+Use firstUseTracing with the separate probe and leave native sampling and GPU pass
+splitting off for the first recording. Analyze only after the owned game exits.

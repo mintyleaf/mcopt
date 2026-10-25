@@ -166,6 +166,20 @@ class ResetSafety(unittest.TestCase):
         MODULE.write_json(route, plan)
         with self.assertRaises(ValueError): MODULE.validate_plan(route)
 
+    def test_natural_caves_preserves_the_real_scene(self):
+        route = self.root / 'natural.json'
+        plan = json.loads((Path(__file__).parent / 'smoke.json').read_text())
+        plan['naturalCaves'] = True
+        MODULE.write_json(route, plan)
+        self.assertTrue(MODULE.validate_plan(route)['naturalCaves'])
+        self.assertFalse(MODULE.workload_valid(plan, {}))
+        self.assertTrue(MODULE.workload_valid(plan, {'setup': {'naturalCaves': True}}))
+        for flag in ('terrainChanges', 'compatFixture', 'schematicFixture'):
+            MODULE.write_json(route, dict(plan, **{flag: True}))
+            with self.assertRaises(ValueError): MODULE.validate_plan(route)
+        MODULE.write_json(route, dict(plan, naturalCaves='true'))
+        with self.assertRaises(ValueError): MODULE.validate_plan(route)
+
     def test_startup_properties_are_explicit_bounded_boolean_controls(self):
         self.assertEqual(MODULE.startup_properties(['mcopt.preload.fallingBlocks=false', 'atmosphericsfixes.starPreload=true']),
                          {'mcopt.preload.fallingBlocks': 'false', 'atmosphericsfixes.starPreload': 'true'})

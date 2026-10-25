@@ -33,7 +33,7 @@ public final class Replay {
     private static final List<Segment> segments = new ArrayList<>();
     private static final JsonArray liveStates = new JsonArray();
     private static boolean liveControls,traceClassLoading,lightSampling,firstUseTracing,gameplayEffects;
-    private static boolean fallingBlocks,starTransition,reloadBeforeWarmup;
+    private static boolean fallingBlocks,starTransition,reloadBeforeWarmup,naturalCaves;
     private static java.util.concurrent.CompletableFuture<Void> reloadFuture;
     private static long starPipelineDraws,firstStarPipelineNanos;
     private static Object starSettings;
@@ -112,6 +112,9 @@ public final class Replay {
         fallingBlocks=plan.has("fallingBlocks") && plan.get("fallingBlocks").getAsBoolean();
         starTransition=plan.has("starTransition") && plan.get("starTransition").getAsBoolean();
         reloadBeforeWarmup=plan.has("reloadBeforeWarmup") && plan.get("reloadBeforeWarmup").getAsBoolean();
+        naturalCaves=plan.has("naturalCaves") && plan.get("naturalCaves").getAsBoolean();
+        if(naturalCaves)for(String flag:List.of("terrainChanges","compatFixture","schematicFixture"))
+            if(plan.has(flag) && plan.get(flag).getAsBoolean())throw new IllegalArgumentException("naturalCaves cannot use synthetic fixtures");
         if((fallingBlocks || starTransition) && !gameplayEffects)throw new IllegalArgumentException("fallingBlocks/starTransition require gameplayEffects");
         if(firstUseTracing && !FabricLoader.getInstance().isModLoaded("mcopt-gameplay-probe"))
             throw new IllegalStateException("firstUseTracing requires the separate gameplay probe");
@@ -306,14 +309,14 @@ public final class Replay {
                 if(compatFixture)TerrainCompatFixture.populate(level);
                 if(terrainChanges)TerrainChanges.populate(level);
                 if(gameplayEffects)GameplayEffects.populate(level,fallingBlocks,starTransition);
-                player.setGameMode(terrainChanges?GameType.CREATIVE:GameType.SPECTATOR);
+                player.setGameMode(terrainChanges||naturalCaves?GameType.CREATIVE:GameType.SPECTATOR);
                 if(terrainChanges){
                     player.setItemSlot(net.minecraft.world.entity.EquipmentSlot.MAINHAND,new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.DIAMOND_PICKAXE));
                     player.setItemSlot(net.minecraft.world.entity.EquipmentSlot.OFFHAND,new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.TORCH));
                 }
                 level.getServer().getGameRules().set(GameRules.ADVANCE_TIME,false,level.getServer());
                 level.getServer().getGameRules().set(GameRules.ADVANCE_WEATHER,false,level.getServer());
-                level.getServer().getGameRules().set(GameRules.SPAWN_MOBS,false,level.getServer());
+                if(!naturalCaves)level.getServer().getGameRules().set(GameRules.SPAWN_MOBS,false,level.getServer());
                 level.getServer().getGameRules().set(GameRules.PLAYER_MOVEMENT_CHECK,false,level.getServer());
                 level.getServer().getGameRules().set(GameRules.ELYTRA_MOVEMENT_CHECK,false,level.getServer());
             }
@@ -370,6 +373,7 @@ public final class Replay {
         o.addProperty("maxFps",mc.options.framerateLimit().get());o.addProperty("maxHeapBytes",Runtime.getRuntime().maxMemory());
         o.addProperty("java",System.getProperty("java.version"));o.addProperty("os",System.getProperty("os.name")+" "+System.getProperty("os.version"));
         o.addProperty("firstUseTracing",firstUseTracing);
+        o.addProperty("naturalCaves",naturalCaves);
         o.addProperty("reloadBeforeWarmup",reloadBeforeWarmup);
         o.addProperty("resourceReloadCompleted",reloadFuture!=null && reloadFuture.isDone() && !reloadFuture.isCompletedExceptionally());
         o.addProperty("fallingBlockPreload",Boolean.parseBoolean(System.getProperty("mcopt.preload.fallingBlocks","true")));

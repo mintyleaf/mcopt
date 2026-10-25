@@ -123,7 +123,7 @@ def validate_plan(path):
     if plan.get('schema') != 1 or not 3 <= plan.get('warmupSeconds', 0) <= 120:
         raise ValueError('Expected schema 1 and warmupSeconds 3..120')
     phases = plan.get('phases', [])
-    for flag in ('terrainChanges', 'lightSampling', 'firstUseTracing', 'gameplayEffects', 'fallingBlocks', 'starTransition', 'reloadBeforeWarmup'):
+    for flag in ('terrainChanges', 'lightSampling', 'firstUseTracing', 'gameplayEffects', 'fallingBlocks', 'starTransition', 'reloadBeforeWarmup', 'naturalCaves'):
         if flag in plan and not isinstance(plan[flag], bool):
             raise ValueError(flag + ' must be boolean')
     if plan.get('terrainChanges') and sum(p.get('seconds', 0) for p in phases) < 55:
@@ -132,6 +132,8 @@ def validate_plan(path):
         raise ValueError('Gameplay effects require the caving fixture and at least58 measured seconds')
     if (plan.get('fallingBlocks') or plan.get('starTransition')) and not plan.get('gameplayEffects'):
         raise ValueError('Falling-block/star exercises require gameplayEffects')
+    if plan.get('naturalCaves') and any(plan.get(flag) for flag in ('terrainChanges','compatFixture','schematicFixture')):
+        raise ValueError('naturalCaves cannot use synthetic fixtures')
     if not 1 <= len(phases) <= 32:
         raise ValueError('Expected 1..32 phases')
     names = set()
@@ -267,6 +269,8 @@ mcopt.own.arena.reserveMaxMiB=512
 def workload_valid(plan, report):
     """An older/mismatched harness must not silently pass a terrain-change comparison."""
     if plan.get('firstUseTracing') and not report.get('setup', {}).get('firstUseTracing'):
+        return False
+    if plan.get('naturalCaves') and report.get('setup', {}).get('naturalCaves') is not True:
         return False
     if plan.get('reloadBeforeWarmup') and not report.get('setup', {}).get('resourceReloadCompleted'):
         return False
