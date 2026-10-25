@@ -33,6 +33,9 @@ public final class Replay {
     private static final List<Segment> segments = new ArrayList<>();
     private static final JsonArray liveStates = new JsonArray();
     private static boolean liveControls,traceClassLoading,lightSampling,firstUseTracing,gameplayEffects;
+    private static boolean fallingBlocks,starTransition,reloadBeforeWarmup;
+    private static java.util.concurrent.CompletableFuture<Void> reloadFuture;
+    private static long starPipelineDraws,firstStarPipelineNanos;
     private static long packetBudgetNanos;
     public static long packetBudgetNanos(){return packetBudgetNanos;}
     public static boolean traceClientWork(){return ON && started && !finished;}
@@ -66,7 +69,17 @@ public final class Replay {
     static final class Marker extends Event { String phase,routeSha256; }
     @Name("mcopt.ReplayOverlay") @Label("Schematic overlay CPU scope") @Category("mcopt") @StackTrace(false)
     static final class OverlaySample extends Event { }
+    @Name("mcopt.ReplayFirstStarDraw") @Label("First actual colored-star pipeline request") @Category("mcopt") @StackTrace(false)
+    static final class FirstStarDraw extends Event { double measuredSeconds; }
     public static Event overlaySample() { return ON && !finished ? new OverlaySample() : null; }
+    public static void starPipelineDraw() {
+        if(!ON || !started || finished || !starTransition)return;
+        starPipelineDraws++;
+        if(firstStarPipelineNanos==0){
+            firstStarPipelineNanos=System.nanoTime();
+            var event=new FirstStarDraw();event.measuredSeconds=(firstStarPipelineNanos-measureAt)/1e9;event.commit();
+        }
+    }
 
     private Replay() { }
     /** Sample inside renderLevel, after render-scaling mods take over and before they restore the UI target. */
@@ -86,6 +99,10 @@ public final class Replay {
         lightSampling=plan.has("lightSampling") && plan.get("lightSampling").getAsBoolean();
         firstUseTracing=plan.has("firstUseTracing") && plan.get("firstUseTracing").getAsBoolean();
         gameplayEffects=plan.has("gameplayEffects") && plan.get("gameplayEffects").getAsBoolean();
+        fallingBlocks=plan.has("fallingBlocks") && plan.get("fallingBlocks").getAsBoolean();
+        starTransition=plan.has("starTransition") && plan.get("starTransition").getAsBoolean();
+        reloadBeforeWarmup=plan.has("reloadBeforeWarmup") && plan.get("reloadBeforeWarmup").getAsBoolean();
+        if((fallingBlocks || starTransition) && !gameplayEffects)throw new IllegalArgumentException("fallingBlocks/starTransition require gameplayEffects");
         if(firstUseTracing && !FabricLoader.getInstance().isModLoaded("mcopt-gameplay-probe"))
             throw new IllegalStateException("firstUseTracing requires the separate gameplay probe");
         double packetBudget=plan.has("packetBudgetMs")?plan.get("packetBudgetMs").getAsDouble():0;
@@ -153,6 +170,11 @@ public final class Replay {
                 return;
             }
             if(!started) {
+                if(reloadBeforeWarmup){
+                    if(reloadFuture==null){reloadFuture=mc.reloadResourcePacks();return;}
+                    if(!reloadFuture.isDone())return;
+                    reloadFuture.join();
+                }
                 if(schematicFixture)SchematicFixture.load(output);
                 if(moreCullingProbe)MoreCullingProbe.run(mc,output);
                 started=true;startedAt=now;measureAt=now+(long)(warmup*1e9);
@@ -258,7 +280,7 @@ public final class Replay {
                 if(schematicFixture)SchematicFixture.populate(level);
                 if(compatFixture)TerrainCompatFixture.populate(level);
                 if(terrainChanges)TerrainChanges.populate(level);
-                if(gameplayEffects)GameplayEffects.populate(level);
+                if(gameplayEffects)GameplayEffects.populate(level,fallingBlocks,starTransition);
                 player.setGameMode(terrainChanges?GameType.CREATIVE:GameType.SPECTATOR);
                 if(terrainChanges){
                     player.setItemSlot(net.minecraft.world.entity.EquipmentSlot.MAINHAND,new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.DIAMOND_PICKAXE));
@@ -284,6 +306,7 @@ public final class Replay {
         EventType.getEventType(Marker.class);
         EventType.getEventType(OverlaySample.class);
         EventType.getEventType(PacketTrace.Work.class);
+        EventType.getEventType(FirstStarDraw.class);
         recording=new Recording(Configuration.getConfiguration("profile"));
         // Class-loader inventory is a stop-the-world VM operation; it contaminated earlier hitch captures.
         for(String event:List.of("jdk.ClassLoaderStatistics","jdk.ThreadDump","jdk.NativeMemoryUsage",
@@ -296,6 +319,7 @@ public final class Replay {
         recording.enable("mcopt.ReplayAsset").withStackTrace();
         recording.enable("mcopt.ReplayTerrainChange").withoutStackTrace();
         recording.enable("mcopt.ReplayGameplayEffect").withoutStackTrace();
+        recording.enable("mcopt.ReplayFirstStarDraw").withoutStackTrace();
         recording.enable("mcopt.MetalOperation").withThreshold(java.time.Duration.ZERO).withoutStackTrace();
         if(traceClassLoading)recording.enable("jdk.ClassLoad").withThreshold(java.time.Duration.ZERO).withStackTrace();
         else if(firstUseTracing)recording.enable("jdk.ClassLoad").withThreshold(java.time.Duration.ofMillis(2)).withStackTrace();
@@ -321,6 +345,10 @@ public final class Replay {
         o.addProperty("maxFps",mc.options.framerateLimit().get());o.addProperty("maxHeapBytes",Runtime.getRuntime().maxMemory());
         o.addProperty("java",System.getProperty("java.version"));o.addProperty("os",System.getProperty("os.name")+" "+System.getProperty("os.version"));
         o.addProperty("firstUseTracing",firstUseTracing);
+        o.addProperty("reloadBeforeWarmup",reloadBeforeWarmup);
+        o.addProperty("resourceReloadCompleted",reloadFuture!=null && reloadFuture.isDone() && !reloadFuture.isCompletedExceptionally());
+        o.addProperty("fallingBlockPreload",Boolean.parseBoolean(System.getProperty("mcopt.preload.fallingBlocks","true")));
+        o.addProperty("starPreload",Boolean.parseBoolean(System.getProperty("atmosphericsfixes.starPreload","true")));
         try {o.addProperty("gpu",RenderSystem.getDevice().getDeviceInfo().name());o.addProperty("backend",RenderSystem.getDevice().getDeviceInfo().backendName());}
         catch(Exception ignored) { }
         var mods=new TreeMap<String,String>();FabricLoader.getInstance().getAllMods().forEach(m->mods.put(m.getMetadata().getId(),m.getMetadata().getVersion().getFriendlyString()));
@@ -359,6 +387,8 @@ public final class Replay {
             report.add("phases",summaries);
             if(terrainChanges)report.add("terrainChanges",JSON.toJsonTree(TerrainChanges.report()));
             if(gameplayEffects)report.add("gameplayEffects",JSON.toJsonTree(GameplayEffects.report()));
+            if(starTransition)report.add("starPipeline",JSON.toJsonTree(Map.of("draws",starPipelineDraws,
+                "firstMeasuredSeconds",firstStarPipelineNanos==0?-1:(firstStarPipelineNanos-measureAt)/1e9)));
             try(var w=Files.newBufferedWriter(output.resolve("frames.csv"))) {
                 w.write("phase,elapsedSeconds,frameMs,x,y,z,positionError,focused\n");
                 for(int i=0;i<frames;i++)w.write(String.format(Locale.ROOT,"%s,%.6f,%.6f,%.6f,%.6f,%.6f,%.9f,%s%n",

@@ -142,6 +142,36 @@ class ResetSafety(unittest.TestCase):
         self.assertTrue(MODULE.workload_valid({'gameplayEffects': True}, {'gameplayEffects': effects}))
         self.assertFalse(MODULE.workload_valid({'gameplayEffects': True}, {'gameplayEffects': dict(effects, failures=1)}))
 
+    def test_falling_star_reload_comparison_requires_the_actual_paths(self):
+        plan = dict(gameplayEffects=True, fallingBlocks=True, starTransition=True, reloadBeforeWarmup=True)
+        effects = dict(valid=True, applied=14, commands=28, failures=0, brokenBlocks=2, fallingBlocks=True, landedBlocks=2)
+        report = dict(gameplayEffects=effects, setup=dict(resourceReloadCompleted=True),
+                      starPipeline=dict(draws=120, firstMeasuredSeconds=22.1))
+        self.assertTrue(MODULE.workload_valid(plan, report))
+        self.assertFalse(MODULE.workload_valid(plan, dict(report, setup={})))
+        self.assertFalse(MODULE.workload_valid(plan, dict(report, gameplayEffects=dict(effects, landedBlocks=1))))
+        self.assertFalse(MODULE.workload_valid(plan, dict(report, gameplayEffects=dict(effects, commands=22))))
+        for star in (dict(draws=0, firstMeasuredSeconds=-1), dict(draws=10, firstMeasuredSeconds=-18),
+                     dict(draws=10, firstMeasuredSeconds=40)):
+            self.assertFalse(MODULE.workload_valid(plan, dict(report, starPipeline=star)))
+
+    def test_optional_effect_flags_rejected_before_reset(self):
+        route = self.root / 'effects.json'
+        plan = json.loads((Path(__file__).parent / 'smoke.json').read_text())
+        plan['fallingBlocks'] = True
+        MODULE.write_json(route, plan)
+        with self.assertRaises(ValueError): MODULE.validate_plan(route)
+        plan.pop('fallingBlocks'); plan['reloadBeforeWarmup'] = 'true'
+        MODULE.write_json(route, plan)
+        with self.assertRaises(ValueError): MODULE.validate_plan(route)
+
+    def test_startup_properties_are_explicit_bounded_boolean_controls(self):
+        self.assertEqual(MODULE.startup_properties(['mcopt.preload.fallingBlocks=false', 'atmosphericsfixes.starPreload=true']),
+                         {'mcopt.preload.fallingBlocks': 'false', 'atmosphericsfixes.starPreload': 'true'})
+        for values in (['user.dir=/tmp/elsewhere'], ['atmosphericsfixes.starPreload=false -Xmx8G'],
+                       ['mcopt.preload.fallingBlocks=1'], ['mcopt.preload.fallingBlocks=true', 'mcopt.preload.fallingBlocks=false']):
+            with self.assertRaises(ValueError): MODULE.startup_properties(values)
+
 
 if __name__ == '__main__':
     unittest.main()

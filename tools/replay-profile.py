@@ -123,13 +123,15 @@ def validate_plan(path):
     if plan.get('schema') != 1 or not 3 <= plan.get('warmupSeconds', 0) <= 120:
         raise ValueError('Expected schema 1 and warmupSeconds 3..120')
     phases = plan.get('phases', [])
-    for flag in ('terrainChanges', 'lightSampling', 'firstUseTracing', 'gameplayEffects'):
+    for flag in ('terrainChanges', 'lightSampling', 'firstUseTracing', 'gameplayEffects', 'fallingBlocks', 'starTransition', 'reloadBeforeWarmup'):
         if flag in plan and not isinstance(plan[flag], bool):
             raise ValueError(flag + ' must be boolean')
     if plan.get('terrainChanges') and sum(p.get('seconds', 0) for p in phases) < 55:
         raise ValueError('Terrain edit fixture requires at least55 measured seconds')
     if plan.get('gameplayEffects') and (not plan.get('terrainChanges') or sum(p.get('seconds', 0) for p in phases) < 58):
         raise ValueError('Gameplay effects require the caving fixture and at least58 measured seconds')
+    if (plan.get('fallingBlocks') or plan.get('starTransition')) and not plan.get('gameplayEffects'):
+        raise ValueError('Falling-block/star exercises require gameplayEffects')
     if not 1 <= len(phases) <= 32:
         raise ValueError('Expected 1..32 phases')
     names = set()
@@ -266,11 +268,21 @@ def workload_valid(plan, report):
     """An older/mismatched harness must not silently pass a terrain-change comparison."""
     if plan.get('firstUseTracing') and not report.get('setup', {}).get('firstUseTracing'):
         return False
+    if plan.get('reloadBeforeWarmup') and not report.get('setup', {}).get('resourceReloadCompleted'):
+        return False
+    if plan.get('starTransition'):
+        star=report.get('starPipeline', {})
+        if not (star.get('draws', 0)>0 and isinstance(star.get('firstMeasuredSeconds'), (int,float))
+                and 20<=star['firstMeasuredSeconds']<=30):
+            return False
     if plan.get('gameplayEffects'):
         effects = report.get('gameplayEffects', {})
+        expected=22+(2 if plan.get('fallingBlocks') else 0)+(4 if plan.get('starTransition') else 0)
         if not (effects.get('valid') is True and effects.get('applied') == 14
-                and effects.get('commands') == 22 and effects.get('failures') == 0
+                and effects.get('commands') == expected and effects.get('failures') == 0
                 and effects.get('brokenBlocks') == 2):
+            return False
+        if plan.get('fallingBlocks') and (effects.get('fallingBlocks') is not True or effects.get('landedBlocks')!=2):
             return False
     if not plan.get('terrainChanges'):
         return True
@@ -293,7 +305,19 @@ def memory_state():
     return result
 
 
+def startup_properties(values):
+    allowed = {'mcopt.preload.fallingBlocks', 'atmosphericsfixes.starPreload'}
+    result = {}
+    for value in values:
+        key, sep, setting = value.partition('=')
+        if not sep or key not in allowed or setting not in ('true', 'false') or key in result:
+            raise ValueError('Expected a unique supported startup property with true/false value')
+        result[key] = setting
+    return result
+
+
 def run(args):
+    startup = startup_properties(getattr(args, 'startup_property', []))
     game = INSTANCES / args.instance / '.minecraft'
     data = read_owner(game);inactive(game)
     plan = validate_plan(args.plan)
@@ -329,9 +353,11 @@ def run(args):
     lines = [l for l in cfg.read_text().splitlines() if not l.startswith('JvmArgs=')]
     flags = ['-XstartOnFirstThread','-Djava.awt.headless=true','-XX:+UseZGC','-XX:NativeMemoryTracking=summary',
              '-Dmcopt.replay.plan='+str(route),'-Dmcopt.replay.output='+str(output)]
+    flags += ['-D'+key+'='+value for key,value in sorted(startup.items())]
     if any(any(ch.isspace() for ch in f) for f in flags): raise ValueError('Use an output path without spaces')
     cfg.write_text('\n'.join(lines)+'\nJvmArgs="'+' '.join(flags)+'"\n')
     manifest = dict(schema=1,case=args.case,rendererJar=data["rendererJar"],planSha256=digest(route),fixtureSha256=data['fixtureSha256'],mods=data['mods'],
+        startupProperties=startup,
         optionsSha256=digest(game / 'options.txt'),configSha256=digest(game / 'config/mcopt.properties'),
         extraConfigSha256={relative:digest(game / relative) for relative in data.get('controlledExtraConfigs', {})},
         saveDirectoryBirthTime=birth,lodCacheFilesBefore=len(cache_files),lodCacheBytesBefore=sum(p.stat().st_size for p in cache_files),
@@ -497,6 +523,8 @@ def main():
     p.add_argument('--case',choices=['cold','warm-lod','warm-world'],default='cold')
     p.add_argument('--output',type=Path,required=True);p.add_argument('--timeout',type=float,default=360)
     p.add_argument('--analyze',action='store_true')
+    p.add_argument('--startup-property',action='append',default=[],metavar='KEY=true|false',
+                   help='Controlled falling-block/star preload toggle; recorded in the run manifest')
     p=sub.add_parser('analyze');p.add_argument('output',type=Path)
     p=sub.add_parser('compare');p.add_argument('outputs',type=Path,nargs='+');p.add_argument('--output',type=Path)
     args=parser.parse_args()

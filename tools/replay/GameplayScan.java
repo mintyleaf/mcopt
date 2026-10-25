@@ -18,6 +18,7 @@ class GameplayScan {
      case "mcopt.GameplayAction" -> operation=e.getString("operation");
      case "mcopt.ReplayGameplayEffect" -> {operation=e.getString("action");subject="cycle="+e.getInt("cycle")+" index="+e.getInt("index")+" measuredSeconds="+e.getDouble("actualSeconds");}
      case "mcopt.ReplayPhase" -> operation=e.getString("phase");
+     case "mcopt.ReplayFirstStarDraw" -> {operation="colored-star-pipeline";subject="measuredSeconds="+e.getDouble("measuredSeconds");}
      case "jdk.ClassLoad" -> subject=e.getClass("loadedClass").getName();
      case "jdk.ThreadPark","jdk.JavaMonitorEnter" -> {if(!thread.equals("Render thread")||ms<5)continue;}
      case "jdk.ExecuteVMOperation" -> {if(ms<1)continue;operation=e.getString("operation");subject="caller="+name(e.getThread("caller"))+" safepoint="+e.getBoolean("safepoint");}

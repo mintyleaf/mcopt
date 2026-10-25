@@ -93,6 +93,8 @@ Enough evidence exists to prepare the two targeted first-use fixes without anoth
 broad capture first. They are identified here, not yet implemented or benchmarked
 as part of this analysis pass. A fresh runtime check will still be needed for any
 new companion reload hook; the generated falling-block helper remains a limit.
+Subsequent implementation/check status is tracked separately in
+RESULTS-caving-target-fixes.txt. The timings above remain pre-change evidence.
 
 Private ignored artifacts: out/gameplay-caving-first-use-20261025-134452/
 recording.jfr, capture.json, analysis-windows.json, session-results.json,

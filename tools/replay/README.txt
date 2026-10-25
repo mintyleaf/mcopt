@@ -519,3 +519,30 @@ render-thread locks/parks to TSV. VM-operation and GC spans remain separate;
 nested durations are not additive. firstUseTracing uses2ms ClassLoad thresholds,
 20ms CPU/native samples and50/s allocation samples. traceClassLoading=true remains
 a separate full class-load diagnostic and overrides the threshold to zero.
+
+Falling blocks, stars and resource reload
+---------------------------------------
+
+falling-stars.json extends that room with two actual sand landings and controlled
+day/night transitions. reloadBeforeWarmup waits for a full resource reload before
+starting the20s warmup. It keeps reload/loading-screen work out of measured play
+and exercises rebuilding the shader cache as well as initial startup.
+
+Report validity additionally requires two landed sand blocks,28 successful effect
+commands and the first actual colored-star pipeline request at measured20..30s.
+The optional SkyRenderer hook counts the pipeline-request site, not just entering
+a sky method that could return without drawing. Missing/early star draws or failed
+landings invalidate the comparison. mcopt.ReplayFirstStarDraw records that first
+request; its event type is registered before warmup.
+
+Two explicit Boolean startup controls can be passed to the runner, keeping the
+route JSON/fixture hashes identical. They are whitelisted, validated before any
+world reset, passed as JVM properties and saved in run.json/setup. Both cases
+must use the same core/companion/harness/probe jars and starting cache.
+
+  python3 tools/replay-profile.py run --plan /path/falling-stars.json --case warm-lod --output /path/control --startup-property mcopt.preload.fallingBlocks=false --startup-property atmosphericsfixes.starPreload=false
+
+Use true/true for the candidate. These compare two distinct first-use changes;
+attribute named events in each action window rather than claiming a pure overall
+FPS speedup. The generated Fabric anonymous helper is deliberately not added to
+the stable class preload list and can still incur first-use work.

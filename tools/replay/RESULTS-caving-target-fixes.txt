@@ -1,0 +1,71 @@
+Caving first-use target fixes, 2026-10-25
+=======================================
+
+Implementation
+--------------
+Fork.19 adds the five stable falling-block names observed during the136.6ms normal
+caving interval to a separate priority resource. The original general list and
+46 priority names remain. The same two preload workers request loading only, with
+Class.forName(...,false,...); no new worker, initializer requests, texture preload,
+GPU operation, LOD setting or gameplay change. The Fabric-renamed Anonymous$hash
+helper is deliberately excluded and can still have first-use cost.
+
+mcopt.preload.fallingBlocks=false disables just these five names at startup.
+The existing gameplay, firstRender and global preload switches remain parent
+controls. The bundle has51 unique stable priority names; absent optional API/mod
+types continue through the existing skipped-class path.
+
+Separate Atmospherics Fixes0.1.3 obtains the original cached star pipeline through
+a lower-priority invoker of the merged getter, then appends that exact object to
+ShaderManager's normal resource-reload compilation batch. It never owns a separate
+compiled GPU object, changes rendering state or aliases objects by name. Identity
+deduplication makes completion idempotent and preserves other entries/order.
+Normal shader-cache close/reload behavior remains responsible for compiled state.
+
+The companion pre-launch entrypoint loads its scratch helper and pool class without
+initializing either, after Mixin setup and before gameplay. This avoids re-entrant
+class loading from a Mixin configuration plugin. It does not allocate the pools,
+vectors or matrices then. atmosphericsfixes.starPreload=false disables the new
+pipeline/prelink steps; the original scratch optimization remains separately
+controlled. No Atmospherics classes/bytes/assets are bundled in the companion.
+
+Validation completed
+--------------------
+Core and replay builds pass offline. All21 Python runner/profile checks pass.
+The packaged core contains the51 expected unique names and no generated anonymous
+names, companion classes or diagnostic harness/probe classes.
+
+Companion build and pipeline checks pass against installed Atmospherics2.6.8.
+The new test executes the installed mod's actual lazy getter in an isolated CPU
+fixture, preserving cached identity. It tests actual topology/culling, unchanged
+registry/order, idempotence, distinct objects sharing a name and the real game
+compile-batch injection site. Existing fluid isolation, fog ownership/reach and
+64-case byte-identical star-output checks also pass. Those CPU/contract checks do
+not substitute for a live static-invoker/Mixin/resource-reload validation.
+
+Controlled replay prepared
+--------------------------
+falling-stars.json uses the marker-owned cave fixture with two actual sand landings
+and two day/night transitions. A full resource reload completes before the20s
+warmup, so the test exercises shader-cache reconstruction without counting loading
+screen work as gameplay. Validity requires two landed sand blocks,28 successful
+effect commands, the existing wall/light edits and the first actual colored-star
+pipeline request at measured20..30s. A path that returns without requesting its
+pipeline does not count. Missing/early star draws invalidate the test.
+
+The runner's two whitelisted Boolean startup-property controls are passed as JVM
+arguments and recorded in run.json/setup, keeping route/fixture/config hashes
+identical between the off/off and on/on runs. This matters for the companion:
+mcopt.properties does not apply arbitrary non-mcopt property prefixes. Values
+are validated before any world/cache mutation; arbitrary JVM switches are rejected.
+
+The live test still requires the user's machine-free confirmation. No new game
+has been launched for these changes and the main pack remains on fork.18 with
+companion0.1.2. Do not claim the125/137ms source-session hitches are fixed or quote
+a post-change FPS result until the runtime test runs. The three unmatched long
+gaps from that recording remain separate unresolved targets.
+
+Artifacts: dist/mcopt-0.3.0-alpha.2-fork.19.jar and the separate companion project's
+build/libs/atmospherics-fixes-0.1.3.jar. Exact hashes and current delivery state are
+in ignored out/caving-targets-20261025/preparation.json. Original trace evidence is
+preserved in RESULTS-caving-first-use-session.txt; those are pre-change timings.
