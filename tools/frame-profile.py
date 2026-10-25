@@ -123,7 +123,9 @@ def omit_vm_inventory(configuration):
     return configuration
 
 
-def profile_configuration(java_home, gpu_only, gpu_passes):
+def profile_configuration(java_home, gpu_only, gpu_passes, first_use=False):
+    if first_use and gpu_only:
+        raise ValueError("First-use tracing requires CPU/JVM events; omit --gpu-only")
     if gpu_only:
         configuration = ET.ElementTree(ET.Element("configuration", {
             "version": "2.0", "label": "mcopt GPU timing", "description": "GPU and frame telemetry without CPU stack or allocation sampling", "provider": "mcopt"}))
@@ -149,6 +151,31 @@ def profile_configuration(java_home, gpu_only, gpu_passes):
     for name in ("mcopt.MetalCommandBuffer", "mcopt.MetalPresentation", "mcopt.MetalDrawable", "mcopt.MetalPipelineCompile", "mcopt.LodScheduling", "mcopt.LodCaptureQueue", "mcopt.LodClientCapture", "mcopt.OwnArenaAllocation"):
         event = ET.SubElement(configuration.getroot(), "event", {"name": name})
         ET.SubElement(event, "setting", {"name": "enabled"}).text = "true"
+    # Opt in to actual slow class-load names and passive gameplay scopes; do not
+    # infer a missing asset from a nearby renderer sample. Keep the long-session
+    # sampling rate modest and expensive VM inventories disabled in both modes.
+    targeted = {
+        "mcopt.GameplayWork": {"threshold": "2 ms", "stackTrace": "true"},
+        "mcopt.GameplayAction": {"stackTrace": "false"},
+        "jdk.ClassLoad": {"threshold": "2 ms", "stackTrace": "true"},
+    }
+    for name, overrides in targeted.items():
+        events = [e for e in configuration.getroot().findall('event') if e.get('name') == name]
+        event = events[0] if events else ET.SubElement(configuration.getroot(), 'event', {'name': name})
+        for key, value in {"enabled": "true" if first_use else "false", **overrides}.items():
+            setting = next((s for s in event.findall('setting') if s.get('name') == key), None)
+            if setting is None:
+                setting = ET.SubElement(event, 'setting', {'name': key})
+            setting.attrib.pop('control', None)
+            setting.text = value
+    if first_use:
+        for name, key, value in (("jdk.ExecutionSample", "period", "20 ms"),
+                                 ("jdk.NativeMethodSample", "period", "20 ms"),
+                                 ("jdk.ObjectAllocationSample", "throttle", "50/s")):
+            event = next(e for e in configuration.getroot().findall('event') if e.get('name') == name)
+            setting = next(s for s in event.findall('setting') if s.get('name') == key)
+            setting.attrib.pop('control', None)
+            setting.text = value
     return omit_vm_inventory(configuration)
 
 
@@ -161,7 +188,9 @@ def capture(args):
         output.mkdir(parents=True, exist_ok=False)
     recording = "mcopt_" + uuid.uuid4().hex[:12]
     jfr = output / "recording.jfr"
-    configuration = profile_configuration(props["java.home"], args.gpu_only, not args.no_gpu_passes)
+    if args.first_use and not args.no_gpu_passes:
+        raise RuntimeError("Use --no-gpu-passes with --first-use to keep GPU pass splitting off")
+    configuration = profile_configuration(props["java.home"], args.gpu_only, not args.no_gpu_passes, args.first_use)
     settings = output / "profile.jfc"
     configuration.write(settings, encoding="utf-8", xml_declaration=True)
     print(f"Minecraft PID {pid}; {args.label}: {args.seconds}s; output {output}", flush=True)
@@ -175,6 +204,7 @@ def capture(args):
         "start": datetime.now().astimezone().isoformat(), "startEpoch": time.time(),
         "javaHome": props.get("java.home"), "javaVersion": props.get("java.version"),
         "sampling": "gpu-only" if args.gpu_only else "profile",
+        "firstUseTracing": args.first_use,
         "mcoptProperties": {key: value for key, value in props.items() if key.startswith("mcopt.")},
         "macosMemoryBefore": macos_memory_snapshot(),
         "note": "Main/pre GPU spans can overlap; do not sum them. JFR stack samples are not GPU timings. Log excerpts include attach/drain margins.",
@@ -247,6 +277,7 @@ def parse_events(events):
     arena_growth = []
     lod_arena_growth = []
     command_buffers, presentations, pipeline_compiles, drawable_waits, lod_scheduling = [], [], [], [], []
+    gameplay_work, gameplay_actions, class_loads, vm_operations = [], [], [], []
     drawable_lifetimes = []
     capture_queues, client_captures, arena_allocations, client_work = [], [], [], []
     gpu_completed = []
@@ -316,6 +347,29 @@ def parse_events(events):
                    **{key: value.get(key) for key in ("operation", "packets", "yielded", "budgetMs", "cpuMs")}}
             client_work.append(row)
             spans.append((row["startTime"], row["durationMs"], "client." + row["operation"]))
+        elif kind == "mcopt.GameplayWork":
+            row = {"startTime": value["startTime"], "durationMs": duration_ms(value.get("duration")),
+                   **{key: value.get(key) for key in ("operation", "subject", "implementation", "stackTrace")},
+                   "thread": (value.get("eventThread") or {}).get("javaName", "unknown")}
+            gameplay_work.append(row)
+            if row["thread"] == "Render thread":
+                spans.append((row["startTime"], row["durationMs"], "gameplay." + row["operation"]))
+        elif kind == "mcopt.GameplayAction":
+            gameplay_actions.append({"startTime": value["startTime"], "operation": value.get("operation")})
+        elif kind == "jdk.ClassLoad":
+            row = {"startTime": value["startTime"], "durationMs": duration_ms(value.get("duration")),
+                   "class": (value.get("loadedClass") or {}).get("name"),
+                   "thread": (value.get("eventThread") or {}).get("javaName", "unknown"),
+                   "stackTrace": value.get("stackTrace")}
+            class_loads.append(row)
+            if row["thread"] == "Render thread":
+                spans.append((row["startTime"], row["durationMs"], "classLoad"))
+        elif kind in ("jdk.ExecuteVMOperation", "jdk.SafepointBegin"):
+            row = {"kind": kind, "startTime": value["startTime"], "durationMs": duration_ms(value.get("duration")),
+                   **{key: value.get(key) for key in ("operation", "safepoint", "caller")}}
+            vm_operations.append(row)
+            if kind == "jdk.SafepointBegin" or row["safepoint"]:
+                spans.append((row["startTime"], row["durationMs"], "vmStop." + str(row["operation"] or "reachSafepoint")))
         elif kind == "mcopt.OwnArenaAllocation":
             arena_allocations.append({key: value.get(key) for key in ("startTime", "reserveBytes", "reserveUsedBytes", "reserveHits", "sharedFallbacks", "filterDeferrals")})
         elif kind == "mcopt.MetalCommandBuffer":
@@ -424,6 +478,10 @@ def parse_events(events):
         "clientCaptures": client_captures,
         "arenaAllocations": arena_allocations,
         "clientWork": client_work,
+        "gameplayWork": gameplay_work,
+        "gameplayActions": gameplay_actions,
+        "slowClassLoads": class_loads,
+        "vmOperations": vm_operations,
         "drawableWaits": sorted(drawable_waits, key=lambda row: row["durationMs"], reverse=True),
         "metalCpuOperationMs": {op: stats(values) for op, values in operations.items()},
         "mainGpuMsFromRetiredSubmits": stats([v["gpuMs"] for v in gpu_completed]),
@@ -469,6 +527,7 @@ def summarize(output, jfr_tool):
               "gpuNote": "Command buffer GPU spans include dependencies and can overlap across frames and main/pre buffers. Do not add them or interpret them as per-frame GPU busy time. Submit cadence is not measured scanout FPS. Durations do not attribute individual draw calls.",
               "gpuDiagnostics": diagnostics}
     event_filter = "jdk.ExecutionSample,jdk.NativeMethodSample,jdk.CPULoad,jdk.ThreadCPULoad,jdk.GCPhasePause,jdk.ZAllocationStall,mcopt.MetalOperation,mcopt.MetalArenaTransfer,mcopt.MetalGpuPass,mcopt.OwnArenaGrowth,mcopt.LodArenaGrowth,mcopt.MetalCommandBuffer,mcopt.MetalPresentation,mcopt.MetalDrawable,mcopt.MetalPipelineCompile,mcopt.LodScheduling,mcopt.LodCaptureQueue,mcopt.LodClientCapture,mcopt.OwnArenaAllocation,mcopt.ReplayClientWork"
+    event_filter += ",mcopt.GameplayWork,mcopt.GameplayAction,jdk.ClassLoad,jdk.ExecuteVMOperation,jdk.SafepointBegin"
     try:
         dump = run([jfr_tool, "print", "--json", "--events", event_filter, output / "recording.jfr"], timeout=90)
         events = json.loads(dump)["recording"]["events"]
@@ -518,6 +577,7 @@ def main():
     cap.add_argument("--jfr", default=shutil.which("jfr") or "jfr")
     cap.add_argument("--no-gpu-passes", action="store_true", help="Keep diagnostic GPU pass splitting off; retain CPU and command-buffer timings")
     cap.add_argument("--gpu-only", action="store_true", help="Record GPU/frame telemetry, pauses and aggregate CPU load without CPU stack or allocation sampling")
+    cap.add_argument("--first-use", action="store_true", help="Trace slow class loads and optional gameplay-probe scopes; requires --no-gpu-passes")
     analysis = sub.add_parser("analyze")
     analysis.add_argument("output", type=Path)
     analysis.add_argument("--jfr", default=shutil.which("jfr") or "jfr")
@@ -531,7 +591,7 @@ def main():
             summarize(args.output, args.jfr)
         else:
             restore(args.backup)
-    except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+    except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
         parser.exit(1, str(error) + "\n")
 
 

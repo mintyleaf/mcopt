@@ -442,3 +442,52 @@ ReplayTerrainChange JFR events preserve each batch's actual timing.
 
 lightSampling=true uses20ms CPU/native-method periods and50 allocation samples/s
 instead of the profile defaults. Keep that flag identical across compared runs.
+
+Passive first-use diagnostics during normal play
+------------------------------------------------
+
+:probe:build produces a separate optional probe-0.1.0-dev.jar. This is not the
+replay harness and contains no route, world fixture, game input, settings edits
+or cache management. It is excluded from the release package. Its client entry
+point registers diagnostic event classes before entering a world. Events are
+disabled by default; when no recording enables them, scopes allocate no events.
+The added Mixin calls and enabled checks still have a small cost; validate in the
+isolated pack before installing it for a normal gameplay capture.
+
+With the probe installed, the following two-minute capture enables slow actual
+class-load events and passive resource/subsystem scopes, keeping GPU pass splitting
+and VM inventories off:
+
+  python3 tools/frame-profile.py capture --label caving_first_use --seconds 120 --delay 10 --no-gpu-passes --first-use
+
+GameplayWork spans above2ms identify synchronous texture registration/load/upload,
+pipeline cache misses, sound requests, audio-device checks, particle creation/ticks,
+whole entity/block-entity extraction groups, block-breaking overlays and light
+updates. Pipeline-cache waits
+can contain a compile on another thread; compare with MetalPipelineCompile rather
+than summing them. Audio sample decoding can run asynchronously: soundPlay measures
+the caller's request/channel wait, not all later decoding. Group-level entity
+scopes avoid a diagnostic object for every visible mob. Particle scopes measure
+actual creation, which can include lazy class loading even with an existing atlas.
+
+GameplayAction records attack/break, continued breaking and item-use timestamps.
+Hitch details include these input markers up to200ms before a gap as context;
+negative offsets denote a preceding input, not work inside the gap.
+These are input-context markers, not proof that a block was broken or a mob hit.
+No player/entity names, chat, inventory contents or coordinates are recorded by
+the probe. ClassLoad is thresholded at2ms, includes actual class names/callers and
+is opt-in; it adds diagnostic overhead and is distinct from the disabled periodic
+ClassLoaderStatistics inventory. First-use CPU/native sampling is20ms with50/s
+allocation samples. The probe does not preload assets, hide effects, skip work,
+change method results or move game calls to other threads.
+
+The short-capture JSON includes gameplayWork/gameplayActions/slowClassLoads. For a
+long rolling recording, use profile_configuration(...,first_use=True) with the
+existing disk/time/byte limits and the streaming SessionScan consumer. It includes
+the same named scopes and class loads alongside VM operations and GC spans in
+hitch windows. Do not expand a long JFR into full JSON on an8GiB machine.
+
+Validation: :probe:checkGameplayProbe checks14 exact target method contracts from
+the real game class files without initializing Minecraft, then tests disabled,
+enabled, named, stack-traced and stopped event behavior in a small standalone JVM.
+It does not replace live Mixin/visual validation in the isolated pack.

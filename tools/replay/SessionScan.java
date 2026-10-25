@@ -62,6 +62,7 @@ class SessionScan {
     case "mcopt.MetalCommandBuffer" -> {if(e.getString("kind").equals("main")){double gs=e.getDouble("gpuStart"),ge=e.getDouble("gpuEnd");if(gs>0&&ge>=gs){double g=(ge-gs)*1000;gpuBySubmit.put(e.getLong("submit"),new Gpu(at,g));gpuStats.add(g);bin.gpu.add(g);}}}
     case "mcopt.MetalPresentation" -> {double p=e.getDouble("presentedAt");if(p>0&&!e.getBoolean("missing"))presented.add(p);}
     case "mcopt.MetalPipelineCompile" -> {if(special.size()<500)special.add(String.format(Locale.ROOT,"+%.3fs pipeline %.3fms %s",at-start,ms,e.getString("pipeline")));}
+    case "mcopt.GameplayWork" -> {operations.computeIfAbsent("gameplay."+e.getString("operation"),k->new Values()).add(ms);}
     case "mcopt.OwnArenaGrowth","mcopt.LodArenaGrowth" -> {if(ms>10&&special.size()<500)special.add(String.format(Locale.ROOT,"+%.3fs %s %.3fms",at-start,kind,ms));}
    }
   }}
@@ -76,14 +77,20 @@ class SessionScan {
   }
   var selected=new ArrayList<Gap>();gaps.stream().filter(g->g.ms()>=100).sorted(Comparator.comparingDouble(Gap::ms).reversed()).limit(20).forEach(selected::add);
   gaps.stream().filter(g->g.ms()>25&&g.ms()<100).sorted(Comparator.comparingDouble(Gap::ms).reversed()).limit(20).forEach(selected::add);selected.sort(Comparator.comparingDouble(Gap::from));var details=selected.stream().map(Detail::new).toList();
-  Set<String> spanKinds=Set.of("mcopt.MetalOperation","mcopt.LodClientCapture","mcopt.MetalPipelineCompile","mcopt.OwnArenaGrowth","mcopt.LodArenaGrowth","jdk.ThreadPark","jdk.JavaMonitorEnter","jdk.ZAllocationStall","jdk.GCPhasePause","jdk.SystemGC","jdk.FileRead","jdk.ExecuteVMOperation","jdk.SafepointBegin");
+  Set<String> spanKinds=Set.of("mcopt.MetalOperation","mcopt.LodClientCapture","mcopt.MetalPipelineCompile","mcopt.OwnArenaGrowth","mcopt.LodArenaGrowth","mcopt.GameplayWork","mcopt.GameplayAction","jdk.ClassLoad","jdk.ThreadPark","jdk.JavaMonitorEnter","jdk.ZAllocationStall","jdk.GCPhasePause","jdk.SystemGC","jdk.FileRead","jdk.ExecuteVMOperation","jdk.SafepointBegin");
   try(var in=new RecordingFile(file)){while(in.hasMoreEvents()){
    var e=in.readEvent();String kind=e.getEventType().getName();boolean sample=kind.equals("jdk.ExecutionSample")||kind.equals("jdk.NativeMethodSample");if(!sample&&!spanKinds.contains(kind))continue;
    double at=epoch(e.getStartTime()),to=epoch(e.getEndTime());if(to<start||at>end)continue;String name=sample?name(e.getThread("sampledThread")):thread(e);double ms=e.getDuration().toNanos()/1e6;
-   if(sample&&!name.equals("Render thread"))continue;if(!sample&&!name.equals("Render thread")&&!kind.equals("jdk.GCPhasePause")&&!kind.equals("mcopt.MetalPipelineCompile")&&!kind.equals("jdk.ExecuteVMOperation")&&!kind.equals("jdk.SafepointBegin"))continue;if(!sample&&ms<.5)continue;
-   for(var d:details){if(d.gap.from>to)break;if(d.gap.to<at)continue;
+   if(sample&&!name.equals("Render thread"))continue;if(!sample&&!name.equals("Render thread")&&!kind.equals("jdk.GCPhasePause")&&!kind.equals("mcopt.MetalPipelineCompile")&&!kind.equals("jdk.ExecuteVMOperation")&&!kind.equals("jdk.SafepointBegin"))continue;if(!sample&&ms<.5&&!kind.equals("mcopt.GameplayAction"))continue;
+   for(var d:details){if(d.gap.from>to+(kind.equals("mcopt.GameplayAction")?.2:0))break;if(d.gap.to<at)continue;
     if(sample)d.samples.merge(stack(e,12),1,Integer::sum);
-    else if(d.spans.size()<35){String extra=kind.equals("mcopt.MetalOperation")?e.getString("operation"):kind.equals("mcopt.MetalPipelineCompile")?e.getString("pipeline"):kind.equals("jdk.ExecuteVMOperation")?e.getString("operation")+" caller="+name(e.getThread("caller")):"";d.spans.add(String.format(Locale.ROOT,"%.3f..%.3fms %s %s %s",(at-d.gap.from)*1000,(to-d.gap.from)*1000,kind,extra,stack(e,8)));}
+    else if(d.spans.size()<60){String extra=switch(kind){
+     case "mcopt.MetalOperation","mcopt.GameplayAction" -> e.getString("operation");
+     case "mcopt.GameplayWork" -> e.getString("operation")+" "+e.getString("subject")+" "+e.getString("implementation");
+     case "jdk.ClassLoad" -> e.getClass("loadedClass").getName();
+     case "mcopt.MetalPipelineCompile" -> e.getString("pipeline");
+     case "jdk.ExecuteVMOperation" -> e.getString("operation")+" caller="+name(e.getThread("caller"));
+     default -> "";};d.spans.add(String.format(Locale.ROOT,"%.3f..%.3fms %s %s %s",(at-d.gap.from)*1000,(to-d.gap.from)*1000,kind,extra,stack(e,8)));}
    }
   }}
   try(var out=new PrintWriter(Files.newBufferedWriter(output.resolve("summary.txt")))){

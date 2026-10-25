@@ -1,0 +1,64 @@
+Caving first-use investigation preparation, 2026-10-25
+======================================================
+
+New report
+----------
+User still observes gameplay-critical hitches while mining/fighting, sometimes
+near lava or items burning and possibly mobs, even with an almost free machine
+and reportedly little/no paging. This session was not recorded. The previous
+walk's lower hitch count does not establish that heavy caving is fixed. Do not
+extrapolate earlier system-wide paging to this new session.
+
+Code/trace findings
+------------------
+The current34-name priority preload list targets actual earlier chest/item-frame/
+painting/leash loads. It only requests Class.forName(...,false,...). That moves
+class loading/transformation, not static initialization, first texture decoding/
+upload, particle factory initialization, entity feature setup or arbitrary mod
+shader creation. The three previously missing vanilla item pipeline identities
+are compiled at reload; that is not a guarantee that every optional mod pipeline
+is already compiled.
+
+The local26.3 SoundEngine.play implementation waits on
+ChannelAccess.createHandle(...).join() before scheduling buffer use. Audio buffer
+decoding is separately asynchronous; a long play request would not establish
+that file decoding itself blocked the render thread. The earlier caving recording
+also contains samples in Library.isCurrentDeviceDisconnected via
+SoundEngine.shouldChangeDevice. Many shown samples are near the window/background
+interval late in that older, inventory-contaminated capture. They justify a
+measured audio-device scope, not attributing the new caving hitches to audio.
+
+Preparation
+-----------
+Separate optional :probe module adds disabled-by-default JFR scopes for named
+texture loads, actual pipeline cache misses, sound requests/device checks,
+particle creation/ticks, grouped entity/block-entity extraction, block-breaking
+overlays and lighting.
+Input-context markers show attack/break/use requests without altering them.
+No replay routing, fixture creation, settings edits, resource preloads or cache
+references are packaged. Metadata strings are generated only for retained slow
+events. Enabled diagnostics allocate per scoped call; the2ms event threshold
+limits retained events, not these temporary allocations. This overhead must be
+checked rather than called free.
+
+The frame profiler has an opt-in first-use configuration: actual ClassLoad events
+above2ms,20ms CPU/native sampling and50 allocation samples/s. Inventories remain
+disabled. First-use captures require GPU pass splitting off. The short analyzer
+exports named events and the long streaming analyzer includes them in hitch
+windows. Action markers identify input requests, not successful game outcomes.
+
+Validation and next step
+------------------------
+The probe builds offline. All14 target contracts are checked against actual26.3
+class-file descriptors without loading Minecraft. A standalone128MiB JVM test
+checks idle allocation bypass, event activation/naming/stack capture and return
+to disabled state. Python profile/runner checks pass. Live Mixin and gameplay
+validation remain outstanding: user requested preparation now and testing later.
+No game was launched and the normal pack has not been changed.
+
+When the machine is available: validate in the disposable pack, then record first
+and repeated mining/lava/burning-item/mob encounters with the corrected profile.
+Compare cold versus warm action windows and separate asset/class loads, audio
+waits, lighting/model work, VM stops and GPU waits. A targeted warmup or pipeline
+fix requires an identified repeatable path; do not preload all entity textures or
+run arbitrary game static initialization on background workers on an8GiB machine.
