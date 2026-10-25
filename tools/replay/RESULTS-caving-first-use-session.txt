@@ -1,0 +1,101 @@
+Normal caving first-use capture, 2026-10-25
+==========================================
+
+Capture and exclusions
+----------------------
+Normal main pack, fork.18 and separate gameplay probe0.1.0-dev. User caves normally,
+then reports done with a pause at the end. Recording stopped successfully;67.1MiB
+saved across368.3s wall time. No game, settings, mod, world or cache changes in this
+analysis pass. The Minecraft JVM remains open; recording is stopped.
+
+The log identifies pauses at13:48:09 and13:49:40. Analysis conservatively keeps
+13:45:03.636..13:48:08 and13:48:23.097..13:49:39: after the attach margin, stopping
+one second before pause markers and restarting at the first confirmed gameplay
+input after the earlier pause. This excludes the final roughly80s pause and the
+brief earlier pause without joining frame intervals across either gap.
+
+260.266s of selected active windows;15565 consecutive main-submit intervals:
+  p50=16.669ms, p95=17.040ms, p99=18.493ms, maximum136.638ms.
+  >20ms103, >25ms61, >33.4ms12, >50ms5, >100ms2.
+These are submit intervals, not scanout FPS or a controlled comparison with the
+earlier walking/caving sessions. The new12 preload names have no ClassLoad events
+in these active windows. This confirms that the measured remaining loads concern
+additional paths, rather than those same helpers loading late again.
+
+Two large gaps have direct first-use matches
+-------------------------------------------
+1. About80.8s after recorder start:125.371ms main-submit interval. The colored-star
+   render path loads AtmosphericsStarScratch from the companion in16.942ms, then
+   waits89.326ms in PipelineCache.get for minecraft:ambientfog/position_color_triangles.
+   The backend MetalPipelineCompile span is19.328ms near the end of that wait.
+   These are nested/overlapping measurements: do not add them, or call the whole
+   89ms pure Metal/GPU compilation time. Upstream preparation/queueing contributes
+   to the request's wait, but this capture does not isolate every component.
+
+   Installed2.6.8 bytecode confirms SkyRenderingMixin.ambientfog$getPipeline lazily
+   builds and caches ambientfog$pipeline on its first call. It does not register
+   the object in the required-pipeline list. Its first actual draw therefore
+   triggers compilation after resource loading, even while the player is caving.
+   The shader is used by colored stars; the ambientfog location alone should not
+   be interpreted as evidence that fog distance or haze blending caused the hitch.
+
+   Actionable companion change: obtain that exact cached pipeline and include it
+   in resource-reload compilation, preserving object identity, normal cache/reload
+   ownership and blend/topology state. Prelink the companion's own scratch helper
+   before gameplay as well. Do not alias it to a different pipeline by location
+   or turn off stars. Keep this fix in Atmospherics Fixes, outside core mcopt.
+
+2. About150.8s after start:136.638ms interval handling the first transient/moving
+   block effect. Actual stable loads on the render thread:
+     TransientBlock:12.293ms
+     TransientBlockRenderState:8.769ms
+     MovingBlockRenderState:57.835ms
+     MovingBlockFeatureRenderer$Submit:7.063ms
+     Fabric MovingBlockQuadConsumer:4.370ms
+   A Fabric-renamed anonymous MovingBlockFeatureRenderer helper takes27.916ms,
+   including the consumer load; these inclusive spans are not additive.
+
+   The installed game produces ClientboundAddTransientBlockPacket from
+   FallingBlockEntity when the falling block settles. This identifies the falling
+   block landing path (e.g. sand/gravel), not the exact material in this session.
+   Actionable core change: extend the bounded loading-only priority group with
+   the five observed stable names. Do not ship the generated Anonymous$hash name.
+   This may leave some first-use generated/helper initialization; remeasure before
+   claiming the entire falling-block interval disappears.
+
+Remaining gaps and smaller work
+-------------------------------
+Three other >50ms intervals are51.392,61.671 and63.502ms. The61.7ms gap is near
+attack/break input; the63.5ms gap has a neighboring47.6ms interval. Samples/spans
+do not identify a unique cause. The51.4ms interval samples GUI rendering, seam-mask
+height queries and dynamic-light/particle work, without exclusive timing sufficient
+to blame one of them. No broad scheduler or driver change is justified from these
+sparse windows alone.
+
+Smaller first-use resources include destroy_stage_1.png14.031ms,
+destroy_stage_3.png8.533ms, copper leggings12.865ms and witch texture9.057ms.
+The copper-texture event falls within a44.578ms frame interval. Light-update scopes
+reach14.964ms and audio requests peak7.015ms in the retained active windows.
+These are useful secondary targets, not explanations for every long gap and not
+grounds to preload all entity textures/sounds or disable gameplay visuals.
+
+No heap allocation stalls or explicit System.gc events in selected windows.
+GC pauses peak0.965ms. No long gaps overlap JFR-triggered VM stops; no periodic
+ClassLoaderStatistics inventory returned. The after-pause window includes a6.9ms
+non-JFR metadata-cleanup VM operation, which does not explain a63ms gap by itself.
+System-wide before/after paging counters do not localize an individual frame;
+the two directly matched stalls already expose synchronous first-use renderer
+work. Do not reinterpret the user's almost-free-machine report as proof of paging.
+
+Next work and provenance
+------------------------
+Enough evidence exists to prepare the two targeted first-use fixes without another
+broad capture first. They are identified here, not yet implemented or benchmarked
+as part of this analysis pass. A fresh runtime check will still be needed for any
+new companion reload hook; the generated falling-block helper remains a limit.
+
+Private ignored artifacts: out/gameplay-caving-first-use-20261025-134452/
+recording.jfr, capture.json, analysis-windows.json, session-results.json,
+gameplay-events.tsv, vm-operations.tsv, analysis-before_pause/ and analysis-after_pause/.
+The installed third-party bytecode inspection stays in ignored local output;
+no jar, decompiled class, raw trace, seed or world data is included in this report.
