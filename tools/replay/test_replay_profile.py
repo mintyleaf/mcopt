@@ -134,6 +134,14 @@ class ResetSafety(unittest.TestCase):
             with self.subTest(field=field):
                 self.assertFalse(MODULE.workload_valid(plan, {'terrainChanges': dict(work, **{field: value})}))
 
+    def test_first_use_and_effects_require_actual_work(self):
+        self.assertFalse(MODULE.workload_valid({'firstUseTracing': True}, {}))
+        self.assertTrue(MODULE.workload_valid({'firstUseTracing': True}, {'setup': {'firstUseTracing': True}}))
+        effects = dict(valid=True, applied=14, commands=22, failures=0, brokenBlocks=2)
+        self.assertFalse(MODULE.workload_valid({'gameplayEffects': True}, {}))
+        self.assertTrue(MODULE.workload_valid({'gameplayEffects': True}, {'gameplayEffects': effects}))
+        self.assertFalse(MODULE.workload_valid({'gameplayEffects': True}, {'gameplayEffects': dict(effects, failures=1)}))
+
 
 if __name__ == '__main__':
     unittest.main()

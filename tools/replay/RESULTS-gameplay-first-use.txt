@@ -1,64 +1,134 @@
-Caving first-use investigation preparation, 2026-10-25
-======================================================
+Caving first-use investigation and replay, 2026-10-25
+=====================================================
 
-New report
-----------
-User still observes gameplay-critical hitches while mining/fighting, sometimes
-near lava or items burning and possibly mobs, even with an almost free machine
-and reportedly little/no paging. This session was not recorded. The previous
-walk's lower hitch count does not establish that heavy caving is fixed. Do not
-extrapolate earlier system-wide paging to this new session.
+Finding
+-------
+A controlled cave resource exercise reproduced a168ms first breaking-overlay
+frame. Actual ClassLoad events identify BlockBreakingRenderState (83ms), the
+sheeted-decal helper (19ms), FRAPI item bounds (10ms) and block-destruction progress
+(7ms) in that frame. The following62ms frame loads entity-shadow helpers. A later
+burning-item frame loads FlameFeatureRenderer$Submit. These are named class-load
+spans, not an inference from an unrelated sampled renderer. Their durations can
+include loading locks/I/O and Mixin transformation; do not call them exclusive CPU
+cost or add nested class-load spans.
 
-Code/trace findings
-------------------
-The current34-name priority preload list targets actual earlier chest/item-frame/
-painting/leash loads. It only requests Class.forName(...,false,...). That moves
-class loading/transformation, not static initialization, first texture decoding/
-upload, particle factory initialization, entity feature setup or arbitrary mod
-shader creation. The three previously missing vanilla item pipeline identities
-are compiled at reload; that is not a guarantee that every optional mod pipeline
-is already compiled.
+The existing34 priority names did not contain those helpers. Fork.18 adds a separate
+12-name gameplay priority group: the seven mining/item/shadow/flame helpers, the
+LOD arena-growth helper and four optional Litematica/MaLiLib HUD helpers observed
+when first targeting a block. All12 are stable actual names from the recordings;
+no generated hidden/lambda names are shipped. The optional FRAPI/HUD types use the
+existing absent-class skip path. The existing two background preload workers call
+Class.forName(name,false,loader); no extra workers, static-initialization requests,
+texture/model prefetch or GPU work. No LOD distances, workers, lighting, graphics,
+heap, gameplay behavior or supporting mods are changed by the production fix.
 
-The local26.3 SoundEngine.play implementation waits on
-ChannelAccess.createHandle(...).join() before scheduling buffer use. Audio buffer
-decoding is separately asynchronous; a long play request would not establish
-that file decoding itself blocked the render thread. The earlier caving recording
-also contains samples in Library.isCurrentDeviceDisconnected via
-SoundEngine.shouldChangeDevice. Many shown samples are near the window/background
-interval late in that older, inventory-contaminated capture. They justify a
-measured audio-device scope, not attributing the new caving hitches to audio.
+mcopt.preload.gameplay=false disables only the new group at startup.
+mcopt.preload.firstRender=false disables both priority groups; mcopt.preload=false
+continues to disable all class preloading. The original general boot list remains.
+The counters include already-loaded classes; resolved is not a count of static
+initializers run or a guarantee of a particular FPS improvement.
 
-Preparation
------------
-Separate optional :probe module adds disabled-by-default JFR scopes for named
-texture loads, actual pipeline cache misses, sound requests/device checks,
-particle creation/ticks, grouped entity/block-entity extraction, block-breaking
-overlays and lighting.
-Input-context markers show attack/break/use requests without altering them.
-No replay routing, fixture creation, settings edits, resource preloads or cache
-references are packaged. Metadata strings are generated only for retained slow
-events. Enabled diagnostics allocate per scoped call; the2ms event threshold
-limits retained events, not these temporary allocations. This overhead must be
-checked rather than called free.
+Method and live validation
+--------------------------
+Same marker-owned isolated instance, original saved-world fixture and frozen LOD
+cache restored per run. Source world/builds are retained in the immutable fixture;
+only the disposable copy receives the cave room and effects. Supporting mod files
+match the normal pack. VSync60, RD12/simulation8, LOD192/Low,4GiB ZGC,2880x1620
+world target using the copied0.75 render scale. The normal pack's LOD radius is256;
+this is a targeted resource test, not a full reproduction of its background load.
 
-The frame profiler has an opt-in first-use configuration: actual ClassLoad events
-above2ms,20ms CPU/native sampling and50 allocation samples/s. Inventories remain
-disabled. First-use captures require GPU pass splitting off. The short analyzer
-exports named events and the long streaming analyzer includes them in hitch
-windows. Action markers identify input requests, not successful game outcomes.
+20s warmup, then two30s resource cycles. Each exercises flame/lava sound, stationary
+zombie and skeleton, an item in contained lava, breaking overlay/block destruction,
+hurt/crit, smoke/extinguish and cleanup. All four runs completed14 effect steps,
+22 successful commands, two destroyed blocks and the original320 wall/80 light
+edits, with no focus interruption or position error. They pass workload/setup
+validity checks. Particle motion, mob variants and burning-item timing are not
+bitwise deterministic; this does not replay actual player combat inputs. Ongoing
+wall/light work and retained drops also differ between cold/warm cycles.
 
-Validation and next step
-------------------------
-The probe builds offline. All14 target contracts are checked against actual26.3
-class-file descriptors without loading Minecraft. A standalone128MiB JVM test
-checks idle allocation bypass, event activation/naming/stack capture and return
-to disabled state. Python profile/runner checks pass. Live Mixin and gameplay
-validation remain outstanding: user requested preparation now and testing later.
-No game was launched and the normal pack has not been changed.
+The separate passive probe applies all14 target method contracts successfully in
+the real pack and records named resource/subsystem events.2ms ClassLoad events,
+20ms CPU/native samples and50 allocation samples/s; VM inventories, native sampler
+and GPU pass splitting off. GPU/submit telemetry retained. The probe/replay are
+excluded from the production release jar.
 
-When the machine is available: validate in the disposable pack, then record first
-and repeated mining/lava/burning-item/mob encounters with the corrected profile.
-Compare cold versus warm action windows and separate asset/class loads, audio
-waits, lighting/model work, VM stops and GPU waits. A targeted warmup or pipeline
-fix requires an identified repeatable path; do not preload all entity textures or
-run arbitrary game static initialization on background workers on an8GiB machine.
+Results (runTick frame intervals, not scanout FPS)
+-------------------------------------------------
+Capture             First breaking window max    Cold max / >50ms   Warm max / >50ms
+fork.17 initial             168.370ms              168.370 /3          30.437 /0
+fork.18 group off            52.783ms              110.381 /2          31.911 /0
+fork.18 seven helpers        27.194ms              151.576 /3          28.133 /0
+fork.18 final12 helpers      17.703ms               80.033 /1          28.700 /0
+
+The breaking ROI is measured9.75..10.75s, around the first stage5 destruction
+overlay. The seven-helper off/on pair uses identical renderer/harness/supporting
+jar hashes, route/fixture/options/graphics input hashes, save-directory identity
+and starting-cache file count/bytes. The only configuration difference is the
+new preload switch. Five of those seven named loads exceed the2ms threshold in
+the off capture; none appear in measured gameplay in the on capture. Priority
+counters move34/34 resolved to41/41, zero unavailable. The final12-name follow-up
+resolves46/46 with no targeted helper loads during measured gameplay.
+
+Do not claim168->18ms as a controlled percentage speedup. The first capture used
+the original core; OS/filesystem/driver caches, JIT, thermal state and scheduling
+vary. The same-binary pair supports the targeted53->27ms observation and direct
+movement of named loads. It did not improve whole-route worst frames or total
+hitch counts. Final12 is a separate follow-up with additional preloads and a
+harness marker-registration correction, not the identical seven-helper A/B.
+
+Remaining gaps and diagnostic correction
+----------------------------------------
+The seven-helper candidate's first phase-entry outlier includes54ms loading the
+replay's own Marker event class, plus optional Litematica HUD helpers. Marker
+registration now occurs before recording/warmup. This is a harness correction;
+its removal must not be credited to a production gameplay fix. The separate HUD
+helper preloads address the actual optional-mod class loads. The same capture
+also exposes a38ms render-thread load of LodArenaGrowth; the final list includes
+that actual arena-migration helper, without initializing or allocating an arena
+in advance.
+
+The final run's only >50ms game-frame interval is80ms near measured+1s. The matching
+main-submit interval is68ms and contains64ms in SDL event polling. These are two
+interval definitions around the same pause, not additive costs. No overlapping
+long VM stop establishes a profiler-inventory explanation here. Its native/OS
+cause remains unresolved; no SDL work is dropped or moved off the macOS thread.
+The final run has no in-flight pipeline compilation, allocation stall or System.gc
+in its analyzed window. GC pauses peak0.260ms; JFRSafepointWrite peaks0.318ms. No
+class-loader inventory events/operations remain. Final first-breaking max17.703ms
+is close to the16.667ms budget, not a promise that every action stays within it.
+
+Textures were much smaller in these runs: zombie/skeleton, destroy_stage_5 and
+shadow registrations took roughly2-6ms in the initial capture. The final retained
+sound-play span is2.934ms; earlier measured audio requests/device checks were also
+small. There is no evidence here for preloading all mob textures, sound buffers or
+particles. Other resource packs, entities and effects are not covered.
+
+Memory/interpretation limits
+----------------------------
+The user reports a newer heavy-caving session with an almost free machine and
+little/no paging. That particular session was not captured; do not label it a
+paging problem on the strength of earlier recordings.
+
+These replay manifests contain nonzero system-wide swap-counter deltas. They span
+launch/world load through exit, not just the measured60s, and are page-equivalent
+counters rather than exact disk traffic. OS cache/swap/JIT/thermal differences
+remain confounds. The tests do not establish a zero-paging counterfactual or
+identify what process caused a particular pause. Direct class-load names and
+scope movement remain stronger evidence than timing percentages.
+
+Delivery
+--------
+Core and harness builds pass;18 Python runner/profile checks pass. Probe standalone
+JFR lifecycle and14 real game method contracts passed before live testing. Final
+bundle contains12 unique stable gameplay names and excludes replay/probe code.
+Experiments used one existing owned instance; no duplicate Prism instances.
+Owned mods/settings/world/cache restored after testing; immutable fixture hash
+unchanged. All214 snapshotted normal-pack option/config/mod files hash unchanged
+at the end of replay testing. A separately requested main-pack installation, if
+performed afterward, is recorded in its own installation manifest.
+
+Local ignored artifacts: out/gameplay-first-use-20261025/live/{probe-on,control18,
+fixed18,final18}, comparison.json, cleanup.json and backups. GameplayScan streams
+named spans and phase/effect markers without expanding the whole JFR into JSON.
+A real heavy-caving capture is still needed to investigate remaining combat/mining
+hitches beyond these bounded first-use paths.

@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "seed": 12345,
+  "warmupSeconds": 20,
+  "terrainChanges": true,
+  "gameplayEffects": true,
+  "firstUseTracing": true,
+  "lightSampling": true,
+  "captureImage": true,
+  "phases": [
+    {
+      "name": "cold_effects",
+      "seconds": 30,
+      "from": [
+        80,
+        51,
+        535
+      ],
+      "to": [
+        80,
+        51,
+        535
+      ],
+      "yaw": 180,
+      "pitch": 18,
+      "fov": 70
+    },
+    {
+      "name": "warm_effects",
+      "seconds": 30,
+      "from": [
+        80,
+        51,
+        535
+      ],
+      "to": [
+        80,
+        51,
+        535
+      ],
+      "yaw": 180,
+      "pitch": 18,
+      "fov": 70
+    }
+  ]
+}

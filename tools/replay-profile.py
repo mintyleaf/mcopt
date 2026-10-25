@@ -123,11 +123,13 @@ def validate_plan(path):
     if plan.get('schema') != 1 or not 3 <= plan.get('warmupSeconds', 0) <= 120:
         raise ValueError('Expected schema 1 and warmupSeconds 3..120')
     phases = plan.get('phases', [])
-    for flag in ('terrainChanges', 'lightSampling'):
+    for flag in ('terrainChanges', 'lightSampling', 'firstUseTracing', 'gameplayEffects'):
         if flag in plan and not isinstance(plan[flag], bool):
             raise ValueError(flag + ' must be boolean')
     if plan.get('terrainChanges') and sum(p.get('seconds', 0) for p in phases) < 55:
         raise ValueError('Terrain edit fixture requires at least55 measured seconds')
+    if plan.get('gameplayEffects') and (not plan.get('terrainChanges') or sum(p.get('seconds', 0) for p in phases) < 58):
+        raise ValueError('Gameplay effects require the caving fixture and at least58 measured seconds')
     if not 1 <= len(phases) <= 32:
         raise ValueError('Expected 1..32 phases')
     names = set()
@@ -262,6 +264,14 @@ mcopt.own.arena.reserveMaxMiB=512
 
 def workload_valid(plan, report):
     """An older/mismatched harness must not silently pass a terrain-change comparison."""
+    if plan.get('firstUseTracing') and not report.get('setup', {}).get('firstUseTracing'):
+        return False
+    if plan.get('gameplayEffects'):
+        effects = report.get('gameplayEffects', {})
+        if not (effects.get('valid') is True and effects.get('applied') == 14
+                and effects.get('commands') == 22 and effects.get('failures') == 0
+                and effects.get('brokenBlocks') == 2):
+            return False
     if not plan.get('terrainChanges'):
         return True
     work = report.get('terrainChanges')

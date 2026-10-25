@@ -32,7 +32,7 @@ public final class Replay {
     }
     private static final List<Segment> segments = new ArrayList<>();
     private static final JsonArray liveStates = new JsonArray();
-    private static boolean liveControls,traceClassLoading,lightSampling;
+    private static boolean liveControls,traceClassLoading,lightSampling,firstUseTracing,gameplayEffects;
     private static long packetBudgetNanos;
     public static long packetBudgetNanos(){return packetBudgetNanos;}
     public static boolean traceClientWork(){return ON && started && !finished;}
@@ -84,6 +84,10 @@ public final class Replay {
         JsonObject plan=JsonParser.parseString(new String(bytes,StandardCharsets.UTF_8)).getAsJsonObject();
         traceClassLoading=plan.has("traceClassLoading") && plan.get("traceClassLoading").getAsBoolean();
         lightSampling=plan.has("lightSampling") && plan.get("lightSampling").getAsBoolean();
+        firstUseTracing=plan.has("firstUseTracing") && plan.get("firstUseTracing").getAsBoolean();
+        gameplayEffects=plan.has("gameplayEffects") && plan.get("gameplayEffects").getAsBoolean();
+        if(firstUseTracing && !FabricLoader.getInstance().isModLoaded("mcopt-gameplay-probe"))
+            throw new IllegalStateException("firstUseTracing requires the separate gameplay probe");
         double packetBudget=plan.has("packetBudgetMs")?plan.get("packetBudgetMs").getAsDouble():0;
         if(!Double.isFinite(packetBudget)||packetBudget<0||packetBudget>20)throw new IllegalArgumentException("packetBudgetMs must be0..20");
         packetBudgetNanos=(long)(packetBudget*1e6);
@@ -117,6 +121,7 @@ public final class Replay {
             segments.add(new Segment(p.get("name").getAsString(),seconds,a,b,yaw,yawTo,pitch,fov,Map.copyOf(edits)));total+=seconds;
         }
         if(segments.isEmpty()||segments.size()>32||total>300) throw new IllegalArgumentException("Route must have 1..32 phases, <=300 seconds");
+        if(gameplayEffects && (!terrainChanges || total<58))throw new IllegalArgumentException("gameplayEffects requires the caving fixture and >=58s");
         routeHash=HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
         output=Path.of(System.getProperty("mcopt.replay.output")).toAbsolutePath().normalize();
         Files.createDirectories(output);
@@ -253,6 +258,7 @@ public final class Replay {
                 if(schematicFixture)SchematicFixture.populate(level);
                 if(compatFixture)TerrainCompatFixture.populate(level);
                 if(terrainChanges)TerrainChanges.populate(level);
+                if(gameplayEffects)GameplayEffects.populate(level);
                 player.setGameMode(terrainChanges?GameType.CREATIVE:GameType.SPECTATOR);
                 if(terrainChanges){
                     player.setItemSlot(net.minecraft.world.entity.EquipmentSlot.MAINHAND,new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.DIAMOND_PICKAXE));
@@ -268,11 +274,16 @@ public final class Replay {
             player.connection.resetPosition();level.getChunkSource().move(player);serverReady=true;
         }
         if(terrainChanges&&mutationClock!=Long.MAX_VALUE)TerrainChanges.tick(level,(System.nanoTime()-mutationClock)/1e9);
+        if(gameplayEffects&&mutationClock!=Long.MAX_VALUE)GameplayEffects.tick(level,(System.nanoTime()-mutationClock)/1e9);
     }
 
     private static void startRecording() throws Exception {
         if(!Boolean.parseBoolean(System.getProperty("mcopt.replay.jfr","true")))return;
         AssetTrace.prepare();
+        // Phase markers must not load/transform their JFR class on the first measured frame.
+        EventType.getEventType(Marker.class);
+        EventType.getEventType(OverlaySample.class);
+        EventType.getEventType(PacketTrace.Work.class);
         recording=new Recording(Configuration.getConfiguration("profile"));
         // Class-loader inventory is a stop-the-world VM operation; it contaminated earlier hitch captures.
         for(String event:List.of("jdk.ClassLoaderStatistics","jdk.ThreadDump","jdk.NativeMemoryUsage",
@@ -284,9 +295,15 @@ public final class Replay {
         recording.enable("mcopt.ReplayClientWork").withoutStackTrace();
         recording.enable("mcopt.ReplayAsset").withStackTrace();
         recording.enable("mcopt.ReplayTerrainChange").withoutStackTrace();
+        recording.enable("mcopt.ReplayGameplayEffect").withoutStackTrace();
         recording.enable("mcopt.MetalOperation").withThreshold(java.time.Duration.ZERO).withoutStackTrace();
         if(traceClassLoading)recording.enable("jdk.ClassLoad").withThreshold(java.time.Duration.ZERO).withStackTrace();
-        if(lightSampling){
+        else if(firstUseTracing)recording.enable("jdk.ClassLoad").withThreshold(java.time.Duration.ofMillis(2)).withStackTrace();
+        if(firstUseTracing){
+            recording.enable("mcopt.GameplayWork").withThreshold(java.time.Duration.ofMillis(2)).withStackTrace();
+            recording.enable("mcopt.GameplayAction").withoutStackTrace();
+        }
+        if(lightSampling||firstUseTracing){
             recording.enable("jdk.ExecutionSample").withPeriod(java.time.Duration.ofMillis(20));
             recording.enable("jdk.NativeMethodSample").withPeriod(java.time.Duration.ofMillis(20));
             recording.enable("jdk.ObjectAllocationSample").with("throttle","50/s");
@@ -303,6 +320,7 @@ public final class Replay {
         o.addProperty("renderDistance",mc.options.getEffectiveRenderDistance());o.addProperty("vsync",mc.options.enableVsync().get());
         o.addProperty("maxFps",mc.options.framerateLimit().get());o.addProperty("maxHeapBytes",Runtime.getRuntime().maxMemory());
         o.addProperty("java",System.getProperty("java.version"));o.addProperty("os",System.getProperty("os.name")+" "+System.getProperty("os.version"));
+        o.addProperty("firstUseTracing",firstUseTracing);
         try {o.addProperty("gpu",RenderSystem.getDevice().getDeviceInfo().name());o.addProperty("backend",RenderSystem.getDevice().getDeviceInfo().backendName());}
         catch(Exception ignored) { }
         var mods=new TreeMap<String,String>();FabricLoader.getInstance().getAllMods().forEach(m->mods.put(m.getMetadata().getId(),m.getMetadata().getVersion().getFriendlyString()));
@@ -340,6 +358,7 @@ public final class Replay {
             }
             report.add("phases",summaries);
             if(terrainChanges)report.add("terrainChanges",JSON.toJsonTree(TerrainChanges.report()));
+            if(gameplayEffects)report.add("gameplayEffects",JSON.toJsonTree(GameplayEffects.report()));
             try(var w=Files.newBufferedWriter(output.resolve("frames.csv"))) {
                 w.write("phase,elapsedSeconds,frameMs,x,y,z,positionError,focused\n");
                 for(int i=0;i<frames;i++)w.write(String.format(Locale.ROOT,"%s,%.6f,%.6f,%.6f,%.6f,%.6f,%.9f,%s%n",

@@ -491,3 +491,31 @@ Validation: :probe:checkGameplayProbe checks14 exact target method contracts fro
 the real game class files without initializing Minecraft, then tests disabled,
 enabled, named, stack-traced and stopped event behavior in a small standalone JVM.
 It does not replace live Mixin/visual validation in the isolated pack.
+
+Controlled gameplay effects
+---------------------------
+
+gameplay-effects.json adds two30-second resource-exercise cycles to the existing
+owned caving room. It requires the separate probe jar and firstUseTracing=true.
+The runner never installs that jar in the source pack. Each cycle schedules flame
+particles/lava sound, stationary zombie/skeleton, a dropped item in contained lava,
+a stage5 breaking overlay followed by actual block destruction, hurt/crit effects,
+smoke/extinguish and mob cleanup. All coordinates are inside the disposable room.
+
+The server performs at most one scheduled effect per tick. Report validity requires
+14 completed steps,22 commands without failure and two successfully destroyed
+blocks, alongside the original320 wall and80 light edits. Command outcomes and
+timing are recorded; particle motion, mob variants and item burning/visibility
+still depend on game scheduling/randomness. This exercises first-use resource
+paths; it does not replay a player's combat inputs. Cold versus warm cycles also
+differ in the ongoing terrain-edit schedule and retained drops, so do not treat
+them as identical full-frame workloads. Use the same restored inputs for separate
+control/candidate runs and verify named work in the affected action windows.
+
+  java -Xmx128m tools/replay/GameplayScan.java /path/recording.jfr /path/gameplay-events.tsv
+
+GameplayScan streams named scopes, effect/phase markers, class loads and slow
+render-thread locks/parks to TSV. VM-operation and GC spans remain separate;
+nested durations are not additive. firstUseTracing uses2ms ClassLoad thresholds,
+20ms CPU/native samples and50/s allocation samples. traceClassLoading=true remains
+a separate full class-load diagnostic and overrides the threshold to zero.
