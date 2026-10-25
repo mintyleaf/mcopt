@@ -6,6 +6,7 @@
 		"FramerateLimiterMixin",
 		"WindowEventsTimingMixin",
 		"PipelinePrecompileMixin",
+		"CaveTexturePreloadMixin",
 		"PreferredGraphicsApiMixin",
 		"AnimFramesResidentMixin",
 		"LightmapDoubleMixin",

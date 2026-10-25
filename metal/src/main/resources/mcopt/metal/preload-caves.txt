@@ -1,0 +1,10 @@
+# Stable named loads observed during the actual survival-cave flight; loading only, no initialization.
+net.minecraft.world.level.block.DoubleBlockCombiner
+net.minecraft.world.level.block.DoubleBlockCombiner$BlockType
+net.minecraft.world.level.block.DoubleBlockCombiner$NeighborCombineResult
+net.minecraft.client.renderer.entity.state.ArmedEntityRenderState$1
+net.minecraft.client.model.AnimationUtils
+net.fabricmc.fabric.api.client.rendering.v1.ArmorRenderer
+fi.dy.masa.litematica.schematic.placement.SchematicPlacement
+fi.dy.masa.malilib.render.on_demand.state.AbstractSelectionBoxRenderState
+com.google.common.collect.Iterables$1
