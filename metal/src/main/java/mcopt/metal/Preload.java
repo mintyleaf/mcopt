@@ -20,6 +20,7 @@ import net.fabricmc.loader.api.entrypoint.PreLaunchEntrypoint;
  * other mod set are skipped. A small first-render list precedes the general boot list;
  * -Dmcopt.preload.firstRender=false disables the priority lists;
  * -Dmcopt.preload.gameplay=false disables only the measured gameplay/render helpers.
+ * -Dmcopt.preload.fallingBlocks=false disables only the falling-block subgroup.
  * -Dmcopt.preload=false turns all preloading off, -Dmcopt.preload.threads=N sets the thread count.
  */
 public final class Preload implements PreLaunchEntrypoint {
@@ -50,8 +51,11 @@ public final class Preload implements PreLaunchEntrypoint {
 		List<String> priority = new ArrayList<>();
 		if (Boolean.parseBoolean(System.getProperty("mcopt.preload.firstRender", "true"))) {
 			appendPriority("/mcopt/metal/preload-first-render.txt", priority);
-			if (Boolean.parseBoolean(System.getProperty("mcopt.preload.gameplay", "true")))
+			if (Boolean.parseBoolean(System.getProperty("mcopt.preload.gameplay", "true"))) {
 				appendPriority("/mcopt/metal/preload-gameplay.txt", priority);
+				if (Boolean.parseBoolean(System.getProperty("mcopt.preload.fallingBlocks", "true")))
+					appendPriority("/mcopt/metal/preload-falling-blocks.txt", priority);
+			}
 		}
 		priorityRequested = priority.size();
 		names.addAll(0, priority);

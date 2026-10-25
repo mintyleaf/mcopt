@@ -1,0 +1,7 @@
+# Actual slow stable loads when a falling block landed during the normal caving recording.
+# The Fabric-renamed Anonymous$hash helper is generated and deliberately excluded.
+net.minecraft.client.renderer.extract.TransientBlock
+net.minecraft.client.renderer.state.level.TransientBlockRenderState
+net.minecraft.client.renderer.block.MovingBlockRenderState
+net.minecraft.client.renderer.feature.MovingBlockFeatureRenderer$Submit
+net.fabricmc.fabric.impl.client.renderer.MovingBlockQuadConsumer
