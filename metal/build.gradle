@@ -96,6 +96,13 @@ tasks.register('checkPipelinePrecompile', JavaExec) {
 	mainClass = 'mcopt.metal.PipelinePrecompileChecks'
 }
 
+tasks.register('checkLodCaptureHashLegacy', JavaExec) {
+	dependsOn 'metalChecksClasses'
+	classpath = sourceSets.metalChecks.runtimeClasspath
+	mainClass = 'mcopt.metal.lod.LodCaptureFreshnessChecks'
+	jvmArgs '-Dmcopt.lod.captureHash=false'
+}
+
 tasks.register('checkMetalTimings', JavaExec) {
 	dependsOn 'metalChecksClasses'
 	classpath = sourceSets.metalChecks.runtimeClasspath

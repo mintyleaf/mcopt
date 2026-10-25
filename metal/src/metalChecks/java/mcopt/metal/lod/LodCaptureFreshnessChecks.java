@@ -7,6 +7,7 @@ public final class LodCaptureFreshnessChecks {
 	public static void main(String[] args) throws Exception {
 		System.setProperty("mcopt.metal.jfr","true");
 		var state=new LodCaptureFreshness(); long key=LodForest.chunkKey(-26,21);
+		checkPackedKeys();
 		if(state.takeReady(key)) throw new AssertionError("Uncaptured chunk reused");
 		var incomplete=state.begin(key);
 		if(state.takeReady(key)) throw new AssertionError("Pending capture reused");
@@ -36,11 +37,33 @@ public final class LodCaptureFreshnessChecks {
 			event.freezeMs=12.5;event.fallback=true;event.end();event.commit();
 			recording.stop();recording.dump(output);
 		}
+
 		var events=jdk.jfr.consumer.RecordingFile.readAllEvents(output).stream().filter(e->e.getEventType().getName().equals("mcopt.LodClientCapture")).toList();
 		if(events.size()!=1 || events.getFirst().getInt("chunkX")!=-26 || !events.getFirst().getString("reason").equals("unload")
 			|| events.getFirst().getDouble("freezeMs")!=12.5 || !events.getFirst().getBoolean("fallback")) throw new AssertionError("Capture JFR span changed");
 		System.out.println("PASS: real capture timing event preserves coordinates, reason, freeze duration and fallback: "+output);
 		System.out.println("PASS: pending/older captures, edits, off-thread light, unload/reload/world reset and late callbacks cannot authorize stale reuse; travel retains no unloaded tokens");
+	}
+	private static void checkPackedKeys() {
+		var state=new LodCaptureFreshness();
+		var keys=new java.util.HashSet<Long>();var hashes=new java.util.HashSet<Integer>();
+		int[] bins=new int[1024];
+		for(int x=-12;x<=12;x++)for(int z=-12;z<=12;z++) {
+			long key=LodForest.chunkKey(x,z),mixed=LodCaptureFreshness.mixedKey(key);
+			if(!keys.add(mixed))throw new AssertionError("Mixed coordinates aliased");
+			int h=Long.hashCode(mixed);h=(h^(h>>>16))&0x7fffffff;hashes.add(h);bins[h&1023]++;
+			state.begin(key).ready=true;
+		}
+		if(hashes.size()<600 || java.util.Arrays.stream(bins).max().orElse(0)>10)
+			throw new AssertionError("Nearby coordinates retained concentrated hash bins");
+		for(int x=-12;x<=12;x++)for(int z=-12;z<=12;z++)
+			if(!state.takeReady(LodForest.chunkKey(x,z)))throw new AssertionError("Packed coordinate changed after mixing");
+		if(state.size()!=0)throw new AssertionError("Mixed tokens leaked");
+		for(long key:new long[]{Long.MIN_VALUE,Long.MAX_VALUE,-1,0,1}) {
+			state.begin(key).ready=true;state.invalidate(key);
+			if(state.takeReady(key))throw new AssertionError("Extreme key invalidation failed");
+		}
+		System.out.println("PASS: packed signed coordinates keep identity while spreading private token-map hashes");
 	}
 	private static void checkEditedReuse() {
 		var state = new LodCaptureFreshness();
