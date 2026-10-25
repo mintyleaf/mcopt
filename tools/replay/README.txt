@@ -527,12 +527,17 @@ falling-stars.json extends that room with two actual sand landings and controlle
 day/night transitions. reloadBeforeWarmup waits for a full resource reload before
 starting the20s warmup. It keeps reload/loading-screen work out of measured play
 and exercises rebuilding the shader cache as well as initial startup.
+The disposable harness temporarily disables Atmospherics stars in memory before
+that reload, then enables them at measured23s after the22s night command. It
+restores the original flag on finish and never edits the user's preset. This
+prevents a saved nighttime sky from warming the control pipeline early.
 
-Report validity additionally requires two landed sand blocks,28 successful effect
-commands and the first actual colored-star pipeline request at measured20..30s.
-The optional SkyRenderer hook counts the pipeline-request site, not just entering
-a sky method that could return without drawing. Missing/early star draws or failed
-landings invalidate the comparison. mcopt.ReplayFirstStarDraw records that first
+Report validity additionally requires two landed sand blocks,27 successful effect
+commands and the first actual colored-star pipeline request at measured23..30s.
+The existing vanilla pipeline-cache hook checks the exact cached SkyRenderer
+pipeline object. WorldRenderer uses the same location for another object, so a
+location match alone is insufficient. The probe never calls the lazy getter to
+identify it. Missing/early star draws or failed landings invalidate the comparison. mcopt.ReplayFirstStarDraw records that first
 request; its event type is registered before warmup.
 
 Two explicit Boolean startup controls can be passed to the runner, keeping the

@@ -35,7 +35,8 @@ final class GameplayEffects {
         switch(index) {
             case 0 -> {
                 event.action="flame_and_lava_sound";
-                if(starTransition)command(level,"time set 6000");
+                // Populate already fixes noon; 26.3 rejects setting a clock to its current time.
+                if(starTransition && cycle>0)command(level,"time set 6000");
                 command(level,"particle minecraft:flame 80.5 50.2 525.5 0.4 0.2 0.4 0.01 24 force @a");
                 command(level,"playsound minecraft:block.lava.ambient master @a 80.5 50 525.5 1 1");
                 level.setBlock(new BlockPos(76,50,525),Blocks.COBBLESTONE.defaultBlockState(),3);
@@ -91,7 +92,7 @@ final class GameplayEffects {
     }
     static Map<String,Object> report() {
         var p=progress;
-        int expected=22+(fallingBlocks?2:0)+(starTransition?4:0);
+        int expected=22+(fallingBlocks?2:0)+(starTransition?3:0);
         return Map.of("applied",p.applied,"commands",p.commands,"failures",p.failures,
             "brokenBlocks",p.broken,"maxLagMs",p.maxLag,"fallingBlocks",fallingBlocks,"landedBlocks",p.landed,
             "starTransition",starTransition,"expectedCommands",expected,

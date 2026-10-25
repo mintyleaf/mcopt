@@ -144,11 +144,12 @@ class ResetSafety(unittest.TestCase):
 
     def test_falling_star_reload_comparison_requires_the_actual_paths(self):
         plan = dict(gameplayEffects=True, fallingBlocks=True, starTransition=True, reloadBeforeWarmup=True)
-        effects = dict(valid=True, applied=14, commands=28, failures=0, brokenBlocks=2, fallingBlocks=True, landedBlocks=2)
+        effects = dict(valid=True, applied=14, commands=27, failures=0, brokenBlocks=2, fallingBlocks=True, landedBlocks=2)
         report = dict(gameplayEffects=effects, setup=dict(resourceReloadCompleted=True),
-                      starPipeline=dict(draws=120, firstMeasuredSeconds=22.1))
+                      starPipeline=dict(draws=120, firstMeasuredSeconds=23.1, runtimeGateOpened=True))
         self.assertTrue(MODULE.workload_valid(plan, report))
         self.assertFalse(MODULE.workload_valid(plan, dict(report, setup={})))
+        self.assertFalse(MODULE.workload_valid(plan, dict(report, starPipeline=dict(draws=120, firstMeasuredSeconds=23.1))))
         self.assertFalse(MODULE.workload_valid(plan, dict(report, gameplayEffects=dict(effects, landedBlocks=1))))
         self.assertFalse(MODULE.workload_valid(plan, dict(report, gameplayEffects=dict(effects, commands=22))))
         for star in (dict(draws=0, firstMeasuredSeconds=-1), dict(draws=10, firstMeasuredSeconds=-18),

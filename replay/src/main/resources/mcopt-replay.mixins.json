@@ -13,8 +13,7 @@
     "AnimateReplayMixin",
     "PipelineReplayMixin",
     "TextureReplayMixin",
-    "WindowReplayMixin",
-    "StarReplayMixin"
+    "WindowReplayMixin"
   ],
   "injectors": {
     "defaultRequire": 1

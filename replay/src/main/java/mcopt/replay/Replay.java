@@ -36,6 +36,10 @@ public final class Replay {
     private static boolean fallingBlocks,starTransition,reloadBeforeWarmup;
     private static java.util.concurrent.CompletableFuture<Void> reloadFuture;
     private static long starPipelineDraws,firstStarPipelineNanos;
+    private static Object starSettings;
+    private static java.lang.reflect.Field starsEnabled;
+    private static java.lang.reflect.Field starPipelineField;
+    private static boolean originalStarsEnabled,starGateOpened;
     private static long packetBudgetNanos;
     public static long packetBudgetNanos(){return packetBudgetNanos;}
     public static boolean traceClientWork(){return ON && started && !finished;}
@@ -72,8 +76,14 @@ public final class Replay {
     @Name("mcopt.ReplayFirstStarDraw") @Label("First actual colored-star pipeline request") @Category("mcopt") @StackTrace(false)
     static final class FirstStarDraw extends Event { double measuredSeconds; }
     public static Event overlaySample() { return ON && !finished ? new OverlaySample() : null; }
+    public static boolean observesStarPipeline() { return ON && started && !finished && starTransition; }
+    public static boolean isStarPipeline(com.mojang.renderpearl.api.pipeline.RenderPipeline pipeline) {
+        if(!observesStarPipeline())return false;
+        try {return starPipelineField.get(null)==pipeline;}
+        catch(IllegalAccessException error){throw new IllegalStateException(error);}
+    }
     public static void starPipelineDraw() {
-        if(!ON || !started || finished || !starTransition)return;
+        if(!observesStarPipeline())return;
         starPipelineDraws++;
         if(firstStarPipelineNanos==0){
             firstStarPipelineNanos=System.nanoTime();
@@ -170,6 +180,18 @@ public final class Replay {
                 return;
             }
             if(!started) {
+                if(starTransition && starSettings==null) {
+                    Object config=Class.forName("com.beash.atmospherics.AtmosphericsClient").getMethod("getConfig").invoke(null);
+                    starSettings=config.getClass().getField("stars").get(config);
+                    starsEnabled=starSettings.getClass().getField("enabled");
+                    starPipelineField=net.minecraft.client.renderer.SkyRenderer.class.getDeclaredField("ambientfog$pipeline");
+                    starPipelineField.setAccessible(true);
+                    originalStarsEnabled=starsEnabled.getBoolean(starSettings);
+                    if(!originalStarsEnabled || !starSettings.getClass().getField("colored").getBoolean(starSettings))
+                        throw new IllegalStateException("Star transition requires enabled colored Atmospherics stars");
+                    // Keep the first request cold even if the saved world initially loads at night.
+                    starsEnabled.setBoolean(starSettings,false);
+                }
                 if(reloadBeforeWarmup){
                     if(reloadFuture==null){reloadFuture=mc.reloadResourcePacks();return;}
                     if(!reloadFuture.isDone())return;
@@ -209,6 +231,9 @@ public final class Replay {
                 focused[frames]=mc.isWindowActive();frames++;
             }
             double elapsed=(now-measureAt)/1e9,offset=0;
+            if(starTransition && !starGateOpened && elapsed>=23) {
+                starsEnabled.setBoolean(starSettings,true);starGateOpened=true;
+            }
             int selected=0;
             for(;selected<segments.size();selected++) {
                 Segment s=segments.get(selected);if(elapsed<offset+s.seconds)break;offset+=s.seconds;
@@ -361,6 +386,7 @@ public final class Replay {
     private static void finish(Minecraft mc,String error) {
         if(finished)return;finished=true;
         try {
+            if(starsEnabled!=null)starsEnabled.setBoolean(starSettings,originalStarsEnabled);
             if(marker!=null) {marker.end();marker.commit();}
             if(recording!=null) {recording.stop();recording.close();}
             JsonObject report=new JsonObject();report.addProperty("schema",1);report.addProperty("completed",error==null);
@@ -388,6 +414,7 @@ public final class Replay {
             if(terrainChanges)report.add("terrainChanges",JSON.toJsonTree(TerrainChanges.report()));
             if(gameplayEffects)report.add("gameplayEffects",JSON.toJsonTree(GameplayEffects.report()));
             if(starTransition)report.add("starPipeline",JSON.toJsonTree(Map.of("draws",starPipelineDraws,
+                "runtimeGateOpened",starGateOpened,
                 "firstMeasuredSeconds",firstStarPipelineNanos==0?-1:(firstStarPipelineNanos-measureAt)/1e9)));
             try(var w=Files.newBufferedWriter(output.resolve("frames.csv"))) {
                 w.write("phase,elapsedSeconds,frameMs,x,y,z,positionError,focused\n");

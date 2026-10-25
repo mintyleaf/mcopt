@@ -272,12 +272,12 @@ def workload_valid(plan, report):
         return False
     if plan.get('starTransition'):
         star=report.get('starPipeline', {})
-        if not (star.get('draws', 0)>0 and isinstance(star.get('firstMeasuredSeconds'), (int,float))
-                and 20<=star['firstMeasuredSeconds']<=30):
+        if not (star.get('runtimeGateOpened') is True and star.get('draws', 0)>0 and isinstance(star.get('firstMeasuredSeconds'), (int,float))
+                and 23<=star['firstMeasuredSeconds']<=30):
             return False
     if plan.get('gameplayEffects'):
         effects = report.get('gameplayEffects', {})
-        expected=22+(2 if plan.get('fallingBlocks') else 0)+(4 if plan.get('starTransition') else 0)
+        expected=22+(2 if plan.get('fallingBlocks') else 0)+(3 if plan.get('starTransition') else 0)
         if not (effects.get('valid') is True and effects.get('applied') == 14
                 and effects.get('commands') == expected and effects.get('failures') == 0
                 and effects.get('brokenBlocks') == 2):

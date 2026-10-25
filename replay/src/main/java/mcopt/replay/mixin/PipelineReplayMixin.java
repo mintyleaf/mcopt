@@ -15,6 +15,9 @@ abstract class PipelineReplayMixin {
     @Shadow @Final private Map<RenderPipeline,CompiledRenderPipeline> cache;
     @WrapMethod(method="get")
     private CompiledRenderPipeline mcoptReplay$miss(RenderPipeline pipeline,Operation<CompiledRenderPipeline> original) {
+        if(Replay.observesStarPipeline() && pipeline.getLocation().getNamespace().equals("minecraft")
+                && pipeline.getLocation().getPath().equals("ambientfog/position_color_triangles")
+                && Replay.isStarPipeline(pipeline))Replay.starPipelineDraw();
         if(!Replay.traceClientWork() || cache.containsKey(pipeline))return original.call(pipeline);
         var event=AssetTrace.begin("pipeline",pipeline.getLocation().toString());
         if(event!=null){
