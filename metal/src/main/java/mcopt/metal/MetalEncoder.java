@@ -133,6 +133,7 @@ final class MetalEncoder implements CommandEncoderBackend {
 	MetalEvents.Drawable drawableLifetime(long drawable, long layer, long generation, int width, int height, boolean vsync) {
 		return MetalEvents.drawableBegin(this.submitIndex, drawable, layer, generation, width, height, vsync);
 	}
+	MetalEvents.Operation recoveryEvent() { return MetalEvents.begin("drawableRecovery", this.submitIndex, 0); }
 
 	MetalEncoder(long ctx) {
 		this.ctx = ctx;

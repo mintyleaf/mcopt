@@ -114,6 +114,7 @@ final class Native {
 	private static final MethodHandle DRAWABLE_ACQUIRE_INVALIDATE = fn("mc_drawable_acquire_invalidate", false, null, JAVA_LONG, JAVA_INT, JAVA_INT);
 	private static final MethodHandle DRAWABLE_ACQUIRE_CLOSE = fn("mc_drawable_acquire_close", false, null, JAVA_LONG);
 	private static final MethodHandle DRAWABLE_ACQUIRE_NEXT = fn("mc_drawable_acquire_next", false, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG);
+	private static final MethodHandle DRAWABLE_ACQUIRE_AWAIT = fn("mc_drawable_acquire_await", false, JAVA_INT, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle PRESENT = fn("mc_present", false, null, JAVA_LONG, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle PRESENT_QUEUED = fn("mc_present_queued", false, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle PRESENT_SKIPPED = fn("mc_present_skipped", false, JAVA_LONG);
@@ -243,6 +244,7 @@ final class Native {
 	static void drawableAcquireInvalidate(long state, int width, int height) { try { DRAWABLE_ACQUIRE_INVALIDATE.invokeExact(state, width, height); } catch (Throwable t) { throw rethrow(t); } }
 	static void drawableAcquireClose(long state) { try { DRAWABLE_ACQUIRE_CLOSE.invokeExact(state); } catch (Throwable t) { throw rethrow(t); } }
 	static long drawableAcquireNext(long state, long waitNs, long out) { try { return (long) DRAWABLE_ACQUIRE_NEXT.invokeExact(state, waitNs, out); } catch (Throwable t) { throw rethrow(t); } }
+	static int drawableAcquireAwait(long state, long waitNs) { try { return (int) DRAWABLE_ACQUIRE_AWAIT.invokeExact(state, waitNs); } catch (Throwable t) { throw rethrow(t); } }
 	static void present(long enc, long drawable, long texture) { if (FrameCapture.FULL && FrameCapture.active()) FrameCapture.present(texture); try { PRESENT.invokeExact(enc, drawable, texture); } catch (Throwable t) { throw rethrow(t); } }
 	static int presentQueued(long enc, long drawable, long texture) { if (FrameCapture.FULL && FrameCapture.active()) FrameCapture.present(texture); try { return (int) PRESENT_QUEUED.invokeExact(enc, drawable, texture); } catch (Throwable t) { throw rethrow(t); } }
 	static long presentSkipped() { try { return (long) PRESENT_SKIPPED.invokeExact(); } catch (Throwable t) { throw rethrow(t); } }

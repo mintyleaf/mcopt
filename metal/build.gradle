@@ -2,7 +2,7 @@ plugins {
 	id 'net.fabricmc.fabric-loom' version "${loom_version}"
 }
 
-version = '0.3.0-alpha.2-fork.19'
+version = '0.3.0-alpha.2-fork.20'
 
 repositories { maven { url = 'https://maven.terraformersmc.com/releases/' } }
 
@@ -101,12 +101,24 @@ tasks.register('checkCaveTexturePreload', JavaExec) {
 	classpath = sourceSets.metalChecks.runtimeClasspath
 	mainClass = 'mcopt.metal.CaveTexturePreloadChecks'
 }
-
 tasks.register('checkLodCaptureHashLegacy', JavaExec) {
 	dependsOn 'metalChecksClasses'
 	classpath = sourceSets.metalChecks.runtimeClasspath
 	mainClass = 'mcopt.metal.lod.LodCaptureFreshnessChecks'
 	jvmArgs '-Dmcopt.lod.captureHash=false'
+}
+
+def drawableRecoveryCheck = layout.buildDirectory.file('checks/drawable-recovery')
+tasks.register('compileDrawableRecoveryChecks', Exec) {
+	inputs.files file('src/metalChecks/native/drawable-recovery.m'), file('src/main/native/mcdrawable.m')
+	outputs.file drawableRecoveryCheck
+	doFirst { drawableRecoveryCheck.get().asFile.parentFile.mkdirs() }
+	commandLine 'clang', '-fno-objc-arc', '-O2', '-Wall', '-framework', 'Foundation', '-framework', 'QuartzCore', '-framework', 'Metal',
+		file('src/metalChecks/native/drawable-recovery.m'), '-o', drawableRecoveryCheck.get().asFile
+}
+tasks.register('checkDrawableRecovery', Exec) {
+	dependsOn 'compileDrawableRecoveryChecks'
+	commandLine drawableRecoveryCheck.get().asFile
 }
 
 tasks.register('checkMetalTimings', JavaExec) {

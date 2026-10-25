@@ -138,3 +138,25 @@ id<CAMetalDrawable> mc_drawable_acquire_next(McDrawableAcquire *s, int64_t waitN
 	[s release];
 	return result;
 }
+
+// Recovery-only readiness wait: never launches a worker, consumes a drawable or holds the state lock while waiting.
+// 1 means the previously outstanding acquisition is still unavailable after the bounded wait; 0 resumes normal drawing.
+int mc_drawable_acquire_await(McDrawableAcquire *s, int64_t waitNs) {
+	[s retain];
+	dispatch_time_t deadline = dispatch_time(DISPATCH_TIME_NOW, MAX(0, waitNs));
+	int pending;
+	for (;;) {
+		os_unfair_lock_lock(&s->lock);
+		pending = !s->closed && s->pending && !s->ready;
+		os_unfair_lock_unlock(&s->lock);
+		if (!pending) break;
+		if (dispatch_semaphore_wait(s->wake, deadline) != 0) {
+			os_unfair_lock_lock(&s->lock);
+			pending = !s->closed && s->pending && !s->ready;
+			os_unfair_lock_unlock(&s->lock);
+			break;
+		}
+	}
+	[s release];
+	return pending;
+}

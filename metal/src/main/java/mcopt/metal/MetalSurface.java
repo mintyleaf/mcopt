@@ -14,6 +14,10 @@ import org.lwjgl.sdl.SDLVideo;
  * the whole frame only adds latency and can stall on a drawable the display hasn't released yet.
  */
 final class MetalSurface implements GpuSurfaceBackend {
+	private static final boolean RECOVER_DRAWABLES = Boolean.getBoolean("mcopt.metal.recoverDrawables");
+	private static MetalSurface active;
+	private static long recoverySkippedFrames;
+	private boolean waitingForDrawable, frameSuppressed;
 	/** With vsync off, present only the last frame that makes each refresh (see mc_pace); -Dmcopt.metal.pace=false presents every frame. */
 	private static final boolean PACE = Boolean.parseBoolean(System.getProperty("mcopt.metal.pace", "true"));
 	/** How long before a refresh a finished frame has to reach the compositor to be shown on it. */
@@ -55,6 +59,7 @@ final class MetalSurface implements GpuSurfaceBackend {
 		var mode = SDLVideo.SDL_GetCurrentDisplayMode(SDLVideo.SDL_GetDisplayForWindow(window));
 		if (mode != null && mode.refresh_rate() > 0)
 			this.drawableWaitNanos = drawableWaitNanos(mode.refresh_rate());
+		active = this;
 	}
 
 	static long drawableWaitNanos(float refreshRate) {
@@ -63,6 +68,7 @@ final class MetalSurface implements GpuSurfaceBackend {
 
 	@Override
 	public void configure(GpuSurface.Configuration config) {
+		this.waitingForDrawable = this.frameSuppressed = false;
 		this.generation++;
 		this.width = config.width(); this.height = config.height();
 		var mode = SDLVideo.SDL_GetCurrentDisplayMode(SDLVideo.SDL_GetDisplayForWindow(this.window));
@@ -84,8 +90,25 @@ final class MetalSurface implements GpuSurfaceBackend {
 	public void acquireNextTexture() {
 	}
 
+	static boolean deferRendering(boolean eligible) {
+		MetalSurface surface = active;
+		if (surface == null) return false;
+		surface.frameSuppressed = false;
+		if (!RECOVER_DRAWABLES || !eligible || !surface.waitingForDrawable || !surface.vsync || surface.drawableAcquire == 0) return false;
+		MetalEvents.Operation event = surface.encoder.recoveryEvent();
+		int pending;
+		try { pending = Native.drawableAcquireAwait(surface.drawableAcquire, surface.drawableWaitNanos); }
+		finally { MetalEvents.end(event); }
+		surface.frameSuppressed = pending != 0;
+		if (surface.frameSuppressed) recoverySkippedFrames++;
+		else surface.waitingForDrawable = false;
+		return surface.frameSuppressed;
+	}
+	static long recoverySkippedFrames() { return recoverySkippedFrames; }
+
 	@Override
 	public void blitFromTexture(CommandEncoderBackend commandEncoder, GpuTextureView textureView) {
+		if (this.frameSuppressed) return; // The frame was not extracted/drawn; never present its stale camera image.
 		// mcopt.rec hook: the opt-in recorder (-Dmcopt.rec, mcopt.metal.rec) takes the finished frame, GUI included. Rec.ON is a constant false without it.
 		if (mcopt.metal.rec.Rec.ON) mcopt.metal.rec.Rec.frame(this.encoder, textureView);
 		long t0 = WaitStats.ON ? System.nanoTime() : 0;
@@ -113,7 +136,8 @@ final class MetalSurface implements GpuSurfaceBackend {
 			MetalEvents.end(event);
 		}
 		if (WaitStats.ON) WaitStats.wait(WaitStats.DRAWABLE, System.nanoTime() - t1, 0);
-		if (drawable == 0) return; // no drawable (window hidden): skip the frame's present
+		this.waitingForDrawable = drawable == 0;
+		if (drawable == 0) return; // next recovery frame only waits for this outstanding acquisition
 		MetalEvents.Drawable lifetime = null;
 		boolean scheduled = false;
 		try {
@@ -140,6 +164,7 @@ final class MetalSurface implements GpuSurfaceBackend {
 
 	@Override
 	public void close() {
+		if (active == this) active = null;
 		if (this.drawableAcquire != 0) {
 			Native.drawableAcquireClose(this.drawableAcquire);
 			Native.release(this.drawableAcquire);

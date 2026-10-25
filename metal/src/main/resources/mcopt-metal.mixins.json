@@ -7,6 +7,7 @@
 		"WindowEventsTimingMixin",
 		"PipelinePrecompileMixin",
 		"CaveTexturePreloadMixin",
+		"PresentationRecoveryMixin",
 		"PreferredGraphicsApiMixin",
 		"AnimFramesResidentMixin",
 		"LightmapDoubleMixin",
