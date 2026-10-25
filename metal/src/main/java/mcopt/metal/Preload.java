@@ -18,7 +18,8 @@ import net.fabricmc.loader.api.entrypoint.PreLaunchEntrypoint;
  * same classes end up loaded, only sooner and off the main thread. The list (resources/mcopt/metal/preload.txt.gz)
  * comes from a -Xlog:class+load run of the shipping stack (tools/preloadlist.py); names that don't exist in some
  * other mod set are skipped. A small first-render list precedes the general boot list;
- * -Dmcopt.preload.firstRender=false disables only that priority list.
+ * -Dmcopt.preload.firstRender=false disables the priority lists;
+ * -Dmcopt.preload.gameplay=false disables only the measured gameplay/render helpers.
  * -Dmcopt.preload=false turns all preloading off, -Dmcopt.preload.threads=N sets the thread count.
  */
 public final class Preload implements PreLaunchEntrypoint {
@@ -48,12 +49,9 @@ public final class Preload implements PreLaunchEntrypoint {
 		}
 		List<String> priority = new ArrayList<>();
 		if (Boolean.parseBoolean(System.getProperty("mcopt.preload.firstRender", "true"))) {
-			try (InputStream in = Preload.class.getResourceAsStream("/mcopt/metal/preload-first-render.txt")) {
-				if (in != null) {
-					var reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
-					for (String line; (line = reader.readLine()) != null; ) if (!line.isBlank() && !line.startsWith("#")) priority.add(line);
-				}
-			} catch (IOException ignored) { }
+			appendPriority("/mcopt/metal/preload-first-render.txt", priority);
+			if (Boolean.parseBoolean(System.getProperty("mcopt.preload.gameplay", "true")))
+				appendPriority("/mcopt/metal/preload-gameplay.txt", priority);
 		}
 		priorityRequested = priority.size();
 		names.addAll(0, priority);
@@ -74,5 +72,14 @@ public final class Preload implements PreLaunchEntrypoint {
 			thread.setDaemon(true);
 			thread.start();
 		}
+	}
+
+	private static void appendPriority(String resource, List<String> priority) {
+		try (InputStream in = Preload.class.getResourceAsStream(resource)) {
+			if (in == null) return;
+			var reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
+			for (String line; (line = reader.readLine()) != null; )
+				if (!line.isBlank() && !line.startsWith("#")) priority.add(line);
+		} catch (IOException ignored) { }
 	}
 }

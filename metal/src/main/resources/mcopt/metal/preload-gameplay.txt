@@ -1,0 +1,16 @@
+# Actual slow named loads during the first mining overlay, dropped item and burning-item exercises.
+# Loading only: no static initialization, texture prefetch, GPU warmup or additional threads.
+net.minecraft.client.renderer.state.level.BlockBreakingRenderState
+com.mojang.blaze3d.vertex.SheetedDecalTextureGenerator
+net.fabricmc.fabric.impl.client.renderer.QuadToPosPipe
+net.minecraft.server.level.BlockDestructionProgress
+net.minecraft.client.renderer.entity.state.EntityRenderState$ShadowPiece
+net.minecraft.client.renderer.feature.ShadowFeatureRenderer$Submit
+net.minecraft.client.renderer.feature.FlameFeatureRenderer$Submit
+# Also observed as a 38ms render-thread class load when the LOD mesh arena first grew.
+mcopt.metal.lod.LodArenaGrowth
+# Optional HUD helpers observed when the initial cave view first targeted a block.
+fi.dy.masa.litematica.util.RayTraceUtils$RayTraceWrapper
+fi.dy.masa.malilib.render.RenderUtils$1
+fi.dy.masa.malilib.util.position.PositionUtils$HitPart
+fi.dy.masa.malilib.util.text.TextAlignment
